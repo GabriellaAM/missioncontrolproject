@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 import ast
+from macro.computeFredChanges import compute_changes, detect_frequency
 
 # 🚀 MUST BE THE FIRST STREAMLIT COMMAND
 st.set_page_config(page_title="Macro Overview", layout="wide")
@@ -159,10 +160,13 @@ for category_name, subcategories in categories.items():
 
             for idx, var in enumerate(variables):
                 with cols[idx % 2]:
-                    # Create title row with help icon
+                    # Create title row with help icon and variation toggles
                     title_col, help_col = st.columns([0.9, 0.1])
                     with title_col:
-                        st.markdown(f"")
+                        st.markdown(f"**{var}**")
+                        # Add variation toggles per chart
+                        show_mom = st.checkbox(f"Show MoM for {var}", key=f"mom_{var}")
+                        show_yoy = st.checkbox(f"Show YoY for {var}", key=f"yoy_{var}")
                     with help_col:
                         with open('pages/chart_descriptions.txt', 'r') as f:
                             file_content = f.read()
@@ -189,6 +193,33 @@ for category_name, subcategories in categories.items():
                         if df_plot.empty:
                             st.info("No data in selected date range.")
                         else:
+                            # Calculate variations if needed
+                            if show_mom or show_yoy:
+                                df_changes = compute_changes(df_plot.set_index('date'), 
+                                                          detect_frequency(df_plot['date'].dt.to_pydatetime()), 
+                                                          col_name)
+                                # Display metrics
+                                metric_cols = st.columns(3)
+                                metric_cols[0].metric(
+                                    "Latest Value",
+                                    f"{df_plot[col_name].iloc[-1]:.2f}"
+                                )
+                                if show_mom:
+                                    mom_value = df_changes['MoM'].iloc[-1]
+                                    metric_cols[1].metric(
+                                        "MoM Change",
+                                        f"{mom_value:.1f}%",
+                                        delta=mom_value
+                                    )
+                                if show_yoy:
+                                    yoy_value = df_changes['YoY'].iloc[-1]
+                                    metric_cols[2].metric(
+                                        "YoY Change",
+                                        f"{yoy_value:.1f}%",
+                                        delta=yoy_value
+                                    )
+
+                            # Create the main chart
                             fig = go.Figure()
                             fig.add_trace(go.Scatter(
                                 x=df_plot["date"],
@@ -198,12 +229,49 @@ for category_name, subcategories in categories.items():
                                 name=col_name
                             ))
 
-                            fig.update_layout(
-                                title=var,
-                                xaxis=dict(title="", type="date"),
-                                yaxis=dict(title=col_name, range=[df_plot[col_name].min(), df_plot[col_name].max()]),
-                                template="plotly_white"
-                            )
+                            # Add variation traces if selected
+                            if show_mom or show_yoy:
+                                df_changes = df_changes.reset_index()
+                                if show_mom:
+                                    fig.add_trace(go.Scatter(
+                                        x=df_changes["date"],
+                                        y=df_changes["MoM"],
+                                        mode="lines",
+                                        line=dict(color="#2E86C1", width=1.5, dash='dot'),
+                                        name="MoM %",
+                                        yaxis="y2"
+                                    ))
+                                if show_yoy:
+                                    fig.add_trace(go.Scatter(
+                                        x=df_changes["date"],
+                                        y=df_changes["YoY"],
+                                        mode="lines",
+                                        line=dict(color="#28B463", width=1.5, dash='dot'),
+                                        name="YoY %",
+                                        yaxis="y2"
+                                    ))
+
+                            # Update layout for dual axis if showing variations
+                            if show_mom or show_yoy:
+                                fig.update_layout(
+                                    title=var,
+                                    xaxis=dict(title="", type="date"),
+                                    yaxis=dict(title=col_name, 
+                                             range=[df_plot[col_name].min(), df_plot[col_name].max()]),
+                                    yaxis2=dict(title="% Change",
+                                              overlaying="y",
+                                              side="right",
+                                              showgrid=False),
+                                    template="plotly_white"
+                                )
+                            else:
+                                fig.update_layout(
+                                    title=var,
+                                    xaxis=dict(title="", type="date"),
+                                    yaxis=dict(title=col_name, 
+                                             range=[df_plot[col_name].min(), df_plot[col_name].max()]),
+                                    template="plotly_white"
+                                )
 
                             st.plotly_chart(fig, use_container_width=True)
                     else:

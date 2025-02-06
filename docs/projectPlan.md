@@ -32,9 +32,10 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
    - ~~Store data in local CSV files or a simple SQLite database (one table per asset)~~
    - Data stored in CSV format under `./micro/candleData`
 2. **FRED Integration**  
-   - Implement a `getFredData.py` script to pull key macro metrics (e.g., M2 YoY, interest rates).  
+   - Implement a `getFredData.py` script to pull key macro metrics (e.g., M2, interest rates).  
    - Decide on a minimal set of macro data to keep it manageable.  
-   - Store in CSV/SQLite with consistent date formats.
+   - Store in CSV/SQLite with consistent date formats.  
+   - **Derived Changes**: A `computeFredChanges.py` script will transform raw data (MoM, QoQ, WoW, YoY) and store outputs in `./macro/fredChanges/`.
 3. **Glassnode Integration (BTC On-Chain)**  
    - Adapt an existing script or write a new one for MVRV, SOPR, NUPL, etc.  
    - Validate rate limits and data coverage; store in CSV/SQLite.
