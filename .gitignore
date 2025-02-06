@@ -1,0 +1,57 @@
+# --------------------
+# 1) Python Artifacts
+# --------------------
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Byte-compiled / optimized / DLL files
+*.so
+*.dylib
+*.dll
+
+# --------------------
+# 2) Virtual Envs
+# --------------------
+venv/
+.venv/
+
+# --------------------
+# 3) Environment / Secrets
+# --------------------
+.env
+# If you have other secrets or credential files, consider ignoring them:
+google_client.json
+# credentials.json
+# .aws/
+
+# --------------------
+# 4) Data Files
+# --------------------
+# Ignore all CSVs in macro and micro folders
+
+macro/fredData/*.csv
+micro/assetData/*.csv
+micro/candleData/*.csv
+
+# If you'd rather ignore all CSVs in the entire repo, you could use:
+# *.csv
+
+# --------------------
+# 5) Jupyter Notebooks
+# --------------------
+.ipynb_checkpoints/
+
+# --------------------
+# 6) OS-Specific / Editor-Specific
+# --------------------
+.DS_Store  # macOS
+Thumbs.db  # Windows
+.idea/     # JetBrains-based IDEs
+.vscode/   # VSCode settings (optional)
+
+# --------------------
+# 7) Logs / Temp
+# --------------------
+*.log
+*.tmp

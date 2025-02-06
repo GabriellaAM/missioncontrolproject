@@ -1,0 +1,10 @@
+While implementing this project, make sure to reference the [projectPlan.md](docs/projectPlan.md) file in order to guide the step by step implementation.
+
+Always reference the [projectDesign.md](docs/projectDesign.md) file in order to guide the design of the project. 
+
+Since I have started the project before outlining the plan, there might be some items that are implemented already. 
+
+Everytime you output code, please make sure to state clearly in which file the code should be applied, or whether I need to create a new file. ALWAYS indicate where in the directory the file should be created. 
+
+After implementing the project, make sure to ALWAYS update the [projectPlan.md](docs/projectPlan.md) file with the new information. 
+
