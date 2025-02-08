@@ -12,8 +12,8 @@ os.makedirs(FRED_CHANGES_FOLDER, exist_ok=True)
 
 def detect_frequency(dates):
     """
-    Naive frequency detection based on average gap in days.
-    Returns 'weekly', 'monthly', or 'quarterly'.
+    Frequency detection based on average gap in days.
+    Returns 'daily', 'weekly', 'monthly', or 'quarterly'.
     """
     if len(dates) < 2:
         return None
@@ -25,8 +25,10 @@ def detect_frequency(dates):
     deltas = [(dates_list[i] - dates_list[i - 1]).days for i in range(1, len(dates_list))]
     avg_gap = np.mean(deltas)
 
-    # Basic heuristics for frequency detection:
-    if avg_gap <= 10:
+    # Updated heuristics for frequency detection:
+    if avg_gap <= 3:  # Account for weekends/holidays in daily data
+        return "daily"
+    elif avg_gap <= 10:
         return "weekly"
     elif avg_gap <= 40:
         return "monthly"
@@ -37,15 +39,27 @@ def detect_frequency(dates):
 
 def compute_changes(df, freq_guess, value_col):
     """
-    Computes only MoM and YoY changes regardless of frequency.
+    Computes MoM and YoY changes based on frequency.
     Returns a DataFrame with added columns: 'MoM' and 'YoY'.
     """
     # Sort by date just in case
     df = df.sort_index()
 
-    # Calculate MoM and YoY for all frequencies
+    # Set periods for YoY calculation based on frequency
+    if freq_guess == "daily":
+        yoy_periods = 252  # Trading days in a year
+    elif freq_guess == "weekly":
+        yoy_periods = 52
+    elif freq_guess == "monthly":
+        yoy_periods = 12
+    elif freq_guess == "quarterly":
+        yoy_periods = 4
+    else:
+        yoy_periods = 12  # Default to 12 if unknown
+
+    # Calculate changes
     df["MoM"] = df[value_col].pct_change(1) * 100  # 1-period change
-    df["YoY"] = df[value_col].pct_change(12) * 100  # 12-period change
+    df["YoY"] = df[value_col].pct_change(yoy_periods) * 100
 
     return df
 

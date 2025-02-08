@@ -180,5 +180,25 @@ descriptions = {
     "initialClaims": {
         "what": "Weekly initial unemployment insurance claims",
         "why": "Leading indicator of labor market conditions and economic stress"
+    },
+    "usNetLiquidity": {
+        "what": "Fed Total Assets minus Reverse Repo minus Treasury General Account",
+        "why": "Key measure of actual liquidity in the financial system, accounting for Fed balance sheet and Treasury operations"
+    },
+    "dxy": {
+        "what": "US Dollar Index (DXY) measuring USD strength against major currencies",
+        "why": "Real-time market measure of dollar strength, affecting global trade and financial conditions"
+    },
+    "bojAssetsUSD": {
+        "what": "Bank of Japan total assets converted to USD billions",
+        "why": "Key component of global central bank balance sheet expansion/contraction"
+    },
+    "ecbAssetsUSD": {
+        "what": "European Central Bank total assets converted to USD billions",
+        "why": "European contribution to global central bank liquidity conditions"
+    },
+    "globalCbLiquidity": {
+        "what": "Combined net liquidity from Fed, ECB, and BOJ in USD billions",
+        "why": "Comprehensive measure of major central bank impact on global financial conditions"
     }
 }

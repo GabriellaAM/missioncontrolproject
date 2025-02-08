@@ -40,27 +40,46 @@ def get_global_date_range():
                 continue
     return (min(all_dates), max(all_dates)) if all_dates else (None, None)
 
+def plot_yield_curve_regime():
+    """
+    Load the precomputed yield curve regime plot from a JSON file and return it.
+    The JSON file is generated during the FRED data ingestion pipeline.
+    """
+    import os
+    import plotly.io as pio
+    import streamlit as st
+
+    json_path = os.path.join("macro", "fredData", "yieldCurveRegimePlot.json")
+    if not os.path.exists(json_path):
+        st.error("Precomputed yield curve regime plot not found. Ensure the ingestion pipeline has been run.")
+        return None
+
+    try:
+        fig = pio.read_json(json_path)
+        return fig
+    except Exception as e:
+        st.error(f"Error loading the precomputed yield curve regime plot: {e}")
+        return None
+
 # Macro categories
 categories = {
-    "Growth - GDP Measures": {
-        "Output Measures": ["realGDP", "nominalGDP"]
-    },
-    "Growth - Labor & Production": {
-        "Employment & Job Market": ["nonfarmPayrolls", "retailEmployment", "jobOpenings", "jobQuits", "jobLayoffs", "unemploymentRate", "initialClaims"],
-        "Industrial Activity": ["durableGoodsOrders", "durableGoods"]
-    },
-    "Growth - Sentiment & Consumption": {
-        "Consumer Metrics": ["consumerSentiment", "personalConsumptionExpenditures"]
+    "Growth": {
+        "Key Metrics": ["realGDP", "nonfarmPayrolls", "unemploymentRate", "financialConditionsIndex"]
     },
     "Inflation": {
-        "Price Indices": ["consumerPriceIndex", "pceTrimmedMean12M"],
-        "Expectations & Dynamics": ["treasury5YInflationExpectation", "treasury5YInflationForwardRate", "coreStickiness"]
+        "Price Metrics": ["consumerPriceIndex", "pceTrimmedMean12M", "coreStickiness", "treasury5YInflationExpectation"]
     },
-    "Liquidity (and Monetary Conditions)": {
-        "Interest Rates & Yields": ["fedFundsRate", "treasury3M", "treasury6M", "treasury1Y", "treasury2Y", "treasury10Y"],
-        "Yield Spreads": ["treasury10Y2YSpread", "treasury10Y3MSpread"],
-        "Central Bank & Money Supply": ["fedTotalAssets", "m2", "reserveBalances", "repoAgreements"],
-        "Other Risk/Liquidity Metrics": ["securedOvernightFinancingRate", "interestOnReserves", "creditSpreads", "financialConditionsIndex", "dollarIndex", "usTotalDebt", "tga", "nasdaq", "sp500", "vix"]
+    "Liquidity": {
+        "Global CB Liquidity": ["globalCbLiquidity", "usNetLiquidity", "bojAssetsUSD", "ecbAssetsUSD"],
+        "Fed Balance Sheet": ["fedTotalAssets", "repoAgreements", "tga"],
+        "Money Supply": ["m2", "reserveBalances"]
+    },
+    "Yields & Curve": {
+        "Yield Curve Regime": ["yieldCurveRegime"],
+        "Key Rates": ["fedFundsRate", "securedOvernightFinancingRate", "treasury2Y", "treasury10Y", "interestOnReserves"]
+    },
+    "Markets": {
+        "Indexes": ["dxy", "nasdaq", "sp500", "vix"]
     }
 }
 
@@ -156,54 +175,62 @@ for category_name, subcategories in categories.items():
         st.markdown(f"<div id='{sub_category_id}'></div>", unsafe_allow_html=True)
         st.subheader(sub_category_name)
         with st.expander(f"{sub_category_name} Charts", expanded=True):
-            cols = st.columns(2)  # Two charts per row
+            # Special handling for yield curve regime - full width
+            if "yieldCurveRegime" in variables:
+                fig = plot_yield_curve_regime()
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True, height=600)
+                    st.markdown("""
+                    **Regime Legend:**
+                    - 🟢 Bull Steepener: Both yields falling, spread widening
+                    - 🔴 Bear Steepener: Both yields rising, spread widening
+                    - 🔵 Bull Flattener: Both yields falling, spread narrowing
+                    - 🟣 Bear Flattener: Both yields rising, spread narrowing
+                    - 🟡 Flattener Twist: 2Y falling, 10Y rising
+                    - 🟠 Steepener Twist: 2Y rising, 10Y falling
+                    """)
+                else:
+                    st.info("Yield curve regime data not available.")
+                
+                # Remove yieldCurveRegime from variables to skip it in the regular loop
+                variables = [v for v in variables if v != "yieldCurveRegime"]
+            
+            # Regular two-column layout for other charts
+            if variables:  # Only create columns if there are other variables
+                cols = st.columns(2)
+                for idx, var in enumerate(variables):
+                    with cols[idx % 2]:
+                        # Create title row with help icon and variation toggles
+                        title_col, help_col = st.columns([0.9, 0.1])
+                        with title_col:
+                            st.markdown(f"**{var}**")
+                            # Add variation toggles only for non-yield curve regime charts
+                            show_mom = st.checkbox(f"Show MoM for {var}", key=f"mom_{var}")
+                            show_yoy = st.checkbox(f"Show YoY for {var}", key=f"yoy_{var}")
+                        with help_col:
+                            with open('pages/chart_descriptions.txt', 'r') as f:
+                                file_content = f.read()
+                                dict_start = file_content.find('descriptions = ')
+                                descriptions = ast.literal_eval(file_content[dict_start + 14:])
+                            if var in descriptions:
+                                help_text = f"**What is it?**\n{descriptions[var]['what']}\n\n**Why it matters:**\n{descriptions[var]['why']}"
+                                st.markdown("ℹ️", help=help_text)
+                        
+                        data = load_series(var)
 
-            for idx, var in enumerate(variables):
-                with cols[idx % 2]:
-                    # Create title row with help icon and variation toggles
-                    title_col, help_col = st.columns([0.9, 0.1])
-                    with title_col:
-                        st.markdown(f"**{var}**")
-                        # Add variation toggles per chart
-                        show_mom = st.checkbox(f"Show MoM for {var}", key=f"mom_{var}")
-                        show_yoy = st.checkbox(f"Show YoY for {var}", key=f"yoy_{var}")
-                    with help_col:
-                        with open('pages/chart_descriptions.txt', 'r') as f:
-                            file_content = f.read()
-                            # Find the dictionary definition starting point
-                            dict_start = file_content.find('descriptions = ')
-                            # Extract and evaluate the dictionary
-                            descriptions = ast.literal_eval(file_content[dict_start + 14:])
-                        if var in descriptions:
-                            help_text = f"**What is it?**\n{descriptions[var]['what']}\n\n**Why it matters:**\n{descriptions[var]['why']}"
-                            st.markdown("ℹ️", help=help_text)
-                    
-                    data = load_series(var)
-
-                    if data is not None:
-                        df_plot = data.reset_index()
-                        col_name = next((col for col in df_plot.columns if col.lower() == var.lower()), None)
-
-                        if not col_name:
-                            continue
-
-                        df_plot = df_plot[(df_plot["date"].dt.date >= from_date) & 
-                                        (df_plot["date"].dt.date <= to_date)]
-
-                        if df_plot.empty:
-                            st.info("No data in selected date range.")
-                        else:
-                            # Calculate variations if needed
+                        if data is not None:
+                            # Display metrics (always show latest value, optionally show changes)
+                            metric_cols = st.columns(3)
+                            metric_cols[0].metric(
+                                "Latest Value",
+                                f"{data[var].iloc[-1]:.2f}"
+                            )
+                            
+                            # Only create MoM/YoY metrics if requested
                             if show_mom or show_yoy:
-                                df_changes = compute_changes(df_plot.set_index('date'), 
-                                                          detect_frequency(df_plot['date'].dt.to_pydatetime()), 
-                                                          col_name)
-                                # Display metrics
-                                metric_cols = st.columns(3)
-                                metric_cols[0].metric(
-                                    "Latest Value",
-                                    f"{df_plot[col_name].iloc[-1]:.2f}"
-                                )
+                                df_changes = compute_changes(data, 
+                                                      detect_frequency(data.index.to_pydatetime()), 
+                                                      var)
                                 if show_mom:
                                     mom_value = df_changes['MoM'].iloc[-1]
                                     metric_cols[1].metric(
@@ -222,11 +249,11 @@ for category_name, subcategories in categories.items():
                             # Create the main chart
                             fig = go.Figure()
                             fig.add_trace(go.Scatter(
-                                x=df_plot["date"],
-                                y=df_plot[col_name],
+                                x=data.index,
+                                y=data[var],
                                 mode="lines",
                                 line=dict(color="#FC6A03", width=3.05),
-                                name=col_name
+                                name=var
                             ))
 
                             # Add variation traces if selected
@@ -256,8 +283,8 @@ for category_name, subcategories in categories.items():
                                 fig.update_layout(
                                     title=var,
                                     xaxis=dict(title="", type="date"),
-                                    yaxis=dict(title=col_name, 
-                                             range=[df_plot[col_name].min(), df_plot[col_name].max()]),
+                                    yaxis=dict(title=var, 
+                                             range=[data[var].min(), data[var].max()]),
                                     yaxis2=dict(title="% Change",
                                               overlaying="y",
                                               side="right",
@@ -268,11 +295,12 @@ for category_name, subcategories in categories.items():
                                 fig.update_layout(
                                     title=var,
                                     xaxis=dict(title="", type="date"),
-                                    yaxis=dict(title=col_name, 
-                                             range=[df_plot[col_name].min(), df_plot[col_name].max()]),
+                                    yaxis=dict(title=var, 
+                                             range=[data[var].min(), data[var].max()]),
                                     template="plotly_white"
                                 )
 
                             st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.info("Data not available.")
+                        else:
+                            st.info("Data not available.")
+    

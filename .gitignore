@@ -31,6 +31,7 @@ google_client.json
 # Ignore all CSVs in macro and micro folders
 
 macro/fredData/*.csv
+macro/fredChanges/*.csv
 micro/assetData/*.csv
 micro/candleData/*.csv
 
