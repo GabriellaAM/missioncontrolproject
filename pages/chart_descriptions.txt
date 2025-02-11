@@ -200,5 +200,9 @@ descriptions = {
     "globalCbLiquidity": {
         "what": "Combined net liquidity from Fed, ECB, and BOJ in USD billions",
         "why": "Comprehensive measure of major central bank impact on global financial conditions"
+    },
+    "move": {
+        "what": "ICE BofA MOVE Index measuring expected volatility in U.S. Treasury yields",
+        "why": "Key indicator of bond market volatility and uncertainty in interest rates, often called the 'VIX for bonds'"
     }
 }

@@ -152,7 +152,8 @@ def fetch_yfinance_data():
         tickers = {
             "DX-Y.NYB": "dxy",
             "JPY=X": "usdjpy",
-            "EUR=X": "usdeur"
+            "EUR=X": "usdeur",
+            "^MOVE": "move"  # Adding MOVE index
         }
         
         for symbol, name in tickers.items():

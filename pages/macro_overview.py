@@ -79,7 +79,7 @@ categories = {
         "Key Rates": ["fedFundsRate", "securedOvernightFinancingRate", "treasury2Y", "treasury10Y", "interestOnReserves"]
     },
     "Markets": {
-        "Indexes": ["dxy", "nasdaq", "sp500", "vix"]
+        "Indexes": ["dxy", "nasdaq", "sp500", "vix", "move"]
     }
 }
 
