@@ -11,7 +11,7 @@ carteira_EXC = ['aave', 'arbitrum', 'arweave','audius','aurory','avalanche-2','a
                 'terra-luna-2', 'tezos', 'tribe-2', 'uniswap', 'wibx', 'wrapped-nxm', 'yearn-finance', 
                 'zcash', 'frax-share', 'celestia', 'ronin', 'thorchain', 'immutable-x',
                 'akash-network', 'render-token', 'blockstack', 'ondo-finance', 'the-open-network', 
-                'aerodrome-finance', 'morpho', 'ethena']
+                'aerodrome-finance', 'morpho', 'ethena', 'virtual-protocol', 'hyperliquid']
 
 carteira_HB = ['ethereum', 'tether', 'maker', 'havven', 'aave', 'uniswap', 'dydx',
               'cosmos', 'secret', 'the-sandbox', 'helium', 'matic-network',
@@ -28,11 +28,11 @@ carteira_LC = ['arweave', 'badger-dao', 'my-neighbor-alice', 'perpetual-protocol
               'alpha-finance', 'yield-guild-games', 'genopets', 'acala','rainbow-token-2',
               'guild-of-guardians', 'aurory', 'illuvium', 'conic-finance', 'vela-token',
               'radiant-capital', 'botto', 'pendle', 'nunet', 'kryptonite', 'prisma-governance-token',
-              'genesysgo-shadow', 'neon', 'mintlayer', 'ethervista', 'heyanon']
+              'genesysgo-shadow', 'neon', 'mintlayer', 'ethervista', 'heyanon', 'yne']
 
 carteira_AC = ['bitcoin', 'ethereum', 'solana', 'maker', 'chainlink', 'thorchain', 
                'blockstack', 'immutable-x', 'uniswap', 'pendle', 'aave',
-               'ethervista', 'morpho', 'ethena', 'virtual-protocol']
+               'ethervista', 'morpho', 'ethena', 'virtual-protocol', 'yne']
 
 others = ['fartcoin', 'raydium', 'aixbt', 'griffain', 'orbit-3', 'hyperliquid', 'yne']
 

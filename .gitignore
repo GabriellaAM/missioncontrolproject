@@ -34,7 +34,7 @@ macro/fredData/*.csv
 macro/fredChanges/*.csv
 micro/assetData/*.csv
 micro/candleData/*.csv
-
+.cursorrules 
 # If you'd rather ignore all CSVs in the entire repo, you could use:
 # *.csv
 
