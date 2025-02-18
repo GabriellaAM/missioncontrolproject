@@ -98,7 +98,7 @@ def process_fred_data_file(filepath):
 
         # Build output filename
         base_name = os.path.splitext(os.path.basename(filepath))[0]  # e.g. 'consumerPriceIndex'
-        out_filename = f"{base_name}_changes_{freq_guess}.csv"  # e.g. 'consumerPriceIndex_changes_monthly.csv'
+        out_filename = f"{base_name}_changes.csv"  # e.g. 'consumerPriceIndex_changes_monthly.csv'
         out_path = os.path.join(FRED_CHANGES_FOLDER, out_filename)
 
         # Save
