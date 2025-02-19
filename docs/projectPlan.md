@@ -41,21 +41,6 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 
 ---
 
-### **Step 1.3: Data Normalization & Daily Pipeline**
-
-1. **Resampling to Daily**  
-   - Develop utility functions (e.g., in `data_utils.py`) to standardize data frames to daily frequency.  
-   - Handle missing dates, weekends, and forward-fill for lower-frequency macro data—particularly important for yield curve regimes.
-2. **Consolidated Daily Pipeline**  
-   - Create an initial data pipeline script (e.g., `main.py`) to:
-     1. Fetch and update data from all sources.
-     2. Normalize data sets.
-     3. Log successful updates and prepare data for further analysis.
-
-**Outcome**: A single command (`python main.py`) now updates and prepares the entire data environment each day, incorporating enhanced macro data.
-
----
-
 ## **Phase 2: RORO Modelling**
 
 ### **Step 2.1: Identifying Momentum Turning Points**
@@ -91,15 +76,6 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 - Adjust weightings and thresholds based on ongoing backtesting.
 
 **Outcome**: A refined RORO engine that outputs daily regime probabilities with clear market state labels.
-
-### **Step 2.5: Advanced Filtering & Multi-Model Fusion**
-- Incorporate a Kalman filter into the primary regime model to provide adaptive smoothing and improved state estimation.
-- Develop supplementary models that offer alternative perspectives and confidence levels.
-- Fuse the outputs of the Bayesian ensemble, Kalman filter, and supplementary models to generate a unified regime signal and risk confidence metric.
-- Backtest the ensemble approach and tune parameters based on performance metrics such as accuracy, drawdown, and Sharpe/Sortino ratios.
-
-**Outcome**: An advanced, multi-model RORO system that enhances decision support and provides robust confidence levels for market regimes.
-
 
 ---
 

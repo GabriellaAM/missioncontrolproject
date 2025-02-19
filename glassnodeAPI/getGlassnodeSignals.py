@@ -38,8 +38,8 @@ GLASSNODE_ENDPOINTS = {
     "indicators/net_unrealized_profit_loss_account_based": "ENTITY_ADJ_NUPL",
     "indicators/puell_multiple": "PUELL_MULTIPLE",
     "indicators/dormancy_flow": "ENTITY_ADJ_DORMANCY_FLOW",
-    "metrics/indicators/sopr_less_155": "STH_SOPR",
-    "metrics/derivatives/futures_funding_rate_perpetual": "FUTURES_FUNDING_RATE"
+    "indicators/sopr_less_155": "STH_SOPR",
+    "derivatives/futures_funding_rate_perpetual": "FUTURES_FUNDING_RATE"
 }
 
 # volatility smile, 
