@@ -29,12 +29,11 @@ google_client.json
 # 4) Data Files
 # --------------------
 # Ignore all CSVs in macro and micro folders
-
-macro/fredData/*.csv
-glassnodeAPI/onchainData/*.csv
-macro/fredChanges/*.csv
-micro/assetData/*.csv
-micro/candleData/*.csv
+data/onChainData/*.csv
+data/macro/fredData/*.csv
+data/macro/fredChanges/*.csv
+data/micro/assetData/*.csv
+data/micro/candleData/*.csv
 .cursorrules 
 # If you'd rather ignore all CSVs in the entire repo, you could use:
 # *.csv

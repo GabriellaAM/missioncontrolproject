@@ -43,33 +43,48 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 
 ## **Phase 2: RORO Modelling**
 
-### **Step 2.1: Identifying Momentum Turning Points**
+### **Step 2.1: Identifying Momentum Turning Points** ✅
+- Implemented initial HMM-based regime detection
+- Successfully developed feature engineering pipeline
+- Created modular structure for model training and prediction
+- Implemented versioning system for models with metadata tracking
 
-- **Objective**: Apply the ideas from the [Momentum Turning Points paper](https://assets.super.so/e46b77e7-ee08-445e-b43f-4ffd88ae0a0e/files/637bd3ef-b512-493b-93c3-4f223a45b55b.pdf) to detect momentum turning points in the time series data.
-- **Method**:
-  - Compute a momentum metric (e.g., percentage change over a defined window).
-  - Calculate a rolling mean (or other baseline measure) of the momentum.
-  - Identify turning points by detecting when the difference between the momentum and its rolling mean exceeds a specified threshold and when the deviation changes sign.
-  - Explore ideas on market timing vs. volatility timing.
+### **Step 2.2: Model Version Control & Registry**
+- **Model Versioning System:** ✅
+  - Implemented versioned model saving with timestamps
+  - Added metadata storage for each model version
+  - Created organized directory structure for models, scalers, and metadata
 
-- **Outcome**: Generate features indicating turning points that will be used in the RORO suite.
+- **Model Registry & Comparison Tools:** (Planned)
+  - Create a model registry to track all versions and their performance
+  - Develop comparison tools to evaluate different model versions
+  - Implement feature version control system
+  - Add rollback mechanism for reverting to previous model versions
+  - Build automated performance comparison reports between versions
+  - Create visualization tools for model version comparison
 
-
-### **Step 2.2: On-Chain & Macro Overlays**
+### **Step 2.3: On-Chain & Macro Overlays**
 - Integrate on-chain metrics (e.g., Glassnode's MVRV, SOPR, NUPL) into the RORO logic.
 - Enhance the macro dashboard signals by incorporating advanced yield curve regimes and central bank liquidity data.
 - Combine these macro signals with technical momentum/volatility to refine bullish/bearish probabilities.
 
 **Outcome**: A more nuanced RORO model that benefits from a holistic view of both current market conditions and broader macroeconomic contexts.
 
-### **Step 2.3: Ensemble Bayesian HMM for Regime Classification**
-- Develop an ensemble model that combines Hidden Markov Model (HMM) predictions with a Bayesian approach (e.g., leveraging a Kalman filter) to classify regimes.
-- This ensemble method will smooth transitions and reduce the overconfidence and rapid state switching typical in solitary HMMs.
-- Reference: [Ensembling Hidden Markov & Bayesian Models for Regime Switching](https://andrew-hyde.medium.com/the-ensemble-of-hidden-markov-bayesian-models-for-regime-switching-in-equity-markets-a2a7dc109a39)
+### **Step 2.4: Ensemble Bayesian HMM for Regime Classification** ✅
+- Developed initial HMM implementation for regime classification
+- Added support for both long-only and long-short strategies
+- Implemented Kalman filtering for price smoothing
+- Created visualization tools for regime analysis and performance metrics
 
-**Outcome**: A robust ensemble model that yields more stable regime classifications by integrating Bayesian smoothing with HMM state predictions.
+### **Step 2.5: Model Maintenance & Evolution**
+- **Regular Retraining Pipeline:**
+  - Implement automated feature importance analysis
+  - Create scheduled retraining triggers based on performance metrics
+  - Develop data drift detection
+  - Add automated model performance monitoring
+  - Build A/B testing framework for new features
 
-### **Step 2.4: Finalizing RORO Classification**
+### **Step 2.6: Finalizing RORO Classification**
 - Establish a method to output a single numeric regime probability (e.g., through a weighted average of signals).
 - Label market states clearly (e.g., Bull/High Vol, Bull/Low Vol, Bear/High Vol, Bear/Low Vol).
 - Validate the predictive power of the composite signals against historical turning points.
@@ -126,30 +141,6 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 **Outcome**: A robust, evolving system capable of incorporating future developments and modular enhancements.
 
 ---
-
-# **Conclusion & Next Steps**
-
-**Evaluation of Macro Dashboard Enhancements:**  
-- **Yield Curve Regimes:** The recent improvements allow assigning a regime to every BTC day—even when the yield curve isn't reported—by carrying forward the last known regime.  
-- **Central Bank Liquidity:** Early add-ons for central bank liquidity provide a broader context for the macro environment, complementing traditional FRED data.  
-- **Data Handling Adjustments:** Filtering BTC data from 2017 onward and annualizing volatility with 365 days enhances analysis accuracy for a 24/7 market.
-
-**What's Next for Us:**  
-1. **Integration into RORO Modelling:**  
-   - Combine enhanced macro dashboard signals with on-chain and technical momentum indicators in the RORO model.
-   - Run initial backtests to gauge the correlation between regime changes and subsequent BTC performance.
-2. **Advanced Filtering & Model Fusion:**  
-   - Integrate a Kalman filter into the primary model and develop supplementary models for decision-making support.
-   - Fuse these models to generate a unified regime signal along with a risk confidence metric.
-3. **Dashboard & Reporting Enhancements:**  
-   - Expand the macro overview page in the Streamlit dashboard to reflect the new filtering and ensemble approaches.
-   - Enhance user feedback on the impact of advanced models on trading decisions.
-4. **Risk Management & Portfolio Links:**  
-   - Adapt risk management modules for dynamic stop-loss and profit targets in line with evolving macro regimes.
-   - Sync real portfolio data via Google Sheets for real-time tracking.
-5. **Further Data Enrichment:**  
-   - Complete the ingestion and integration of central bank liquidity data.
-   - Explore additional macro variables (e.g., policy announcements, sentiment indicators) for further overlays.
 
 ---
 
