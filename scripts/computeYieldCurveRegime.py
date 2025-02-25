@@ -51,7 +51,7 @@ def compute_regime(window=20):
     """
     try:
         # Load yield data
-        data_folder = "macro/fredData"
+        data_folder = "data/macro/fredData"
         t2y = pd.read_csv(os.path.join(data_folder, "treasury2Y.csv"), 
                          parse_dates=['date'], index_col='date')
         t10y = pd.read_csv(os.path.join(data_folder, "treasury10Y.csv"), 
@@ -110,7 +110,7 @@ def compute_and_save_yield_curve_regime_plot():
       - Optimized for faster loading
     """
     # Define the CSV path
-    csv_path = os.path.join("macro", "fredData", "yieldCurveRegime.csv")
+    csv_path = os.path.join("data/macro", "fredData", "yieldCurveRegime.csv")
     try:
         df = pd.read_csv(csv_path)
     except Exception as e:
@@ -198,7 +198,7 @@ def compute_and_save_yield_curve_regime_plot():
     )
 
     # Save the precomputed plot as JSON
-    output_file = os.path.join("macro", "fredData", "yieldCurveRegimePlot.json")
+    output_file = os.path.join("data/macro", "fredData", "yieldCurveRegimePlot.json")
     pio.write_json(fig, output_file)
     print(f"Saved yield curve regime plot to {output_file}")
 

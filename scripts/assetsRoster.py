@@ -34,7 +34,8 @@ carteira_AC = ['bitcoin', 'ethereum', 'solana', 'maker', 'chainlink', 'thorchain
                'blockstack', 'immutable-x', 'uniswap', 'pendle', 'aave',
                'ethervista', 'morpho', 'ethena', 'virtual-protocol', 'yne']
 
-others = ['fartcoin', 'raydium', 'aixbt', 'griffain', 'orbit-3', 'hyperliquid', 'yne', 'usd-coin']
+others = ['fartcoin', 'raydium', 'aixbt', 'griffain', 'orbit-3', 'hyperliquid', 'yne', 'usd-coin', 'sui', 
+          'hedera-hashgraph', 'mantra-dao', 'bittensor', 'pepe', 'sonic-3', 'jupiter-exchange-solana', ]
 
 combo = carteira_AC + carteira_EXC + carteira_HB + carteira_LC + others
 

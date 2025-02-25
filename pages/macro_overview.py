@@ -4,13 +4,19 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 import ast
-from macro.computeFredChanges import compute_changes, detect_frequency
+import sys
+# Get the absolute path to the project root directory
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(project_root)
+
+
+from scripts.computeFredChanges import compute_changes, detect_frequency
 
 # 🚀 MUST BE THE FIRST STREAMLIT COMMAND
 st.set_page_config(page_title="Macro Overview", layout="wide")
 
 # Folder where the CSV files are stored
-DATA_FOLDER = "./macro/fredData"
+DATA_FOLDER = "./data/macro/fredData"
  
 # Function to load CSV data
 def load_series(series_name):
@@ -49,7 +55,7 @@ def plot_yield_curve_regime():
     import plotly.io as pio
     import streamlit as st
 
-    json_path = os.path.join("macro", "fredData", "yieldCurveRegimePlot.json")
+    json_path = os.path.join("data/macro", "fredData", "yieldCurveRegimePlot.json")
     if not os.path.exists(json_path):
         st.error("Precomputed yield curve regime plot not found. Ensure the ingestion pipeline has been run.")
         return None
