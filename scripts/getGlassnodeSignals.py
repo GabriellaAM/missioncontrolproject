@@ -5,8 +5,9 @@ import logging
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import certifi
+import ta
 
-# SSL Certificate setup (as in getFredData.py)
+# SSL Certificate setup
 os.environ['SSL_CERT_FILE'] = certifi.where()
 
 # Load environment variables
@@ -15,7 +16,7 @@ load_dotenv()
 GLASSNODE_API_KEY = os.getenv("GLASSNODE_API_KEY")
 BASE_URL = "https://api.glassnode.com/v1/metrics"
 
-# Folder structure matching project convention
+# Folder structure
 OUTPUT_FOLDER = "./data/onchainData"
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
@@ -25,33 +26,91 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# Dictionary of endpoints mapping to a simpler slug
-# If you prefer, you can import from apiEndpoints.py instead
+# Dictionary of endpoints with asset availability
 GLASSNODE_ENDPOINTS = {
-    "indicators/ssr_oscillator": "SSR",
-    "market/price_usd_close": "BTC_PRICE",
-    "supply/profit_relative": "SUPPLY_IN_PROFIT",
-    "market/mvrv_z_score": "MVRV_Z_SCORE",
-    "market/price_realized_usd": "BTC_REALIZED_PRICE",
-    "market/spot_cvd_sum": "CVD",
-    "mining/hash_rate_mean": "BTC_HASH_RATE",
-    "indicators/net_unrealized_profit_loss_account_based": "ENTITY_ADJ_NUPL",
-    "indicators/puell_multiple": "PUELL_MULTIPLE",
-    "indicators/dormancy_flow": "ENTITY_ADJ_DORMANCY_FLOW",
-    "indicators/sopr_less_155": "STH_SOPR",
-    "derivatives/futures_funding_rate_perpetual": "FUTURES_FUNDING_RATE"
+    "indicators/ssr_oscillator": {"slug": "SSR", "assets": ["BTC"]},  # BTC only
+    "supply/profit_relative": {"slug": "PCT_SUPPLY_IN_PROFIT", "assets": ["BTC", "ETH", "SOL"]},
+    "market/mvrv_z_score": {"slug": "MVRV_Z_SCORE", "assets": ["BTC", "ETH"]},
+    "market/price_realized_usd": {"slug": "REALIZED_PRICE", "assets": ["BTC", "ETH"]},
+    "market/spot_cvd_sum": {"slug": "CVD", "assets": ["BTC", "ETH"]},
+    "mining/hash_rate_mean": {"slug": "BTC_HASH_RATE", "assets": ["BTC"]},
+    "indicators/net_unrealized_profit_loss_account_based": {"slug": "ENTITY_ADJ_NUPL", "assets": ["BTC"]},
+    "indicators/puell_multiple": {"slug": "PUELL_MULTIPLE", "assets": ["BTC"]},
+    "indicators/dormancy_flow": {"slug": "ENTITY_ADJ_DORMANCY_FLOW", "assets": ["BTC"]},
+    "indicators/sopr_less_155": {"slug": "STH_SOPR", "assets": ["BTC"]},
+    "derivatives/futures_funding_rate_perpetual": {"slug": "FUTURES_FUNDING_RATE", "assets": ["BTC", "ETH"]},
+    "supply/active_3m_6m": {"slug": "SUPPLY_ACTIVE_3M_6M", "assets": ["BTC", "ETH"]},
+    "supply/active_1y_2y": {"slug": "SUPPLY_ACTIVE_1Y_2Y", "assets": ["BTC", "ETH"]},
+    "transactions/transfers_volume_exchanges_net_pit": {"slug": "EXCHANGES_NET_PIT", "assets": ["BTC", "ETH"]},
+    "indicators/cdd_account_based": {"slug": "CDD_ACCOUNT_BASED", "assets": ["BTC"]},
+    "indicators/net_realized_profit_loss": {"slug": "NET_REALIZED_PROFIT_LOSS", "assets": ["BTC"]},
+    "blockchain/utxo_profit_count": {"slug": "UTXO_PROFIT_COUNT", "assets": ["BTC"]},
+    "blockchain/utxo_loss_count": {"slug": "UTXO_LOSS_COUNT", "assets": ["BTC"]},
+    "indicators/realized_profits_to_value_ratio": {"slug": "REALIZED_PROFITS_TO_VALUE_RATIO", "assets": ["BTC"]},
+    "indicators/realized_supply_density_more_155": {"slug": "LTH_REALIZED_SUPPLY_DENSITY", "assets": ["BTC"]},
+    "indicators/realized_supply_density_less_155": {"slug": "STH_REALIZED_SUPPLY_DENSITY", "assets": ["BTC"]},
+    "indicators/unrealized_profit": {"slug": "RELATIVE_UNREALIZED_PROFIT", "assets": ["BTC"]},
+    "indicators/unrealized_loss": {"slug": "RELATIVE_UNREALIZED_LOSS", "assets": ["BTC"]},
+    "indicators/reserve_risk": {"slug": "RESERVE_RISK", "assets": ["BTC"]},
+    "market/price_drawdown_relative": {"slug": "PRICE_DRAWDOWN_RELATIVE", "assets": ["BTC", "ETH"]}
 }
 
-# volatility smile, 
+def process_ssr_signal(df):
+    """Transform SSR signal according to specified procedure."""
+    try:
+        # Get the actual column name for the SSR value
+        value_column = df.columns[0]  # Assuming it's the first column after the index
+        
+        # Replace empty strings with NaN and drop
+        df[value_column] = pd.to_numeric(df[value_column], errors='coerce')
+        df = df.dropna(subset=[value_column])
+        
+        # Ensure we have enough historical data for accurate calculations
+        min_required_points = 50  # Need enough data for 14-day RSI and 30-day EMA
+        if len(df) < min_required_points:
+            logging.warning(f"Insufficient data points for SSR calculations: {len(df)}")
+            return None
+            
+        # Calculate RSI-14 with enough warmup period
+        rsi = ta.momentum.RSIIndicator(close=df[value_column], window=14).rsi()
+        
+        # Apply EMA-30 to RSI with enough warmup period
+        ema = ta.trend.EMAIndicator(close=rsi, window=30).ema_indicator()
+        
+        # Calculate 7-day median
+        median = ema.rolling(window=7, min_periods=1).median()
+        
+        # Calculate spread between EMA and median
+        spread = ema - median
+        
+        # Create new dataframe with original date and transformed signal
+        result_df = pd.DataFrame({
+            'date': df.index,
+            'ssr_oscillator': spread
+        }).set_index('date')
+        
+        # Drop any remaining NaN values
+        result_df = result_df.dropna()
+        
+        # Ensure we're not returning data with insufficient history
+        if len(result_df) < min_required_points:
+            logging.warning(f"Insufficient valid data points after processing: {len(result_df)}")
+            return None
+            
+        return result_df
+        
+    except Exception as e:
+        logging.error(f"Error processing SSR signal: {str(e)}")
+        return None
 
 def datetime_to_unix(dt):
     """Convert datetime object to Unix timestamp."""
     return int(dt.timestamp())
 
-def fetch_glassnode_metric(endpoint, start_date, end_date, frequency="24h"):
-    """Fetch a single Glassnode metric."""
+def fetch_glassnode_metric(endpoint, asset, start_date, end_date, frequency="24h"):
+    """Fetch a single Glassnode metric for a specific asset."""
     params = {
-        'a': 'BTC',
+        'a': asset,
         's': datetime_to_unix(start_date),
         'u': datetime_to_unix(end_date),
         'i': frequency,
@@ -67,70 +126,143 @@ def fetch_glassnode_metric(endpoint, start_date, end_date, frequency="24h"):
             if response.status_code == 200:
                 data = response.json()
                 if not data:
-                    logging.warning(f"No data returned for endpoint {endpoint}")
+                    logging.warning(f"No data returned for endpoint {endpoint} and asset {asset}")
                     return None
 
                 df = pd.DataFrame(data)
-                df['t'] = pd.to_datetime(df['t'], unit='s')
-                df.rename(columns={'v': endpoint.split('/')[-1], 't': 'date'}, inplace=True)
+                # Rename timestamp column to date
+                df['date'] = pd.to_datetime(df['t'], unit='s')
+                df = df.drop('t', axis=1)
+                
+                # Rename value column to 'value' for consistency
+                if 'v' in df.columns:
+                    df = df.rename(columns={'v': 'value'})
+                
+                # Set date as index
                 df.set_index('date', inplace=True)
+                
                 return df
             else:
-                logging.error(f"Failed to fetch {endpoint}: {response.status_code}")
+                logging.error(f"Failed to fetch {endpoint} for {asset}: {response.status_code}")
                 
         except Exception as e:
-            logging.error(f"Attempt {attempt+1} failed for {endpoint}: {e}")
+            logging.error(f"Attempt {attempt+1} failed for {endpoint} and asset {asset}: {e}")
             if attempt == 2:  # Last attempt
                 return None
-            
-def update_metric(endpoint, metric_name, frequency="24h"):
-    """Update a single metric, handling both new files and updates."""
-    file_path = os.path.join(OUTPUT_FOLDER, f"{metric_name}.csv")
+
+def update_metric(endpoint, asset, metric_info, frequency="24h"):
+    """Update a single metric for a specific asset."""
+    metric_name = metric_info["slug"]
     
-    if os.path.exists(file_path):
+    def save_metric_data(data, column_name=None):
+        """Helper function to save metric data with descriptive column name."""
+        # Use provided column name or default to metric_name
+        final_column_name = column_name or metric_name.lower()
+        
+        # Create a copy of the data with renamed column
+        df_to_save = data.copy()
+        if 'value' in df_to_save.columns:
+            df_to_save = df_to_save.rename(columns={'value': final_column_name})
+        
+        # Construct filename
+        filename = f"{asset}_{metric_name}{f'_{column_name}' if column_name else ''}.csv"
+        file_path = os.path.join(OUTPUT_FOLDER, filename)
+        
+        if os.path.exists(file_path):
+            # Update existing file
+            existing_data = pd.read_csv(file_path, parse_dates=['date'], index_col='date')
+            last_date = existing_data.index.max()
+            
+            # Remove overlap and concatenate
+            df_to_save = df_to_save[df_to_save.index > last_date]
+            if not df_to_save.empty:
+                updated_data = pd.concat([existing_data, df_to_save])
+                updated_data.to_csv(file_path)
+                logging.info(f"Updated {filename} with {len(df_to_save)} new records")
+            else:
+                logging.info(f"No new data for {filename}")
+        else:
+            # Create new file
+            df_to_save.to_csv(file_path)
+            logging.info(f"Created new file {filename} with {len(df_to_save)} records")
+    
+    if os.path.exists(os.path.join(OUTPUT_FOLDER, f"{asset}_{metric_name}.csv")):
         # Update existing file
-        existing_data = pd.read_csv(file_path, parse_dates=['date'], index_col='date')
+        existing_data = pd.read_csv(os.path.join(OUTPUT_FOLDER, f"{asset}_{metric_name}.csv"), 
+                                  parse_dates=['date'], 
+                                  index_col='date')
         last_date = existing_data.index.max()
         
-        # Fetch only new data (with 1-day overlap for safety)
-        start_date = last_date - timedelta(days=1)
+        # For SSR, fetch 120 days of historical data to ensure accurate calculations
+        if endpoint == "indicators/ssr_oscillator":
+            start_date = last_date - timedelta(days=120)  # Fetch 120 days of history
+        else:
+            start_date = last_date - timedelta(days=1)
+            
         end_date = datetime.now()
-        
-        logging.info(f"Updating {metric_name} from {start_date}")
-        
-        new_data = fetch_glassnode_metric(endpoint, start_date, end_date, frequency)
-        
-        if new_data is not None and not new_data.empty:
-            # Remove overlap and concatenate
-            new_data = new_data[new_data.index > last_date]
-            if not new_data.empty:
-                updated_data = pd.concat([existing_data, new_data])
-                updated_data.to_csv(file_path)
-                logging.info(f"Updated {metric_name} with {len(new_data)} new records")
-            else:
-                logging.info(f"No new data for {metric_name}")
+        logging.info(f"Updating {metric_name} for {asset} from {start_date}")
     else:
         # New file - fetch all historical data
-        start_date = datetime(2010, 1, 1)  # Or your preferred start date
+        start_date = datetime(2010, 1, 1)
         end_date = datetime.now()
+        logging.info(f"Fetching complete history for {asset}_{metric_name}")
+    
+    data = fetch_glassnode_metric(endpoint, asset, start_date, end_date, frequency)
+    
+    if data is not None and not data.empty:
+        # Process SSR signal if applicable
+        if endpoint == "indicators/ssr_oscillator":
+            processed_data = process_ssr_signal(data)
+            if processed_data is not None:
+                # Only keep the new data points after the last existing date
+                if os.path.exists(os.path.join(OUTPUT_FOLDER, f"{asset}_{metric_name}.csv")):
+                    processed_data = processed_data[processed_data.index > last_date]
+                    if not processed_data.empty:
+                        save_metric_data(processed_data)
+                else:
+                    save_metric_data(processed_data)
+            return
         
-        logging.info(f"Fetching complete history for {metric_name}")
+        # Check if any column contains dictionary-like data
+        dict_columns = [col for col in data.columns 
+                       if isinstance(data[col].iloc[0], dict)]
         
-        data = fetch_glassnode_metric(endpoint, start_date, end_date, frequency)
-        if data is not None and not data.empty:
-            data.to_csv(file_path)
-            logging.info(f"Created new file for {metric_name} with {len(data)} records")
+        if dict_columns:
+            for col in dict_columns:
+                # Get all unique keys from the dictionaries
+                all_keys = set()
+                for d in data[col].dropna():
+                    all_keys.update(d.keys())
+                
+                # Create separate dataframes for each key
+                for key in all_keys:
+                    # Extract values for this key
+                    key_data = pd.DataFrame({
+                        'date': data.index,
+                        'value': data[col].apply(lambda x: x.get(key) if isinstance(x, dict) else None)
+                    }).set_index('date')
+                    
+                    # Clean key for filename and column name
+                    clean_key = key.replace('%', 'pct').replace('.', '_')
+                    column_name = f"{metric_name.lower()}_{clean_key}"
+                    
+                    # Save as separate file with descriptive column name
+                    save_metric_data(key_data, column_name)
+        else:
+            # Regular single-value metric
+            save_metric_data(data)
 
 def main():
     """Main function to update all Glassnode metrics."""
     logging.info("Starting Glassnode data update")
     
-    for endpoint, metric_name in GLASSNODE_ENDPOINTS.items():
-        try:
-            update_metric(endpoint, metric_name)
-        except Exception as e:
-            logging.error(f"Failed to update {metric_name}: {e}")
-            continue
+    for endpoint, info in GLASSNODE_ENDPOINTS.items():
+        for asset in info["assets"]:
+            try:
+                update_metric(endpoint, asset, info)
+            except Exception as e:
+                logging.error(f"Failed to update {info['slug']} for {asset}: {e}")
+                continue
     
     logging.info("Completed Glassnode data update")
 
