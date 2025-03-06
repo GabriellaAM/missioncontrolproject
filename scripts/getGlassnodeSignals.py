@@ -30,15 +30,15 @@ logging.basicConfig(
 GLASSNODE_ENDPOINTS = {
     "indicators/ssr_oscillator": {"slug": "SSR", "assets": ["BTC"]},  # BTC only
     "supply/profit_relative": {"slug": "PCT_SUPPLY_IN_PROFIT", "assets": ["BTC", "ETH", "SOL"]},
-    "market/mvrv_z_score": {"slug": "MVRV_Z_SCORE", "assets": ["BTC", "ETH"]},
+    "market/mvrv": {"slug": "MVRV", "assets": ["BTC", "ETH", "SOL"]},
+    "market/mvrv_more_155": {"slug": "MVRV_LTH", "assets": ["BTC"]},
+    "market/mvrv_less_155": {"slug": "MVRV_STH", "assets": ["BTC"]},
     "market/price_realized_usd": {"slug": "REALIZED_PRICE", "assets": ["BTC", "ETH"]},
-    "market/spot_cvd_sum": {"slug": "CVD", "assets": ["BTC", "ETH"]},
     "mining/hash_rate_mean": {"slug": "BTC_HASH_RATE", "assets": ["BTC"]},
     "indicators/net_unrealized_profit_loss_account_based": {"slug": "ENTITY_ADJ_NUPL", "assets": ["BTC"]},
     "indicators/puell_multiple": {"slug": "PUELL_MULTIPLE", "assets": ["BTC"]},
     "indicators/dormancy_flow": {"slug": "ENTITY_ADJ_DORMANCY_FLOW", "assets": ["BTC"]},
     "indicators/sopr_less_155": {"slug": "STH_SOPR", "assets": ["BTC"]},
-    "derivatives/futures_funding_rate_perpetual": {"slug": "FUTURES_FUNDING_RATE", "assets": ["BTC", "ETH"]},
     "supply/active_3m_6m": {"slug": "SUPPLY_ACTIVE_3M_6M", "assets": ["BTC", "ETH"]},
     "supply/active_1y_2y": {"slug": "SUPPLY_ACTIVE_1Y_2Y", "assets": ["BTC", "ETH"]},
     "transactions/transfers_volume_exchanges_net_pit": {"slug": "EXCHANGES_NET_PIT", "assets": ["BTC", "ETH"]},
@@ -149,48 +149,45 @@ def fetch_glassnode_metric(endpoint, asset, start_date, end_date, frequency="24h
             logging.error(f"Attempt {attempt+1} failed for {endpoint} and asset {asset}: {e}")
             if attempt == 2:  # Last attempt
                 return None
+    
+    return None  # Return None if all attempts fail
 
 def update_metric(endpoint, asset, metric_info, frequency="24h"):
-    """Update a single metric for a specific asset."""
+    """Update a single Glassnode metric for a specific asset."""
     metric_name = metric_info["slug"]
     
-    def save_metric_data(data, column_name=None):
-        """Helper function to save metric data with descriptive column name."""
-        # Use provided column name or default to metric_name
-        final_column_name = column_name or metric_name.lower()
-        
-        # Create a copy of the data with renamed column
-        df_to_save = data.copy()
-        if 'value' in df_to_save.columns:
-            df_to_save = df_to_save.rename(columns={'value': final_column_name})
-        
-        # Construct filename
-        filename = f"{asset}_{metric_name}{f'_{column_name}' if column_name else ''}.csv"
-        file_path = os.path.join(OUTPUT_FOLDER, filename)
-        
-        if os.path.exists(file_path):
-            # Update existing file
-            existing_data = pd.read_csv(file_path, parse_dates=['date'], index_col='date')
-            last_date = existing_data.index.max()
-            
-            # Remove overlap and concatenate
-            df_to_save = df_to_save[df_to_save.index > last_date]
-            if not df_to_save.empty:
-                updated_data = pd.concat([existing_data, df_to_save])
-                updated_data.to_csv(file_path)
-                logging.info(f"Updated {filename} with {len(df_to_save)} new records")
-            else:
-                logging.info(f"No new data for {filename}")
+    # Create a function to save the data to a CSV file
+    def save_metric_data(df, column_name=None):
+        if column_name:
+            file_name = f"{asset}_{column_name}.csv"
         else:
-            # Create new file
-            df_to_save.to_csv(file_path)
-            logging.info(f"Created new file {filename} with {len(df_to_save)} records")
+            file_name = f"{asset}_{metric_name}.csv"
+            
+        # If the file exists, append new data
+        if os.path.exists(os.path.join(OUTPUT_FOLDER, file_name)):
+            existing_data = pd.read_csv(os.path.join(OUTPUT_FOLDER, file_name), 
+                                      parse_dates=['date'], 
+                                      index_col='date')
+            
+            # Combine existing and new data, drop duplicates
+            combined_data = pd.concat([existing_data, df])
+            combined_data = combined_data[~combined_data.index.duplicated(keep='last')]
+            combined_data = combined_data.sort_index()
+            
+            # Save the updated data
+            combined_data.to_csv(os.path.join(OUTPUT_FOLDER, file_name))
+            logging.info(f"Updated {file_name} with {len(df)} new records")
+        else:
+            # Save as new file
+            df.to_csv(os.path.join(OUTPUT_FOLDER, file_name))
+            logging.info(f"Created new file {file_name} with {len(df)} records")
     
+    # Check if file exists to determine start date
     if os.path.exists(os.path.join(OUTPUT_FOLDER, f"{asset}_{metric_name}.csv")):
         # Update existing file
         existing_data = pd.read_csv(os.path.join(OUTPUT_FOLDER, f"{asset}_{metric_name}.csv"), 
-                                  parse_dates=['date'], 
-                                  index_col='date')
+                                   parse_dates=['date'], 
+                                   index_col='date')
         last_date = existing_data.index.max()
         
         # For SSR, fetch 120 days of historical data to ensure accurate calculations
@@ -224,25 +221,33 @@ def update_metric(endpoint, asset, metric_info, frequency="24h"):
             return
         
         # Check if any column contains dictionary-like data
-        dict_columns = [col for col in data.columns 
-                       if isinstance(data[col].iloc[0], dict)]
+        dict_columns = []
+        for col in data.columns:
+            # Find first non-null value to check if it's a dictionary
+            non_null_values = data[col].dropna()
+            if len(non_null_values) > 0:
+                first_valid_value = non_null_values.iloc[0]
+                if isinstance(first_valid_value, dict):
+                    dict_columns.append(col)
         
         if dict_columns:
             for col in dict_columns:
                 # Get all unique keys from the dictionaries
                 all_keys = set()
-                for d in data[col].dropna():
-                    all_keys.update(d.keys())
+                for _, value in data[col].dropna().items():
+                    if isinstance(value, dict):
+                        all_keys.update(value.keys())
                 
                 # Create separate dataframes for each key
                 for key in all_keys:
                     # Extract values for this key
                     key_data = pd.DataFrame({
                         'date': data.index,
-                        'value': data[col].apply(lambda x: x.get(key) if isinstance(x, dict) else None)
+                        f"{metric_name.lower()}_{key.replace('%', 'pct').replace('.', '_')}": 
+                            data[col].apply(lambda x: x.get(key) if isinstance(x, dict) else None)
                     }).set_index('date')
                     
-                    # Clean key for filename and column name
+                    # Clean key for filename
                     clean_key = key.replace('%', 'pct').replace('.', '_')
                     column_name = f"{metric_name.lower()}_{clean_key}"
                     
@@ -250,7 +255,12 @@ def update_metric(endpoint, asset, metric_info, frequency="24h"):
                     save_metric_data(key_data, column_name)
         else:
             # Regular single-value metric
+            # Rename the value column to match the metric name for consistency
+            if 'value' in data.columns:
+                data = data.rename(columns={'value': metric_name.lower()})
             save_metric_data(data)
+    else:
+        logging.warning(f"No data available for {metric_name} and asset {asset}")
 
 def main():
     """Main function to update all Glassnode metrics."""
