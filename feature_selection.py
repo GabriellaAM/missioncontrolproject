@@ -258,6 +258,32 @@ def generate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['price_sma7_ratio'] = df['Close'] / df['sma_7']
     df['price_sma30_ratio'] = df['Close'] / df['sma_30']
     df['price_sma365_ratio'] = df['Close'] / df['sma_365']
+
+    df['7day_low'] = df['Low'].rolling(window=7).min()
+    df['14day_low'] = df['Low'].rolling(window=14).min()
+    df['30day_low'] = df['Low'].rolling(window=30).min()
+
+    df['7day_high'] = df['High'].rolling(window=7).max()
+    df['14day_high'] = df['High'].rolling(window=14).max()
+    df['30day_high'] = df['High'].rolling(window=30).max()
+
+
+    df['support'] = (df['7day_low'] + df['14day_low'] + df['30day_low']) / 3
+    df['resistance'] = (df['7day_high'] + df['14day_high'] + df['30day_high']) / 3
+
+    df['support_relative'] = df['Close'] / df['support']
+    df['resistance_relative'] = df['Close'] / df['resistance'] 
+
+
+
+    # Calculate price equilibrium and normalize it using z-score
+    df['price_equilibrium'] = (df['support_relative'] + df['resistance_relative'])
+    # Use rolling window for z-score normalization to prevent lookahead bias
+    window_size = 7  # Using 30-day rolling window
+    df['price_equilibrium_zscore'] = (
+        df['price_equilibrium'] - df['price_equilibrium'].rolling(window=window_size).mean()
+    ) / df['price_equilibrium'].rolling(window=window_size).std()
+
     
     return df
 
