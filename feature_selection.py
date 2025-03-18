@@ -235,7 +235,7 @@ def generate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['bb_middle'] = bb.bollinger_mavg()
     df['bb_lower'] = bb.bollinger_lband()
     df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
-    
+
     # Average True Range
     df['atr'] = ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close']).average_true_range()
     

@@ -1,0 +1,102 @@
+{
+    "symbol": "bitcoin",
+    "interval": "1d",
+    "train_pct": 0.8,
+    "strategy": "long-only",
+    "confidence_threshold": 0,
+    "selected_features": [
+        "relative_unrealized_profit_mom7",
+        "rsi_14",
+        "pct_supply_in_profit_mom7",
+        "mvrv_mom7",
+        "price_sma30_ratio",
+        "pct_supply_in_profit_zscore",
+        "entity_adj_nupl_mom7",
+        "price_sma7_ratio",
+        "relative_unrealized_loss_zscore",
+        "sth_sopr_zscore",
+        "price_drawdown_relative",
+        "ma_cross_30_90",
+        "vix_ret",
+        "volume_ratio",
+        "ssr_oscillator_zscore"
+    ],
+    "training_date_range": {
+        "start": "2019-01-01",
+        "end": "2023-12-16"
+    },
+    "transition_probs": [
+        [
+            0.9346412050949978,
+            0.03663884883677721,
+            0.02871994606822494
+        ],
+        [
+            0.05000950455226716,
+            0.9256108426019289,
+            0.02437965284580392
+        ],
+        [
+            0.06264119196545011,
+            0.02898554195002965,
+            0.9083732660845202
+        ]
+    ],
+    "normalization": {
+        "means": {
+            "relative_unrealized_profit_mom7": 0.0007063503424026966,
+            "rsi_14": 52.84828412221297,
+            "pct_supply_in_profit_mom7": 0.0016414934880716317,
+            "mvrv_mom7": 0.0044584149032750615,
+            "price_sma30_ratio": 1.021602942972047,
+            "pct_supply_in_profit_zscore": 0.05542587915111043,
+            "entity_adj_nupl_mom7": 0.0027319462056343956,
+            "price_sma7_ratio": 1.004616288645889,
+            "relative_unrealized_loss_zscore": -0.11060112484921757,
+            "sth_sopr_zscore": 0.019521582512297932,
+            "price_drawdown_relative": -0.4974527304389335,
+            "ma_cross_30_90": 0.1049144119271121,
+            "vix_ret": 0.0013321221611639453,
+            "volume_ratio": 1.0374210394947503,
+            "ssr_oscillator_zscore": 0.021916180499158736
+        },
+        "stds": {
+            "relative_unrealized_profit_mom7": 0.02294242310961937,
+            "rsi_14": 14.300570907676892,
+            "pct_supply_in_profit_mom7": 0.05797833478924614,
+            "mvrv_mom7": 0.16710073372542059,
+            "price_sma30_ratio": 0.11514066835090214,
+            "pct_supply_in_profit_zscore": 1.2974584838861316,
+            "entity_adj_nupl_mom7": 0.063129629108398,
+            "price_sma7_ratio": 0.047642381664330886,
+            "relative_unrealized_loss_zscore": 1.379721620947271,
+            "sth_sopr_zscore": 1.0823227160094884,
+            "price_drawdown_relative": 0.20557343044433896,
+            "ma_cross_30_90": 0.9697257861918704,
+            "vix_ret": 0.05960995578142911,
+            "volume_ratio": 0.3854703663574937,
+            "ssr_oscillator_zscore": 1.2694406588176874
+        }
+    },
+    "classification_metrics": {
+        "confusion_matrix": {
+            "Long": [
+                10,
+                3
+            ],
+            "Flat": [
+                3,
+                11
+            ]
+        },
+        "sensitivity": {
+            "Long": 0.7692307692307693
+        },
+        "specificity": {
+            "Flat": 0.7857142857142857
+        },
+        "accuracy": 0.7777777777777778
+    },
+    "save_date": "2025-03-17",
+    "version": "20250317"
+}
