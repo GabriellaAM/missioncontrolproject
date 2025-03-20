@@ -236,6 +236,22 @@ def generate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['bb_lower'] = bb.bollinger_lband()
     df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
 
+    df['distance_from_upper_band'] = df['bb_upper'] / df['Close'] - 1
+    df['distance_from_lower_band'] = df['Close'] / df['bb_lower'] - 1
+
+    df['distance_from_upper_band_zscore'] = (
+        df['distance_from_upper_band'] - 
+        df['distance_from_upper_band'].rolling(window=20).mean()
+    ) / df['distance_from_upper_band'].rolling(window=20).std()
+
+    df['distance_from_lower_band_zscore'] = (
+        df['distance_from_lower_band'] - 
+        df['distance_from_lower_band'].rolling(window=20).mean()
+    ) / df['distance_from_lower_band'].rolling(window=20).std()
+
+    df['bzs'] = df['distance_from_upper_band_zscore'] - df['distance_from_lower_band_zscore']
+    df['bzsd'] = df['bzs'].pct_change()
+
     # Average True Range
     df['atr'] = ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close']).average_true_range()
     
@@ -271,8 +287,8 @@ def generate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['support'] = (df['7day_low'] + df['14day_low'] + df['30day_low']) / 3
     df['resistance'] = (df['7day_high'] + df['14day_high'] + df['30day_high']) / 3
 
-    df['support_relative'] = df['Close'] / df['support']
-    df['resistance_relative'] = df['Close'] / df['resistance'] 
+    df['support_relative'] =  df['support'] / df['Close']
+    df['resistance_relative'] =  df['Close'] / df['resistance']
 
 
 
