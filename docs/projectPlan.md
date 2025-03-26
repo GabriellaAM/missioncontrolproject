@@ -76,7 +76,21 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 - Implemented Kalman filtering for price smoothing
 - Created visualization tools for regime analysis and performance metrics
 
-### **Step 2.5: Model Maintenance & Evolution**
+### **Step 2.5: Advanced Trading Strategies**
+- **MarkovKAMA Implementation:** ✅
+  - Implemented Markov Switching Regression (MSR) for volatility regime detection
+  - Implemented Kaufman's Adaptive Moving Average (KAMA) for trend identification
+  - Combined MSR and KAMA to classify market into four distinct regimes:
+    - Bullish Low Volatility (Buy signal)
+    - Bullish High Volatility
+    - Bearish Low Volatility
+    - Bearish High Volatility (Sell signal)
+  - Developed trading strategy based on regime classification
+  - Added performance metrics calculation and visualization tools
+  - Created parameter optimization framework using Hyperopt
+  - Added model saving and loading functionality
+
+### **Step 2.6: Model Maintenance & Evolution**
 - **Regular Retraining Pipeline:**
   - Implement automated feature importance analysis
   - Create scheduled retraining triggers based on performance metrics
@@ -84,7 +98,7 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
   - Add automated model performance monitoring
   - Build A/B testing framework for new features
 
-### **Step 2.6: Finalizing RORO Classification**
+### **Step 2.7: Finalizing RORO Classification**
 - Establish a method to output a single numeric regime probability (e.g., through a weighted average of signals).
 - Label market states clearly (e.g., Bull/High Vol, Bull/Low Vol, Bear/High Vol, Bear/Low Vol).
 - Validate the predictive power of the composite signals against historical turning points.
@@ -144,4 +158,10 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 
 ---
 
-This update establishes a robust foundation for our RORO decision support system by integrating an ensemble Bayesian HMM approach (as outlined in [Andrew Hyde's article](https://andrew-hyde.medium.com/the-ensemble-of-hidden-markov-bayesian-models-for-regime-switching-in-equity-markets-a2a7dc109a39)), along with advanced filtering and multi-model fusion. While the preliminary results are very promising, these techniques will further enhance the system's predictive power, smooth regime transitions, and improve overall decision-making reliability.
+This update establishes a robust foundation for our RORO decision support system by integrating various approaches, including:
+
+1. Ensemble Bayesian HMM approach (as outlined in [Andrew Hyde's article](https://andrew-hyde.medium.com/the-ensemble-of-hidden-markov-bayesian-models-for-regime-switching-in-equity-markets-a2a7dc109a39)), with advanced filtering and multi-model fusion.
+
+2. Markov Switching with Kaufman's Adaptive Moving Average (KAMA+MSR) as described by Piotr Pomorski, providing a refined approach to regime classification and trading strategy implementation.
+
+These techniques enhance the system's predictive power, smooth regime transitions, and improve overall decision-making reliability by providing multiple perspectives on market regimes.

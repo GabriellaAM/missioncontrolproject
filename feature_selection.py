@@ -300,6 +300,51 @@ def generate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['price_equilibrium'] - df['price_equilibrium'].rolling(window=window_size).mean()
     ) / df['price_equilibrium'].rolling(window=window_size).std()
 
+    # Cyclical encoding of time features
+    df['day_of_week_sin'] = np.sin(df.index.dayofweek * (2 * np.pi / 7))
+    df['day_of_week_cos'] = np.cos(df.index.dayofweek * (2 * np.pi / 7))
+    df['month_sin'] = np.sin((df.index.month-1) * (2 * np.pi / 12))
+    df['month_cos'] = np.cos((df.index.month-1) * (2 * np.pi / 12))
+    
+    # Regime change indicators
+    df['regime_rsi'] = np.where(df['rsi_14'] > 70, 1, np.where(df['rsi_14'] < 30, -1, 0))
+    df['regime_bb'] = np.where(df['Close'] > df['bb_upper'], 1, 
+                              np.where(df['Close'] < df['bb_lower'], -1, 0))
+
+    # Price momentum regimes
+    df['price_regime'] = np.where(
+        df['Close'] > df['sma_30'] * 1.1, 2,  # Strong bull
+        np.where(
+            df['Close'] > df['sma_30'], 1,    # Mild bull
+            np.where(
+                df['Close'] < df['sma_30'] * 0.9, -2,  # Strong bear
+                np.where(
+                    df['Close'] < df['sma_30'], -1,    # Mild bear
+                    0  # Neutral
+                )
+            )
+        )
+    )
+    
+    # Add interaction terms between important features
+    # Example (would need to be added where both features are available):
+    df['rsi_vol_interaction'] = df['rsi_14'] * df['realized_vol_14']
+    df['price_volume_correlation'] = df['Close'].rolling(window=30).corr(df['Volume'])
+    
+    # Additional oscillators
+    df['cci_20'] = ta.trend.CCIIndicator(df['High'], df['Low'], df['Close'], window=20).cci()
+    df['williams_r_14'] = ta.momentum.WilliamsRIndicator(df['High'], df['Low'], df['Close'], lbp=14).williams_r()
+
+    # Ichimoku Cloud components
+    ichimoku = ta.trend.IchimokuIndicator(df['High'], df['Low'])
+    df['ichimoku_a'] = ichimoku.ichimoku_a()
+    df['ichimoku_b'] = ichimoku.ichimoku_b()
+    df['ichimoku_conversion_line'] = ichimoku.ichimoku_conversion_line()
+    df['ichimoku_base_line'] = ichimoku.ichimoku_base_line()
+    
+    # Volatility ratios
+    df['vol_ratio_7_30'] = df['realized_vol_7'] / df['realized_vol_30']
+    df['high_low_vol'] = (df['High'] - df['Low']).rolling(window=14).std() / df['Close']
     
     return df
 
@@ -469,6 +514,13 @@ def derive_onchain_features(df: pd.DataFrame, onchain_columns: List[str]) -> pd.
         # Create z-scores
         df[f'{col}_zscore'] = (df[col] - df[f'{col}_ma30']) / df[f'{col}_std30']
 
+        # Log transformations for highly skewed features
+        df[f'{col}_log'] = np.log1p(df[col] - df[col].min() + 1e-8)  # Safe log
+
+        # Power transformations
+        df[f'{col}_squared'] = df[col] ** 2
+        df[f'{col}_sqrt'] = np.sqrt(np.abs(df[col])) * np.sign(df[col])
+
     logging.info(f"Processed {len(processed_columns)} on-chain metrics out of {len(onchain_columns)} total")
     return df
 
@@ -628,6 +680,13 @@ def derive_macro_features(df: pd.DataFrame, macro_columns: List[str]) -> pd.Data
         
         # Acceleration
         df[f'{col}_acceleration'] = df[f'{col}_momentum'].diff()
+
+        # Log transformations for highly skewed features
+        df[f'{col}_log'] = np.log1p(df[col] - df[col].min() + 1e-8)  # Safe log
+
+        # Power transformations
+        df[f'{col}_squared'] = df[col] ** 2
+        df[f'{col}_sqrt'] = np.sqrt(np.abs(df[col])) * np.sign(df[col])
     
     return df
 

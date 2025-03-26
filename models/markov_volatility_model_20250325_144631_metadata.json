@@ -1,0 +1,23 @@
+{
+    "saved_date": "2025-03-25",
+    "data_path": "data/micro/candleData/bitcoin_candles.csv",
+    "train_test_split": 0.75,
+    "init_date": "2014-01-01",
+    "embargo_pct": 0.01,
+    "data_range": {
+        "start": "2014-01-01",
+        "end": "2025-03-24"
+    },
+    "train_range": {
+        "start": "2014-01-01",
+        "end": "2022-06-02"
+    },
+    "test_range": {
+        "start": "2022-06-03",
+        "end": "2025-03-24"
+    },
+    "n_regimes": 2,
+    "total_records": 4101,
+    "train_records": 3075,
+    "test_records": 1026
+}
