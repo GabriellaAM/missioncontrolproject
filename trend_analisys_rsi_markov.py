@@ -220,7 +220,7 @@ class TrendAnalyzer:
             return "Weak Bull"
         elif avg_pos <= 25:
             return "Strong Bear"
-        elif avg_pos <= 40:
+        elif avg_pos < 50:
             return "Weak Bear"
         return "Neutral"
 
@@ -235,7 +235,7 @@ class TrendAnalyzer:
             return "Weak Bull"
         elif overall_pos <= 25:
             return "Strong Bear"
-        elif overall_pos <= 40:
+        elif overall_pos < 50:
             return "Weak Bear"
         return "Neutral"
 
@@ -675,7 +675,7 @@ class TrendAnalyzer:
         
         start_date = pd.to_datetime(start_date)
         end_date = pd.to_datetime(end_date)
-        dates = pd.date_range(start_date, end_date, freq='D')
+        dates = pd.date_range(start_date, end_date, freq='D', inclusive='both')  # Add inclusive='both'
         
         asset_returns = {}
         for asset_id in self.asset_ids:
@@ -703,12 +703,13 @@ class TrendAnalyzer:
         signal_data = {
             'date': [],
             'asset': [],
-            'trend_signal': [],
+            'usd_trend_signal': [],  # Changed from trend_signal
+            'btc_trend_signal': [],  # Added new field
             'rsi_usd_signal': [],
             'rsi_btc_signal': [],
             'volatility_signal': [],
             'ssr_signal': [],
-            'ssr_gate': [],  # Add SSR gate tracking
+            'ssr_gate': [],
             'btc_gate': [],
             'combined_signal': [],
             'final_decision': []
@@ -747,7 +748,6 @@ class TrendAnalyzer:
                 
                 latest_btc = btc_date_data.iloc[-1]
                 usd_condition = all(str(latest_btc.get(trend_type, 'N/A')) in allowed for trend_type, allowed in usd_conditions.items()) if usd_conditions else True
-                btc_condition = all(str(latest_btc.get(trend_type, 'N/A')) in allowed for trend_type, allowed in btc_conditions.items()) if btc_conditions else True
                 rsi_usd_signal = latest_btc.get('RSI_Signal_close', 0) if rsi_conditions_usd else 1
                 
                 # Get volatility signal if requested
@@ -768,18 +768,14 @@ class TrendAnalyzer:
                     btc_gate_passed = all(btc_signals[trend_type][date] for trend_type in btc_trend_gating)
                 btc_gate_multiplier = 1 if btc_gate_passed else 0
                 
-                # Calculate base signal from trend conditions
-                # Only contribute trend signal if specific conditions were set
-                if usd_conditions or btc_conditions:
-                    base_trend_signal = 1 if usd_condition and btc_condition else -1
-                else:
-                    base_trend_signal = 0  # No trend signal if no conditions specified
+                # Calculate USD trend signal
+                usd_trend_signal = 1 if usd_condition else -1 if usd_conditions else 0
                 
-                # Calculate overall signal with all components
+                # Calculate combined signal with all components
                 signal_components = []
                 
                 # Add trend signal only if conditions were specified and passed
-                if (usd_conditions or btc_conditions) and base_trend_signal > 0:
+                if usd_conditions and usd_trend_signal > 0:
                     signal_components.append(1)  # Trend conditions passed
                     
                 # Add RSI signal if required
@@ -796,7 +792,6 @@ class TrendAnalyzer:
                     signal_components.append(ssr_signal)
                 
                 # Calculate combined signal with BTC gating as multiplier
-                # Only apply gate multiplier if gating conditions were specified
                 combined_signal = sum(signal_components)
                 if btc_trend_gating:
                     combined_signal *= btc_gate_multiplier
@@ -806,7 +801,8 @@ class TrendAnalyzer:
                 # Record signals - only include signals that are actually used
                 signal_data['date'].append(date)
                 signal_data['asset'].append('BTC')
-                signal_data['trend_signal'].append(base_trend_signal if (usd_conditions or btc_conditions) else None)
+                signal_data['usd_trend_signal'].append(usd_trend_signal if usd_conditions else None)
+                signal_data['btc_trend_signal'].append(None)  # Always None for BTC-only portfolios
                 signal_data['rsi_usd_signal'].append(rsi_usd_signal if rsi_conditions_usd else None)
                 signal_data['rsi_btc_signal'].append(None)  # Not applicable for BTC
                 signal_data['volatility_signal'].append(volatility_signal if use_volatility_filter else None)
@@ -816,7 +812,7 @@ class TrendAnalyzer:
                 signal_data['combined_signal'].append(combined_signal)
                 signal_data['final_decision'].append(1 if current_signal else 0)
                 
-                self.logger.debug(f"{date}: BTC signal components: trend={base_trend_signal}, " + 
+                self.logger.debug(f"{date}: BTC signal components: trend={usd_trend_signal}, " + 
                                (f"RSI={rsi_signal}, " if rsi_conditions_usd else "") + 
                                (f"volatility={volatility_signal}, " if use_volatility_filter else "") + 
                                (f"SSR={ssr_signal}, " if use_ssr_signal else "") +
@@ -849,7 +845,7 @@ class TrendAnalyzer:
                 assets_held[date] = 1 if btc_position else 0
                 transaction_costs[date] = day_transaction_cost
                 portfolio_values[date] = btc_values[date] if btc_position else (portfolio_values[dates[i-1]] - day_transaction_cost)
-        
+        # ALTCOIN PORTFOLIO #
         else:
             altcoin_positions = {asset_id: False for asset_id in self.asset_ids if asset_id != 'bitcoin'}
             altcoin_values = {asset_id: 0 for asset_id in self.asset_ids if asset_id != 'bitcoin'}
@@ -906,19 +902,18 @@ class TrendAnalyzer:
                     rsi_usd_signal = latest.get('RSI_Signal_close', 0) if rsi_conditions_usd else 1
                     rsi_btc_signal = latest.get(f'RSI_Signal_{asset_id}_btc', 0) if rsi_conditions_btc else 1
                     
-                    # Calculate trend signal (1 or 0)
-                    # Only contribute trend signal if specific conditions were set
-                    if usd_conditions or btc_conditions:
-                        base_trend_signal = 1 if usd_condition and btc_condition else 0
-                    else:
-                        base_trend_signal = 0  # No trend signal if no conditions specified
+                    # Calculate USD and BTC trend signals separately
+                    usd_trend_signal = 1 if usd_condition else -1 if usd_conditions else 0
+                    btc_trend_signal = 1 if btc_condition else -1 if btc_conditions else 0
                     
                     # Calculate combined signal
                     signal_components = []
                     
-                    # Only add trend signal if conditions were specified and passed
-                    if (usd_conditions or btc_conditions) and base_trend_signal > 0:
-                        signal_components.append(1)  # Base trend signal
+                    # Add trend signals if conditions were specified
+                    if usd_conditions:
+                        signal_components.append(usd_trend_signal)  # Add USD trend signal regardless of sign
+                    if btc_conditions:
+                        signal_components.append(btc_trend_signal)  # Add BTC trend signal regardless of sign
                     
                     # Add RSI signals if enabled
                     if rsi_conditions_usd:
@@ -934,8 +929,12 @@ class TrendAnalyzer:
                     if use_ssr_signal:
                         signal_components.append(btc_ssr_signal)
                     
-                    # Calculate combined signal 
-                    combined_signal = sum(signal_components)
+                    # Calculate percentage of positive signals
+                    if signal_components:  # Only calculate if we have signals
+                        positive_signals = sum(1 for signal in signal_components if signal > 0)
+                        combined_signal = (positive_signals / len(signal_components)) * 100  # Convert to percentage
+                    else:
+                        combined_signal = 0
                     
                     # Apply gates
                     # Apply BTC gate multiplier if BTC gating is enabled
@@ -949,7 +948,8 @@ class TrendAnalyzer:
                     # Record signals - only include signals that are actually used
                     signal_data['date'].append(date)
                     signal_data['asset'].append(self._get_ticker_from_id(asset_id))
-                    signal_data['trend_signal'].append(base_trend_signal if (usd_conditions or btc_conditions) else None)
+                    signal_data['usd_trend_signal'].append(usd_trend_signal if usd_conditions else None)
+                    signal_data['btc_trend_signal'].append(btc_trend_signal if btc_conditions else None)
                     signal_data['rsi_usd_signal'].append(rsi_usd_signal if rsi_conditions_usd else None)
                     signal_data['rsi_btc_signal'].append(rsi_btc_signal if rsi_conditions_btc else None)
                     signal_data['volatility_signal'].append(btc_volatility_signal if use_volatility_filter else None)
@@ -957,21 +957,24 @@ class TrendAnalyzer:
                     signal_data['ssr_gate'].append(ssr_gate_multiplier if use_ssr_gate else None)
                     signal_data['btc_gate'].append(btc_gate_multiplier if btc_trend_gating else None)
                     signal_data['combined_signal'].append(combined_signal)
-                    signal_data['final_decision'].append(1 if combined_signal > 0 else 0)
+                    final_decision = 1 if combined_signal > 50 else 0
+                    signal_data['final_decision'].append(final_decision)
                     
-                    # Only include assets with positive combined signal
-                    if combined_signal > 0:
+                    # Add asset to eligible assets if final decision is 1
+                    if final_decision == 1:
                         current_eligible_assets.append(asset_id)
                         signal_desc = f"trend={'pass' if usd_condition and btc_condition else 'fail'}, " + \
-                                      (f"RSI USD={rsi_usd_signal}, " if rsi_conditions_usd else "") + \
-                                      (f"RSI BTC={rsi_btc_signal}, " if rsi_conditions_btc else "") + \
-                                      (f"BTC vol={btc_volatility_signal}, " if use_volatility_filter else "") + \
-                                      (f"SSR signal={btc_ssr_signal}, " if use_ssr_signal else "") + \
-                                      (f"SSR gate={ssr_gate_multiplier}, " if use_ssr_gate else "") + \
-                                      (f"BTC gate={btc_gate_multiplier}, " if btc_trend_gating else "")
-                        self.logger.debug(f"{date}: {asset_id} signal components: {signal_desc}combined={combined_signal}")
+                                    (f"RSI USD={rsi_usd_signal}, " if rsi_conditions_usd else "") + \
+                                    (f"RSI BTC={rsi_btc_signal}, " if rsi_conditions_btc else "") + \
+                                    (f"BTC vol={btc_volatility_signal}, " if use_volatility_filter else "") + \
+                                    (f"SSR signal={btc_ssr_signal}, " if use_ssr_signal else "") + \
+                                    (f"SSR gate={ssr_gate_multiplier}, " if use_ssr_gate else "") + \
+                                    (f"BTC gate={btc_gate_multiplier}, " if btc_trend_gating else "") + \
+                                    f"combined={combined_signal:.2f}%"
+                        self.logger.debug(f"{date}: {asset_id} signal components: {signal_desc}")
                 
-                eligible_assets = previous_eligible_assets if i > 1 else []
+                # Update eligible assets list
+                eligible_assets = current_eligible_assets.copy()
                 num_eligible = len(eligible_assets)
                 assets_held[date] = num_eligible
                 current_portfolio = sorted([self._get_ticker_from_id(asset_id) for asset_id in eligible_assets])
