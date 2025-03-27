@@ -204,23 +204,22 @@ class TrendAnalyzer:
     def classify_trend(self, mas, rocs, data, suffix):
         n_mas = len(mas.dropna())
         n_rocs = len(rocs.dropna())
-        if n_mas == 0 or n_rocs == 0:
+        
+        # If we don't have enough data to calculate trends, return Neutral
+        if n_rocs == 0:
             return "Neutral"
-        pos_mas = sum(
-            1 for col in mas.index 
-            if not np.isnan(data[f'EMA_{suffix}_{col.split("_")[-1]}'].iloc[-1]) 
-            and not np.isnan(data[f'EMA_{suffix}_{col.split("_")[-1]}'].iloc[-2]) 
-            and data[f'EMA_{suffix}_{col.split("_")[-1]}'].iloc[-1] > data[f'EMA_{suffix}_{col.split("_")[-1]}'].iloc[-2]
-        ) / n_mas * 100
+        
+        # Use only RoC values to determine trend (ignore EMA metrics)
         pos_rocs = sum(1 for roc in rocs if not np.isnan(roc) and roc > 0) / n_rocs * 100
-        avg_pos = (pos_mas + pos_rocs) / 2
-        if avg_pos >= 75:
+        
+        # Classify trend based solely on RoC values
+        if pos_rocs >= 75:
             return "Strong Bull"
-        elif avg_pos >= 50:
+        elif pos_rocs >= 50:
             return "Weak Bull"
-        elif avg_pos <= 25:
+        elif pos_rocs <= 25:
             return "Strong Bear"
-        elif avg_pos < 50:
+        elif pos_rocs < 50:
             return "Weak Bear"
         return "Neutral"
 
@@ -547,9 +546,10 @@ class TrendAnalyzer:
             return 0  # Neutral on error
 
     def create_portfolio(self, portfolio_name, btc_trend_gating=None, usd_conditions=None, btc_conditions=None, 
-                     rsi_conditions_usd=False, rsi_conditions_btc=False, btc_only=False, 
-                     use_volatility_filter=False, volatility_weight=1.0, use_ssr_signal=False,
-                     use_ssr_gate=False):
+                         rsi_conditions_usd=False, rsi_conditions_btc=False, btc_only=False, 
+                         use_volatility_filter=False, volatility_weight=1.0, use_ssr_signal=False,
+                         use_ssr_gate=False, btc_rsi_gate=False, use_btc_rsi_signal=False,
+                         follow_portfolio=None):
         """
         Create a new portfolio with specified trend, RSI, volatility and SSR conditions.
         
@@ -565,6 +565,9 @@ class TrendAnalyzer:
             volatility_weight (float): Weight of volatility signal (1.0 = equal to other signals)
             use_ssr_signal (bool): If True, include SSR oscillator signal in decision making
             use_ssr_gate (bool): If True, use SSR signal as a gate rather than an additive signal
+            btc_rsi_gate (bool): If True, use BTC's RSI signal as a gate for altcoin selection
+            use_btc_rsi_signal (bool): If True, include BTC's RSI signal as a component (not a gate)
+            follow_portfolio (str, optional): Name of another portfolio to follow signals from
         """
         if not self.static_computed:
             self.logger.error("Static computations not performed.")
@@ -586,10 +589,26 @@ class TrendAnalyzer:
         if not isinstance(use_ssr_gate, bool):
             raise ValueError("use_ssr_gate must be boolean")
             
+        if not isinstance(btc_rsi_gate, bool):
+            raise ValueError("btc_rsi_gate must be boolean")
+            
+        if not isinstance(use_btc_rsi_signal, bool):
+            raise ValueError("use_btc_rsi_signal must be boolean")
+            
+        # Validate that the followed portfolio exists
+        if follow_portfolio is not None and follow_portfolio not in self.portfolios:
+            self.logger.error(f"Portfolio '{follow_portfolio}' does not exist. Cannot follow.")
+            raise ValueError(f"Portfolio '{follow_portfolio}' not found.")
+            
         # Cannot use SSR as both signal and gate
         if use_ssr_signal and use_ssr_gate:
             self.logger.warning("Cannot use SSR as both signal and gate. Using as gate only.")
             use_ssr_signal = False
+            
+        # Cannot use BTC RSI as both signal and gate
+        if use_btc_rsi_signal and btc_rsi_gate:
+            self.logger.warning("Cannot use BTC RSI as both signal and gate. Using as gate only.")
+            use_btc_rsi_signal = False
             
         if not isinstance(volatility_weight, (int, float)) or volatility_weight < 0:
             raise ValueError("volatility_weight must be a non-negative number")
@@ -605,6 +624,9 @@ class TrendAnalyzer:
             'volatility_weight': volatility_weight,
             'use_ssr_signal': use_ssr_signal,
             'use_ssr_gate': use_ssr_gate,
+            'btc_rsi_gate': btc_rsi_gate,
+            'use_btc_rsi_signal': use_btc_rsi_signal,
+            'follow_portfolio': follow_portfolio,
             'creation_date': datetime.now(),
             'backtest_results': None
         }
@@ -614,9 +636,11 @@ class TrendAnalyzer:
                         f"RSI USD={rsi_conditions_usd}, RSI BTC={rsi_conditions_btc}, "
                         f"volatility filter={use_volatility_filter}, volatility weight={volatility_weight}, "
                         f"SSR signal={use_ssr_signal}, SSR gate={use_ssr_gate}, "
+                        f"BTC RSI gate={btc_rsi_gate}, BTC RSI signal={use_btc_rsi_signal}, "
+                        f"Follow portfolio={follow_portfolio}, "
                         f"BTC only={btc_only}")
         return portfolio_name
-        
+
     def list_portfolios(self):
         """Return a list of all stored portfolios with their criteria"""
         portfolio_list = []
@@ -633,6 +657,9 @@ class TrendAnalyzer:
                 'volatility_weight': details.get('volatility_weight', 1.0),
                 'use_ssr_signal': details.get('use_ssr_signal', False),
                 'use_ssr_gate': details.get('use_ssr_gate', False),
+                'btc_rsi_gate': details.get('btc_rsi_gate', False),
+                'use_btc_rsi_signal': details.get('use_btc_rsi_signal', False),
+                'follow_portfolio': details.get('follow_portfolio', None),
                 'creation_date': details['creation_date'],
                 'has_backtest': details['backtest_results'] is not None
             })
@@ -656,7 +683,35 @@ class TrendAnalyzer:
             
         return self.portfolios[portfolio_name]
 
-    def backtest_portfolio(self, portfolio_name, start_date, end_date, initial_capital=1000, alt_cost=0.005, btc_cost=0.001):
+    def _get_ticker_from_id(self, asset_id):
+        """
+        Convert an asset ID back to its ticker symbol.
+        
+        Args:
+            asset_id (str): The asset ID to convert
+            
+        Returns:
+            str: The corresponding ticker symbol
+        """
+        # First check if it's in our reverse mapping
+        reverse_mapping = {v: k for k, v in self.ticker_mapping.items()}
+        return reverse_mapping.get(asset_id, asset_id.upper())
+
+    def backtest_portfolio(self, portfolio_name, start_date, end_date, initial_capital=10000, alt_cost=0.005, btc_cost=0.001, signal_threshold=75):
+        """
+        Backtest a portfolio strategy. For BTC-only portfolios, this implements trend following.
+        For altcoin portfolios, this tracks signals and decisions but does not manage a portfolio
+        (use plot_individual_asset_performance for that).
+        
+        Args:
+            portfolio_name (str): Name of the portfolio to backtest
+            start_date (str): Start date in YYYY-MM-DD format
+            end_date (str): End date in YYYY-MM-DD format
+            initial_capital (float): Initial capital amount
+            alt_cost (float): Transaction cost for altcoin trades (as decimal)
+            btc_cost (float): Transaction cost for BTC trades (as decimal)
+            signal_threshold (float): Threshold for combined signal to generate buy decision (default: 75)
+        """
         if portfolio_name not in self.portfolios:
             self.logger.error(f"Portfolio '{portfolio_name}' does not exist.")
             raise ValueError(f"Portfolio '{portfolio_name}' not found.")
@@ -672,53 +727,101 @@ class TrendAnalyzer:
         volatility_weight = portfolio.get('volatility_weight', 1.0)
         use_ssr_signal = portfolio.get('use_ssr_signal', False)
         use_ssr_gate = portfolio.get('use_ssr_gate', False)
+        btc_rsi_gate = portfolio.get('btc_rsi_gate', False)
+        use_btc_rsi_signal = portfolio.get('use_btc_rsi_signal', False)
+        follow_portfolio = portfolio.get('follow_portfolio', None)
         
         start_date = pd.to_datetime(start_date)
         end_date = pd.to_datetime(end_date)
-        dates = pd.date_range(start_date, end_date, freq='D', inclusive='both')  # Add inclusive='both'
+        dates = pd.date_range(start_date, end_date, freq='D', inclusive='both')
         
-        asset_returns = {}
-        for asset_id in self.asset_ids:
-            if asset_id == 'bitcoin' and not btc_only:
-                continue
-            raw_data = self.asset_data.get(asset_id, {}).get('raw_data', pd.DataFrame())
-            if not raw_data.empty:
-                price_series = raw_data.set_index('date')['close'].reindex(dates, method='ffill')
-                asset_returns[asset_id] = price_series.pct_change().fillna(0)
-        
-        portfolio_df = pd.DataFrame(index=dates)
-        btc_data = self.asset_data.get('bitcoin', {}).get('classified_data', pd.DataFrame())
-        btc_signals = {}
-        if btc_trend_gating:
-            for trend_type, allowed_trends in btc_trend_gating.items():
-                trend_series = btc_data.set_index('date')[trend_type].reindex(dates, method='ffill')
-                btc_signals[trend_type] = trend_series.isin(allowed_trends)
-        
-        portfolio_values = {date: initial_capital for date in dates}
-        portfolio_composition = {date: [] for date in dates}
-        transaction_costs = {date: 0 for date in dates}
-        assets_held = {date: 0 for date in dates}
+        # Get signals from followed portfolio if applicable
+        followed_portfolio_signals = {}
+        if follow_portfolio is not None:
+            # Check if the followed portfolio has backtest results for the date range
+            if follow_portfolio not in self.portfolios:
+                self.logger.error(f"Portfolio '{follow_portfolio}' does not exist. Cannot follow.")
+                raise ValueError(f"Portfolio '{follow_portfolio}' not found.")
+                
+            followed_backtest = self.portfolios[follow_portfolio].get('backtest_results')
+            if followed_backtest is None:
+                self.logger.info(f"Running backtest for followed portfolio '{follow_portfolio}'")
+                # Run backtest for the followed portfolio first
+                self.backtest_portfolio(
+                    portfolio_name=follow_portfolio, 
+                    start_date=start_date, 
+                    end_date=end_date,
+                    initial_capital=initial_capital, 
+                    alt_cost=alt_cost, 
+                    btc_cost=btc_cost,
+                    signal_threshold=signal_threshold
+                )
+                followed_backtest = self.portfolios[follow_portfolio].get('backtest_results')
+                
+            # Extract signals from the followed portfolio
+            followed_signals_df = followed_backtest['signals_df']
+            # If it's a BTC-only portfolio, extract decisions for BTC
+            if self.portfolios[follow_portfolio]['btc_only']:
+                btc_signals = followed_signals_df[followed_signals_df['asset'] == 'BTC']
+                for idx, row in btc_signals.iterrows():
+                    followed_portfolio_signals[idx.to_pydatetime()] = row['final_decision']
+                self.logger.info(f"Using signals from BTC-only portfolio '{follow_portfolio}'")
+            # Otherwise extract all asset decisions
+            else:
+                for idx, row in followed_signals_df.iterrows():
+                    date_key = idx.to_pydatetime()
+                    if date_key not in followed_portfolio_signals:
+                        followed_portfolio_signals[date_key] = {}
+                    followed_portfolio_signals[date_key][row['asset']] = row['final_decision']
+                self.logger.info(f"Using signals from altcoin portfolio '{follow_portfolio}'")
         
         # Initialize signal trackers
         signal_data = {
             'date': [],
             'asset': [],
-            'usd_trend_signal': [],  # Changed from trend_signal
-            'btc_trend_signal': [],  # Added new field
+            'usd_trend_signal': [],
+            'btc_trend_signal': [],
             'rsi_usd_signal': [],
             'rsi_btc_signal': [],
             'volatility_signal': [],
             'ssr_signal': [],
             'ssr_gate': [],
             'btc_gate': [],
+            'btc_rsi_gate': [],
+            'btc_rsi_signal': [],
+            'followed_portfolio_signal': [],
             'combined_signal': [],
             'final_decision': []
         }
         
+        # Get BTC data and calculate BTC signals if needed for gating
+        btc_signals = {}
+        if btc_trend_gating:
+            btc_classified = self.asset_data['bitcoin']['classified_data']
+            btc_signals = {trend_type: {} for trend_type in btc_trend_gating}
+            for date in dates:
+                btc_date_data = btc_classified[btc_classified['date'] <= date]
+                if not btc_date_data.empty:
+                    latest_btc = btc_date_data.iloc[-1]
+                    for trend_type in btc_trend_gating:
+                        btc_signals[trend_type][date] = str(latest_btc.get(trend_type, 'N/A')) in btc_trend_gating[trend_type]
+        
+        # Get BTC RSI signals if needed for RSI gating or signaling
+        btc_rsi_signals = {}
+        if btc_rsi_gate or use_btc_rsi_signal:
+            btc_classified = self.asset_data['bitcoin']['classified_data']
+            for date in dates:
+                btc_date_data = btc_classified[btc_classified['date'] <= date]
+                if not btc_date_data.empty:
+                    latest_btc = btc_date_data.iloc[-1]
+                    # Store the actual RSI signal value (1 or -1) for use as a signal component
+                    btc_rsi_signals[date] = latest_btc.get('RSI_Signal_close', 0)
+        
         if btc_only:
             btc_position = False
-            btc_value = 0       
-            btc_values = {date: 0 for date in dates}
+            btc_value = initial_capital  # Initialize with initial capital
+            btc_values = pd.Series(index=dates, dtype=float)  # Use Series instead of dict for consistency
+            btc_values.iloc[0] = initial_capital  # Set initial capital
             btc_returns = self.asset_data['bitcoin']['raw_data'].set_index('date')['close'].pct_change().reindex(dates, fill_value=0)
             previous_signal = False
             
@@ -726,12 +829,7 @@ class TrendAnalyzer:
                 day_transaction_cost = 0
                 if i == 0:
                     btc_position = False
-                    btc_values[date] = 0
-                    portfolio_composition[date] = []
-                    transaction_costs[date] = 0
-                    assets_held[date] = 0
-                    portfolio_values[date] = initial_capital
-                    continue
+                    continue  # Skip first day but keep initial capital
                 
                 btc_gate_passed = True
                 if btc_trend_gating:
@@ -740,10 +838,7 @@ class TrendAnalyzer:
                 btc_classified = self.asset_data['bitcoin']['classified_data']
                 btc_date_data = btc_classified[btc_classified['date'] <= date]
                 if btc_date_data.empty:
-                    btc_values[date] = btc_values[dates[i-1]]
-                    portfolio_values[date] = portfolio_values[dates[i-1]]
-                    portfolio_composition[date] = []
-                    assets_held[date] = 0
+                    btc_values.iloc[i] = btc_values.iloc[i-1]  # Use iloc for Series
                     continue
                 
                 latest_btc = btc_date_data.iloc[-1]
@@ -754,18 +849,13 @@ class TrendAnalyzer:
                 volatility_signal = 0
                 if use_volatility_filter and self.markov_model is not None:
                     volatility_signal = self._get_volatility_state(date)
-                    self.logger.debug(f"{date}: BTC volatility state: {volatility_signal}")
                 
                 # Get SSR signal if requested
                 ssr_signal = 0
                 if use_ssr_signal:
                     ssr_signal = self._get_ssr_signal(date)
-                    self.logger.debug(f"{date}: BTC SSR signal: {ssr_signal}")
                 
                 # Calculate BTC gate (0 or 1 multiplier)
-                btc_gate_passed = True
-                if btc_trend_gating:
-                    btc_gate_passed = all(btc_signals[trend_type][date] for trend_type in btc_trend_gating)
                 btc_gate_multiplier = 1 if btc_gate_passed else 0
                 
                 # Calculate USD trend signal
@@ -796,9 +886,17 @@ class TrendAnalyzer:
                 if btc_trend_gating:
                     combined_signal *= btc_gate_multiplier
                 
-                current_signal = combined_signal > 0
+                # Get signal from followed portfolio if applicable
+                followed_portfolio_signal = None
+                if follow_portfolio is not None and date in followed_portfolio_signals:
+                    followed_portfolio_signal = followed_portfolio_signals[date]
+                    # Override combined signal with followed portfolio signal if following
+                    # This ensures we make the same decisions as the followed portfolio
+                    current_signal = followed_portfolio_signal > 0
+                else:
+                    current_signal = combined_signal > 0
                 
-                # Record signals - only include signals that are actually used
+                # Record signals
                 signal_data['date'].append(date)
                 signal_data['asset'].append('BTC')
                 signal_data['usd_trend_signal'].append(usd_trend_signal if usd_conditions else None)
@@ -809,19 +907,16 @@ class TrendAnalyzer:
                 signal_data['ssr_signal'].append(ssr_signal if use_ssr_signal else None)
                 signal_data['ssr_gate'].append(None)  # Not applicable for BTC
                 signal_data['btc_gate'].append(btc_gate_multiplier if btc_trend_gating else None)
+                signal_data['btc_rsi_gate'].append(None)  # Not applicable for BTC-only portfolio
+                signal_data['btc_rsi_signal'].append(None)  # Not applicable for BTC-only portfolio
+                signal_data['followed_portfolio_signal'].append(followed_portfolio_signal)
                 signal_data['combined_signal'].append(combined_signal)
                 signal_data['final_decision'].append(1 if current_signal else 0)
-                
-                self.logger.debug(f"{date}: BTC signal components: trend={usd_trend_signal}, " + 
-                               (f"RSI={rsi_signal}, " if rsi_conditions_usd else "") + 
-                               (f"volatility={volatility_signal}, " if use_volatility_filter else "") + 
-                               (f"SSR={ssr_signal}, " if use_ssr_signal else "") +
-                               f"gate={btc_gate_multiplier}, combined={combined_signal}")
                 
                 if i > 1:
                     new_btc_position = previous_signal
                     if new_btc_position != btc_position:
-                        prev_value = portfolio_values[dates[i-1]]
+                        prev_value = btc_values.iloc[i-1]  # Use iloc for Series
                         if new_btc_position:
                             day_transaction_cost = btc_cost * prev_value
                             self.logger.info(f"Entering BTC position on {date}: Cost = {day_transaction_cost:.2f}")
@@ -833,70 +928,54 @@ class TrendAnalyzer:
                 previous_signal = current_signal
                 if btc_position:
                     btc_daily_return = btc_returns[date]
-                    if btc_value == 0:
-                        btc_value = portfolio_values[dates[i-1]] - day_transaction_cost
+                    if btc_value == initial_capital:  # Changed condition
+                        btc_value = btc_values.iloc[i-1] - day_transaction_cost  # Use iloc for Series
                     else:
                         btc_value *= (1 + btc_daily_return)
-                    btc_values[date] = btc_value
+                    btc_values.iloc[i] = btc_value  # Use iloc for Series
                 else:
-                    btc_values[date] = 0
-                
-                portfolio_composition[date] = ['BTC'] if btc_position else []
-                assets_held[date] = 1 if btc_position else 0
-                transaction_costs[date] = day_transaction_cost
-                portfolio_values[date] = btc_values[date] if btc_position else (portfolio_values[dates[i-1]] - day_transaction_cost)
-        # ALTCOIN PORTFOLIO #
-        else:
-            altcoin_positions = {asset_id: False for asset_id in self.asset_ids if asset_id != 'bitcoin'}
-            altcoin_values = {asset_id: 0 for asset_id in self.asset_ids if asset_id != 'bitcoin'}
-            previous_eligible_assets = []
+                    btc_values.iloc[i] = btc_values.iloc[i-1] - day_transaction_cost  # Use iloc for Series
             
-            for i, date in enumerate(dates):
-                day_transaction_cost = 0
-                if i == 0:
-                    portfolio_values[date] = initial_capital
-                    portfolio_composition[date] = []
-                    transaction_costs[date] = 0
-                    assets_held[date] = 0
-                    continue
-                
-                # Get BTC volatility signal for gating all altcoins
-                btc_volatility_signal = 0
-                if use_volatility_filter and self.markov_model is not None:
-                    btc_volatility_signal = self._get_volatility_state(date)
-                    self.logger.debug(f"{date}: BTC volatility state: {btc_volatility_signal}")
-                
-                # Get BTC SSR signal for all assets
-                btc_ssr_signal = 0
-                ssr_gate_multiplier = 1  # Default to 1 (pass-through)
-                if use_ssr_signal or use_ssr_gate:
-                    btc_ssr_signal = self._get_ssr_signal(date)
-                    self.logger.debug(f"{date}: BTC SSR signal: {btc_ssr_signal}")
-                    
-                    # Set SSR gate if enabled
-                    if use_ssr_gate:
-                        # Only pass signals through when SSR is positive
-                        ssr_gate_multiplier = 1 if btc_ssr_signal > 0 else 0
-                        self.logger.debug(f"{date}: SSR gate multiplier: {ssr_gate_multiplier}")
-                
-                # Calculate BTC gate as a multiplier (0 or 1)
-                btc_gate_passed = True
-                if btc_trend_gating:
-                    btc_gate_passed = all(btc_signals[trend_type][date] for trend_type in btc_trend_gating)
-                btc_gate_multiplier = 1 if btc_gate_passed else 0
-                
-                current_eligible_assets = []
+            # Create results DataFrame for BTC-only portfolio
+            results_df = pd.DataFrame({
+                'Date': dates,
+                'Portfolio_Value': btc_values.values  # Use values from Series
+            }).set_index('Date')
+            
+            # Calculate performance metrics
+            total_return = (results_df['Portfolio_Value'].iloc[-1] / initial_capital) - 1
+            max_drawdown = self._max_drawdown(results_df['Portfolio_Value'])
+            
+            backtest_results = {
+                'results_df': results_df,
+                'signals_df': pd.DataFrame(signal_data).set_index('date'),
+                'metrics': {
+                    'total_return': total_return,
+                    'max_drawdown': max_drawdown,
+                    'initial_capital': initial_capital,
+                    'final_value': results_df['Portfolio_Value'].iloc[-1],
+                    'sharpe_ratio': self.calculate_sharpe_sortino(results_df, 'Portfolio_Value')[0],
+                    'sortino_ratio': self.calculate_sharpe_sortino(results_df, 'Portfolio_Value')[1],
+                }
+            }
+        else:
+            # For altcoin portfolios, just track signals
+            for date in dates:
                 for asset_id in self.asset_ids:
                     if asset_id == 'bitcoin':
                         continue
+                        
                     classified_data = self.asset_data.get(asset_id, {}).get('classified_data', pd.DataFrame())
                     if classified_data.empty:
                         continue
+                        
                     asset_date_data = classified_data[classified_data['date'] <= date]
                     if asset_date_data.empty:
                         continue
-                    latest = asset_date_data.iloc[-1]
+                        
+                    ticker = self._get_ticker_from_id(asset_id)
                     
+                    latest = asset_date_data.iloc[-1]
                     usd_condition = all(str(latest.get(trend_type, 'N/A')) in allowed for trend_type, allowed in usd_conditions.items()) if usd_conditions else True
                     btc_condition = all(str(latest.get(trend_type, 'N/A')) in allowed for trend_type, allowed in btc_conditions.items()) if btc_conditions else True
                     rsi_usd_signal = latest.get('RSI_Signal_close', 0) if rsi_conditions_usd else 1
@@ -906,14 +985,43 @@ class TrendAnalyzer:
                     usd_trend_signal = 1 if usd_condition else -1 if usd_conditions else 0
                     btc_trend_signal = 1 if btc_condition else -1 if btc_conditions else 0
                     
+                    # Get volatility signal if requested
+                    volatility_signal = 0
+                    if use_volatility_filter and self.markov_model is not None:
+                        volatility_signal = self._get_volatility_state(date)
+                    
+                    # Get SSR signal if requested
+                    ssr_signal = 0
+                    ssr_gate_multiplier = 1  # Default to 1 (pass-through)
+                    if use_ssr_signal or use_ssr_gate:
+                        ssr_signal = self._get_ssr_signal(date)
+                        if use_ssr_gate:
+                            ssr_gate_multiplier = 1 if ssr_signal > 0 else 0
+                    
+                    # Calculate BTC gate as a multiplier (0 or 1)
+                    btc_gate_passed = True
+                    if btc_trend_gating:
+                        btc_gate_passed = all(btc_signals[trend_type][date] for trend_type in btc_trend_gating)
+                    btc_gate_multiplier = 1 if btc_gate_passed else 0
+                    
+                    # Calculate BTC RSI gate as a multiplier (0 or 1)
+                    btc_rsi_gate_multiplier = 1  # Default to 1 (pass-through)
+                    if btc_rsi_gate and date in btc_rsi_signals:
+                        btc_rsi_gate_multiplier = 1 if btc_rsi_signals[date] > 0 else 0
+                    
+                    # Get BTC RSI signal if requested as a component
+                    btc_rsi_signal = 0
+                    if use_btc_rsi_signal and date in btc_rsi_signals:
+                        btc_rsi_signal = btc_rsi_signals[date]
+                    
                     # Calculate combined signal
                     signal_components = []
                     
                     # Add trend signals if conditions were specified
                     if usd_conditions:
-                        signal_components.append(usd_trend_signal)  # Add USD trend signal regardless of sign
+                        signal_components.append(usd_trend_signal)
                     if btc_conditions:
-                        signal_components.append(btc_trend_signal)  # Add BTC trend signal regardless of sign
+                        signal_components.append(btc_trend_signal)
                     
                     # Add RSI signals if enabled
                     if rsi_conditions_usd:
@@ -921,269 +1029,92 @@ class TrendAnalyzer:
                     if rsi_conditions_btc:
                         signal_components.append(rsi_btc_signal)
                     
-                    # Add BTC volatility signal if enabled
+                    # Add BTC RSI signal if enabled as a component
+                    if use_btc_rsi_signal:
+                        signal_components.append(btc_rsi_signal)
+                    
+                    # Add volatility signal if enabled
                     if use_volatility_filter:
-                        signal_components.append(btc_volatility_signal * volatility_weight)
+                        signal_components.append(volatility_signal)
                         
-                    # Add SSR signal if enabled (only as a signal, not as a gate)
+                    # Add SSR signal if enabled
                     if use_ssr_signal:
-                        signal_components.append(btc_ssr_signal)
+                        signal_components.append(ssr_signal)
                     
                     # Calculate percentage of positive signals
-                    if signal_components:  # Only calculate if we have signals
+                    if signal_components:
                         positive_signals = sum(1 for signal in signal_components if signal > 0)
-                        combined_signal = (positive_signals / len(signal_components)) * 100  # Convert to percentage
+                        combined_signal = (positive_signals / len(signal_components)) * 100
                     else:
                         combined_signal = 0
                     
                     # Apply gates
-                    # Apply BTC gate multiplier if BTC gating is enabled
                     if btc_trend_gating:
                         combined_signal *= btc_gate_multiplier
-                        
-                    # Apply SSR gate multiplier if SSR gating is enabled
                     if use_ssr_gate:
                         combined_signal *= ssr_gate_multiplier
+                    if btc_rsi_gate:
+                        combined_signal *= btc_rsi_gate_multiplier
                     
-                    # Record signals - only include signals that are actually used
+                    # Get signal from followed portfolio if applicable
+                    followed_portfolio_signal = None
+                    # Calculate the altcoin's own decision based on its signals
+                    altcoin_decision = 1 if combined_signal > signal_threshold else 0
+                    
+                    # If following a BTC-only portfolio, use its decision for Bitcoin
+                    if follow_portfolio is not None and date in followed_portfolio_signals:
+                        if isinstance(followed_portfolio_signals[date], dict):
+                            # If following an altcoin portfolio, use asset-specific decision if available
+                            if ticker in followed_portfolio_signals[date]:
+                                followed_portfolio_signal = followed_portfolio_signals[date][ticker]
+                            else:
+                                followed_portfolio_signal = 0  # No signal for this asset
+                        else:
+                            # If following a BTC-only portfolio, use the BTC decision for all altcoins
+                            followed_portfolio_signal = followed_portfolio_signals[date]
+                            
+                        # Use followed portfolio as a gate - both signals must be positive
+                        # This preserves the altcoin's own signal while gating with the followed portfolio
+                        final_decision = 1 if (altcoin_decision == 1 and followed_portfolio_signal == 1) else 0
+                    else:
+                        # If not following a portfolio, just use the altcoin's own decision
+                        final_decision = altcoin_decision
+                    
+                    # Record signals
                     signal_data['date'].append(date)
-                    signal_data['asset'].append(self._get_ticker_from_id(asset_id))
+                    signal_data['asset'].append(ticker)
                     signal_data['usd_trend_signal'].append(usd_trend_signal if usd_conditions else None)
                     signal_data['btc_trend_signal'].append(btc_trend_signal if btc_conditions else None)
                     signal_data['rsi_usd_signal'].append(rsi_usd_signal if rsi_conditions_usd else None)
                     signal_data['rsi_btc_signal'].append(rsi_btc_signal if rsi_conditions_btc else None)
-                    signal_data['volatility_signal'].append(btc_volatility_signal if use_volatility_filter else None)
-                    signal_data['ssr_signal'].append(btc_ssr_signal if use_ssr_signal else None)
+                    signal_data['volatility_signal'].append(volatility_signal if use_volatility_filter else None)
+                    signal_data['ssr_signal'].append(ssr_signal if use_ssr_signal else None)
                     signal_data['ssr_gate'].append(ssr_gate_multiplier if use_ssr_gate else None)
                     signal_data['btc_gate'].append(btc_gate_multiplier if btc_trend_gating else None)
+                    signal_data['btc_rsi_gate'].append(btc_rsi_gate_multiplier if btc_rsi_gate else None)
+                    signal_data['btc_rsi_signal'].append(btc_rsi_signal if use_btc_rsi_signal else None)
+                    signal_data['followed_portfolio_signal'].append(followed_portfolio_signal)
                     signal_data['combined_signal'].append(combined_signal)
-                    final_decision = 1 if combined_signal > 50 else 0
                     signal_data['final_decision'].append(final_decision)
-                    
-                    # Add asset to eligible assets if final decision is 1
-                    if final_decision == 1:
-                        current_eligible_assets.append(asset_id)
-                        signal_desc = f"trend={'pass' if usd_condition and btc_condition else 'fail'}, " + \
-                                    (f"RSI USD={rsi_usd_signal}, " if rsi_conditions_usd else "") + \
-                                    (f"RSI BTC={rsi_btc_signal}, " if rsi_conditions_btc else "") + \
-                                    (f"BTC vol={btc_volatility_signal}, " if use_volatility_filter else "") + \
-                                    (f"SSR signal={btc_ssr_signal}, " if use_ssr_signal else "") + \
-                                    (f"SSR gate={ssr_gate_multiplier}, " if use_ssr_gate else "") + \
-                                    (f"BTC gate={btc_gate_multiplier}, " if btc_trend_gating else "") + \
-                                    f"combined={combined_signal:.2f}%"
-                        self.logger.debug(f"{date}: {asset_id} signal components: {signal_desc}")
-                
-                # Update eligible assets list
-                eligible_assets = current_eligible_assets.copy()
-                num_eligible = len(eligible_assets)
-                assets_held[date] = num_eligible
-                current_portfolio = sorted([self._get_ticker_from_id(asset_id) for asset_id in eligible_assets])
-                prev_portfolio_composition = portfolio_composition[dates[i-1]] if i > 0 else []
-                portfolio_changed = (num_eligible != len(prev_portfolio_composition)) or (set(current_portfolio) != set(prev_portfolio_composition))
-                
-                for asset_id in eligible_assets:
-                    if asset_id in asset_returns:
-                        daily_return = asset_returns[asset_id][date]
-                        if altcoin_values[asset_id] > 0:
-                            altcoin_values[asset_id] *= (1 + daily_return)
-                            self.logger.debug(f"{date}: {asset_id} return={daily_return:.4f}, new_value={altcoin_values[asset_id]:.2f}")
-                
-                pre_rebalance_value = sum(altcoin_values.values())
-                if portfolio_changed:
-                    prev_value = portfolio_values[dates[i-1]]
-                    day_transaction_cost = alt_cost * prev_value
-                    new_total_value = (prev_value if pre_rebalance_value == 0 else pre_rebalance_value) - day_transaction_cost
-                    
-                    if num_eligible > 0 and new_total_value > 0:
-                        per_asset_value = new_total_value / num_eligible
-                        for asset_id in self.asset_ids:
-                            if asset_id == 'bitcoin':
-                                continue
-                            if asset_id in eligible_assets:
-                                altcoin_values[asset_id] = per_asset_value * (1 + asset_returns.get(asset_id, pd.Series())[date])
-                                self.logger.debug(f"{date}: Enter {asset_id} at {altcoin_values[asset_id]:.2f}")
-                            else:
-                                altcoin_values[asset_id] = 0
-                    elif num_eligible == 0:
-                        for asset_id in self.asset_ids:
-                            if asset_id != 'bitcoin':
-                                altcoin_values[asset_id] = 0
-                
-                total_alt_value = sum(altcoin_values.values())
-                portfolio_composition[date] = current_portfolio
-                transaction_costs[date] = day_transaction_cost
-                portfolio_values[date] = total_alt_value if num_eligible > 0 else (portfolio_values[dates[i-1]] - day_transaction_cost)
-                previous_eligible_assets = current_eligible_assets.copy()
-                self.logger.debug(f"{date}: Value={portfolio_values[date]:.2f}, Assets={current_portfolio}, Cost={day_transaction_cost:.2f}")
-        
-        # Create signals DataFrame
-        signals_df = pd.DataFrame(signal_data).set_index('date')
-        
-        # Create main results DataFrame
-        results_df = pd.DataFrame({
-            'Date': dates,
-            'Portfolio_Value': [portfolio_values[date] for date in dates],
-            'Transaction_Cost': [transaction_costs[date] for date in dates],
-            'Assets_Held': [assets_held[date] for date in dates],
-            'Portfolio_Composition': [', '.join(composition) if composition else 'Cash' for composition in portfolio_composition.values()]
-        }).set_index('Date')
-        
-        # Calculate performance metrics
-        returns = results_df['Portfolio_Value'].pct_change().fillna(0)
-        total_return = (results_df['Portfolio_Value'].iloc[-1] / initial_capital) - 1
-        max_drawdown = self._max_drawdown(results_df['Portfolio_Value'])
-        total_costs = results_df['Transaction_Cost'].sum()
-        
-        backtest_results = {
-            'results_df': results_df,
-            'signals_df': signals_df,  # Add signals DataFrame to results
-            'metrics': {
-                'total_return': total_return,
-                'max_drawdown': max_drawdown,
-                'total_costs': total_costs,
-                'initial_capital': initial_capital,
-                'final_value': results_df['Portfolio_Value'].iloc[-1],
-                'sharpe_ratio': self.calculate_sharpe_sortino(results_df, 'Portfolio_Value')[0],
-                'sortino_ratio': self.calculate_sharpe_sortino(results_df, 'Portfolio_Value')[1],
+            
+            # Create empty results DataFrame for altcoin portfolio (signals only)
+            results_df = pd.DataFrame(index=dates)
+            
+            backtest_results = {
+                'results_df': results_df,
+                'signals_df': pd.DataFrame(signal_data).set_index('date'),
+                'metrics': {
+                    'total_return': 0,
+                    'max_drawdown': 0,
+                    'initial_capital': initial_capital,
+                    'final_value': initial_capital,
+                    'sharpe_ratio': 0,
+                    'sortino_ratio': 0,
+                }
             }
-        }
         
         self.portfolios[portfolio_name]['backtest_results'] = backtest_results
-        self.logger.info(f"Backtest completed: Return={total_return:.2%}, Max DD={max_drawdown:.2%}")
         return backtest_results
-    
-    def _get_ticker_from_id(self, asset_id):
-        """Helper to get ticker from asset ID"""
-        for ticker, id_val in self.ticker_mapping.items():
-            if id_val == asset_id:
-                return ticker
-        return asset_id.upper()
-        
-    def plot_portfolio_performance(self, portfolio_names, btc_trend_portfolio_name, start_date, end_date, initial_capital=1000, show_plot=True):
-        """
-        Plot performance of one or more portfolios against BTC buy-and-hold and a user-defined BTC trend-following portfolio.
-        
-        Args:
-            portfolio_names (str or list): Name(s) of the portfolio(s) to plot
-            btc_trend_portfolio_name (str): Name of the BTC trend-following portfolio
-            start_date (str): Start date in YYYY-MM-DD format
-            end_date (str): End date in YYYY-MM-DD format
-            initial_capital (float): Initial capital amount (default: 1000)
-            show_plot (bool): If True, display the plot; if False, return the figure without displaying (default: True)
-            
-        Returns:
-            plotly.graph_objects.Figure: The generated plot
-        """
-        if isinstance(portfolio_names, str):
-            portfolio_names = [portfolio_names]
-            
-        # Validate portfolio names
-        all_portfolios = portfolio_names + [btc_trend_portfolio_name]
-        for portfolio_name in all_portfolios:
-            if portfolio_name not in self.portfolios:
-                self.logger.error(f"Portfolio '{portfolio_name}' does not exist.")
-                raise ValueError(f"Portfolio '{portfolio_name}' not found")
-        
-        # Ensure btc_trend_portfolio_name is a BTC-only portfolio
-        if not self.portfolios[btc_trend_portfolio_name]['btc_only']:
-            self.logger.error(f"Portfolio '{btc_trend_portfolio_name}' must be a BTC-only portfolio.")
-            raise ValueError(f"Portfolio '{btc_trend_portfolio_name}' must be created with btc_only=True")
-        
-        # Recalculate backtests for the specified date range
-        for portfolio_name in all_portfolios:
-            self.logger.info(f"Recalculating backtest for portfolio '{portfolio_name}' from {start_date} to {end_date}.")
-            self.backtest_portfolio(
-                portfolio_name=portfolio_name,
-                start_date=start_date,
-                end_date=end_date,
-                initial_capital=initial_capital,
-                alt_cost=0.005  # Assuming default transaction cost
-            )
-        
-        # Convert dates to datetime
-        start_date = pd.to_datetime(start_date)
-        end_date = pd.to_datetime(end_date)
-        dates = pd.date_range(start_date, end_date, freq='D')
-        
-        # Get BTC data for buy-and-hold comparison
-        btc_data = self.asset_data.get('bitcoin', {}).get('raw_data', pd.DataFrame())
-        if btc_data.empty:
-            self.logger.error("Bitcoin data not available for comparison.")
-            raise ValueError("Bitcoin data required for comparison.")
-        
-        # Calculate BTC buy-and-hold
-        btc_price_series = btc_data.set_index('date')['close'].reindex(dates, method='ffill')
-        if btc_price_series.empty:
-            self.logger.error("No Bitcoin price data available for the date range.")
-            raise ValueError("Bitcoin price data required for the date range.")
-        
-        # Calculate returns from price series
-        btc_returns = btc_price_series.pct_change().fillna(0)
-        
-        # Initialize buy-and-hold portfolio with initial capital on first day
-        btc_buy_hold = pd.Series(index=dates)
-        btc_buy_hold.iloc[0] = initial_capital  # Explicitly set first day to initial capital
-        
-        # Calculate cumulative value for remaining days
-        for i in range(1, len(dates)):
-            btc_buy_hold.iloc[i] = btc_buy_hold.iloc[i-1] * (1 + btc_returns.iloc[i])
-        
-        # Plot
-        fig = go.Figure()
-        
-        # Add BTC buy-and-hold
-        fig.add_trace(go.Scatter(x=dates, y=btc_buy_hold, mode='lines', 
-                                name='BTC Buy & Hold', line=dict(color='blue')))
-        
-        # Add BTC trend-following portfolio
-        btc_trend_backtest = self.portfolios[btc_trend_portfolio_name]['backtest_results']
-        btc_trend_value = btc_trend_backtest['results_df']['Portfolio_Value'].reindex(dates, method='ffill')
-        fig.add_trace(go.Scatter(x=dates, y=btc_trend_value, mode='lines', 
-                                name=f'BTC Trend: {btc_trend_portfolio_name}', line=dict(color='green')))
-        
-        # Add each portfolio
-        colors = ['orange', 'purple', 'red', 'cyan', 'magenta']  # Add more colors if needed
-        for idx, portfolio_name in enumerate(portfolio_names):
-            backtest = self.portfolios[portfolio_name]['backtest_results']
-            results_df = backtest['results_df']
-            portfolio_value = results_df['Portfolio_Value'].reindex(dates, method='ffill')
-            fig.add_trace(go.Scatter(x=dates, y=portfolio_value, mode='lines', 
-                                    name=f'Portfolio: {portfolio_name}', 
-                                    line=dict(color=colors[idx % len(colors)])))
-        
-        # Update layout
-        fig.update_layout(
-            title='Portfolio Performance Comparison',
-            xaxis_title='Date',
-            yaxis_title='Value',
-            legend=dict(x=0, y=1),
-            template='plotly_white'
-        )
-        
-        # Display the plot if show_plot is True
-        if show_plot:
-            fig.show()
-        
-        # Display metrics for each portfolio
-        print("\nPerformance Metrics:")
-        print(f"BTC Buy & Hold: Return = {(btc_buy_hold.iloc[-1] / initial_capital - 1):.2%}, "
-              f"Max Drawdown = {self._max_drawdown(btc_buy_hold):.2%}")
-        
-        btc_trend_metrics = btc_trend_backtest['metrics']
-        print(f"BTC Trend ({btc_trend_portfolio_name}): Return = {btc_trend_metrics['total_return']:.2%}, "
-              f"Max Drawdown = {btc_trend_metrics['max_drawdown']:.2%}")
-        
-        for portfolio_name in portfolio_names:
-            backtest = self.portfolios[portfolio_name]['backtest_results']
-            metrics = backtest['metrics']
-            print(f"\nPortfolio '{portfolio_name}':")
-            print(f"Total Return: {metrics['total_return']:.2%}")
-            print(f"Max Drawdown: {metrics['max_drawdown']:.2%}")
-            print(f"Total Transaction Costs: {metrics['total_costs']:.2f}")
-            print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
-            print(f"Sortino Ratio: {metrics['sortino_ratio']:.2f}")
-        
-        return fig
 
     def plot_portfolio_with_volatility(self, portfolio_names, btc_trend_portfolio_name, start_date, end_date, initial_capital=1000, show_plot=True):
         """
@@ -1400,3 +1331,501 @@ class TrendAnalyzer:
                 
         # Convert state to signal: low volatility (+1), high volatility (-1)
         return 1 if state == 'low' else -1
+
+    def plot_individual_asset_performance(self, portfolio_name, btc_trend_portfolio_name, start_date, end_date, initial_capital=10000, asset_filter=None, show_plot=True):
+        """
+        Plot performance of individual assets when selected by the strategy, alongside BTC buy & hold and trend following.
+        Each asset maintains its own continuous portfolio value, starting from initial_capital, with daily returns applied.
+        
+        Args:
+            portfolio_name (str): Name of the portfolio to analyze
+            btc_trend_portfolio_name (str): Name of the BTC trend-following portfolio
+            start_date (str): Start date in YYYY-MM-DD format
+            end_date (str): End date in YYYY-MM-DD format
+            initial_capital (float): Initial capital amount (default: 10000)
+            asset_filter (list, optional): List of asset tickers to include in the plot
+            show_plot (bool): If True, display the plot
+        
+        Returns:
+            plotly.graph_objects.Figure: The generated plot
+        """
+        if portfolio_name not in self.portfolios:
+            self.logger.error(f"Portfolio '{portfolio_name}' does not exist.")
+            raise ValueError(f"Portfolio '{portfolio_name}' not found")
+            
+        if btc_trend_portfolio_name not in self.portfolios:
+            self.logger.error(f"Portfolio '{btc_trend_portfolio_name}' does not exist.")
+            raise ValueError(f"Portfolio '{btc_trend_portfolio_name}' not found")
+            
+        # Ensure btc_trend_portfolio_name is a BTC-only portfolio
+        if not self.portfolios[btc_trend_portfolio_name]['btc_only']:
+            self.logger.error(f"Portfolio '{btc_trend_portfolio_name}' must be a BTC-only portfolio.")
+            raise ValueError(f"Portfolio '{btc_trend_portfolio_name}' must be created with btc_only=True")
+        
+        # Recalculate backtests for the specified date range
+        self.logger.info(f"Recalculating backtest for portfolio '{portfolio_name}' from {start_date} to {end_date}.")
+        self.backtest_portfolio(
+            portfolio_name=portfolio_name,
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+            alt_cost=0.005  # 0.5% transaction cost
+        )
+        
+        self.logger.info(f"Recalculating backtest for portfolio '{btc_trend_portfolio_name}' from {start_date} to {end_date}.")
+        self.backtest_portfolio(
+            portfolio_name=btc_trend_portfolio_name,
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+            btc_cost=0.001  # 0.1% transaction cost
+        )
+        
+        # Convert dates to datetime
+        start_date = pd.to_datetime(start_date)
+        end_date = pd.to_datetime(end_date)
+        dates = pd.date_range(start_date, end_date, freq='D')
+        
+        # Get BTC data for buy-and-hold comparison
+        btc_data = self.asset_data.get('bitcoin', {}).get('raw_data', pd.DataFrame())
+        if btc_data.empty:
+            self.logger.error("Bitcoin data not available for comparison.")
+            raise ValueError("Bitcoin data required for comparison.")
+        
+        # Calculate BTC buy-and-hold
+        btc_price_series = btc_data.set_index('date')['close'].reindex(dates, method='ffill')
+        btc_returns = btc_price_series.pct_change().fillna(0)
+        btc_buy_hold = pd.Series(index=dates, dtype=float)
+        btc_buy_hold.iloc[0] = initial_capital
+        for i in range(1, len(dates)):
+            btc_buy_hold.iloc[i] = btc_buy_hold.iloc[i-1] * (1 + btc_returns.iloc[i])
+        
+        # Get BTC trend-following portfolio performance
+        btc_trend_backtest = self.portfolios[btc_trend_portfolio_name]['backtest_results']
+        btc_trend_value = btc_trend_backtest['results_df']['Portfolio_Value'].reindex(dates, method='ffill')
+        
+        # Get signals from the strategy
+        strategy_backtest = self.portfolios[portfolio_name]['backtest_results']
+        signals_df = strategy_backtest['signals_df']
+        
+        # Create plot
+        fig = go.Figure()
+        
+        # Add BTC buy-and-hold
+        fig.add_trace(go.Scatter(x=dates, y=btc_buy_hold, mode='lines', 
+                                name='BTC Buy & Hold', line=dict(color='blue')))
+        
+        # Add BTC trend-following portfolio
+        fig.add_trace(go.Scatter(x=dates, y=btc_trend_value, mode='lines', 
+                                name=f'BTC Trend: {btc_trend_portfolio_name}', line=dict(color='green')))
+        
+        # Get unique assets that were selected at any point
+        selected_assets = signals_df['asset'].unique()
+        selected_assets = [asset for asset in selected_assets if asset != 'BTC']
+        
+        # Apply asset filter if provided
+        if asset_filter is not None:
+            asset_filter = [ticker.upper() for ticker in asset_filter]
+            selected_assets = [asset for asset in selected_assets if asset in asset_filter]
+            if not selected_assets:
+                self.logger.warning("No selected assets match the provided filter.")
+                return fig
+        
+        # Store metrics and trade history for each asset
+        asset_metrics = {}
+        trade_history = {}
+        
+        # Calculate and plot performance for each selected asset
+        colors = ['orange', 'purple', 'red', 'cyan', 'magenta', 'yellow', 'pink', 'brown']
+        for idx, asset in enumerate(selected_assets):
+            # Get dates when this asset was selected
+            asset_signals = signals_df[signals_df['asset'] == asset]
+            selected_dates = asset_signals[asset_signals['final_decision'] == 1].index
+            
+            if len(selected_dates) > 0:
+                # Get asset price data
+                asset_id = self.ticker_mapping.get(asset, asset.lower())
+                asset_data = self.asset_data.get(asset_id, {}).get('raw_data', pd.DataFrame())
+                if not asset_data.empty:
+                    # Calculate asset prices and daily returns
+                    asset_price = asset_data.set_index('date')['close'].reindex(dates, method='ffill')
+                    asset_returns = asset_price.pct_change().fillna(0)
+                    
+                    # Initialize tracking variables
+                    trade_count = 0
+                    total_costs = 0
+                    in_position = False
+                    daily_returns = []
+                    current_trade = None
+                    trades = []
+                    
+                    # Initialize portfolio value tracking
+                    portfolio_value = pd.Series(index=dates, dtype=float)
+                    portfolio_value.iloc[0] = initial_capital
+                    current_value = initial_capital
+                    
+                    # Track the initial capital invested for each trade
+                    initial_invested = initial_capital
+                    
+                    # Track the value through time
+                    for i in range(1, len(dates)):
+                        current_date = dates[i]
+                        was_in_position = in_position
+                        in_position = current_date in selected_dates
+                        
+                        # Check for position changes
+                        if in_position and not was_in_position:
+                            # Enter new position
+                            trade_count += 1
+                            
+                            # Calculate and apply entry cost
+                            entry_cost = 0.005 * current_value
+                            total_costs += entry_cost
+                            initial_invested = current_value  # Record the capital before cost
+                            current_value -= entry_cost
+                            
+                            # Record entry price data
+                            entry_price = asset_price.iloc[i]
+                            original_entry_value = current_value  # Value after costs
+                            
+                            # Record trade entry data
+                            current_trade = {
+                                'trade_id': trade_count,
+                                'entry_date': current_date,
+                                'exit_date': None,
+                                'holding_days': 0,
+                                'entry_price': entry_price,
+                                'exit_price': None,
+                                'price_return': None,
+                                'entry_value': original_entry_value,
+                                'entry_cost': -entry_cost,
+                                'exit_value': None,
+                                'exit_cost': None,
+                                'trade_return': None,
+                                'is_open': True
+                            }
+                        
+                        # Apply daily returns during holding period
+                        if in_position:
+                            daily_return = asset_returns.iloc[i]
+                            current_value *= (1 + daily_return)
+                            daily_returns.append(daily_return)
+                        
+                        # Check for position exit
+                        if was_in_position and not in_position:
+                            # Exit existing position
+                            exit_price = asset_price.iloc[i]
+                            
+                            if current_trade is not None:
+                                # Calculate price return
+                                price_return = (exit_price / current_trade['entry_price']) - 1
+                                
+                                # Calculate the expected portfolio value based on price_return
+                                expected_value = current_trade['entry_value'] * (1 + price_return)
+                                
+                                # Adjust current_value to match the expected value (correct for any drift)
+                                current_value = expected_value
+                                
+                                # Calculate and apply exit cost
+                                exit_cost = 0.005 * current_value
+                                total_costs += exit_cost
+                                current_value -= exit_cost
+                                
+                                # Calculate trade return
+                                trade_return = (current_value - initial_invested) / initial_invested
+                                
+                                holding_days = (current_date - current_trade['entry_date']).days
+                                
+                                current_trade.update({
+                                    'exit_date': current_date,
+                                    'holding_days': holding_days,
+                                    'exit_price': exit_price,
+                                    'price_return': price_return,
+                                    'exit_value': current_value,
+                                    'exit_cost': -exit_cost,
+                                    'trade_return': trade_return,
+                                    'is_open': False
+                                })
+                                trades.append(current_trade)
+                                current_trade = None
+                                initial_invested = current_value  # Reset for the next trade
+                        
+                        # Update portfolio value for this date
+                        portfolio_value.iloc[i] = current_value
+                    
+                    # Handle open trade at end of period
+                    if current_trade is not None:
+                        exit_price = asset_price.iloc[-1]
+                        price_return = (exit_price / current_trade['entry_price']) - 1
+                        
+                        # Adjust current_value to match the price_return
+                        current_value = current_trade['entry_value'] * (1 + price_return)
+                        # No exit cost for open trades
+                        exit_cost = 0
+                        
+                        # Calculate trade return
+                        trade_return = (current_value - initial_invested) / initial_invested
+                        
+                        holding_days = (dates[-1] - current_trade['entry_date']).days
+                        
+                        current_trade.update({
+                            'exit_date': dates[-1],
+                            'holding_days': holding_days,
+                            'exit_price': exit_price,
+                            'price_return': price_return,
+                            'exit_value': current_value,
+                            'exit_cost': 0,
+                            'trade_return': trade_return,
+                            'is_open': True
+                        })
+                        trades.append(current_trade)
+                    
+                    # Store trade history with reordered columns
+                    if trades:
+                        trades_df = pd.DataFrame(trades)
+                        column_order = [
+                            'trade_id', 'entry_date', 'exit_date', 'holding_days',
+                            'entry_price', 'exit_price', 'price_return',
+                            'entry_value', 'entry_cost', 'exit_value', 'exit_cost',
+                            'trade_return', 'is_open'
+                        ]
+                        trade_history[asset] = trades_df[column_order]
+                    
+                    # Calculate metrics
+                    total_return = (portfolio_value.iloc[-1] / initial_capital) - 1
+                    max_drawdown = self._max_drawdown(portfolio_value)
+                    
+                    # Use the recorded daily returns for metrics
+                    daily_returns_series = pd.Series(daily_returns)
+                    if len(daily_returns_series) > 1:
+                        sharpe = np.sqrt(365) * (daily_returns_series.mean() / daily_returns_series.std())
+                        downside_returns = daily_returns_series[daily_returns_series < 0]
+                        sortino = np.sqrt(365) * (daily_returns_series.mean() / downside_returns.std()) if len(downside_returns) > 1 else 0
+                    else:
+                        sharpe, sortino = 0, 0
+                    
+                    # Calculate win rate and average trade metrics
+                    if trades:
+                        trades_df = pd.DataFrame(trades)
+                        avg_trade_return = trades_df['trade_return'].mean()
+                        winning_trades = trades_df[trades_df['trade_return'] > 0]
+                        win_rate = len(winning_trades) / len(trades_df) if len(trades_df) > 0 else 0
+                        avg_win = winning_trades['trade_return'].mean() if len(winning_trades) > 0 else 0
+                        avg_loss = trades_df[trades_df['trade_return'] <= 0]['trade_return'].mean() if len(trades_df[trades_df['trade_return'] <= 0]) > 0 else 0
+                        avg_holding_days = trades_df['holding_days'].mean()
+                    else:
+                        avg_trade_return = 0
+                        win_rate = avg_win = avg_loss = avg_holding_days = 0
+                    
+                    asset_metrics[asset] = {
+                        'Total Return': total_return,
+                        'Max Drawdown': max_drawdown,
+                        'Sharpe Ratio': sharpe,
+                        'Sortino Ratio': sortino,
+                        'Number of Trades': trade_count,
+                        'Win Rate': win_rate,
+                        'Avg Win': avg_win,
+                        'Avg Loss': avg_loss,
+                        'Avg Holding Days': avg_holding_days,
+                        'Total Costs': total_costs,
+                        'First Trade': selected_dates[0],
+                        'Last Trade': selected_dates[-1],
+                        'Trading Days': len(selected_dates)
+                    }
+                    
+                    # Add to plot with average trade return in the name
+                    fig.add_trace(go.Scatter(x=dates, y=portfolio_value, mode='lines', 
+                                        name=f'{asset} ({trade_count} trades, Avg Trade Return: {avg_trade_return:.1%})', 
+                                        line=dict(color=colors[idx % len(colors)])))
+        
+        # Store trade history and metrics in the portfolio
+        self.portfolios[portfolio_name]['trade_history'] = trade_history
+        self.portfolios[portfolio_name]['asset_metrics'] = asset_metrics
+        
+        # Update layout
+        fig.update_layout(
+            title='Individual Asset Performance When Selected by Strategy',
+            xaxis_title='Date',
+            yaxis_title='Value',
+            legend=dict(x=0, y=1),
+            template='plotly_white'
+        )
+        
+        # Display the plot if show_plot is True
+        if show_plot:
+            fig.show()
+        
+        # Display metrics
+        print("\nPerformance Metrics:")
+        print(f"BTC Buy & Hold: Return = {(btc_buy_hold.iloc[-1] / initial_capital - 1):.2%}, "
+            f"Max Drawdown = {self._max_drawdown(btc_buy_hold):.2%}")
+        
+        btc_trend_metrics = btc_trend_backtest['metrics']
+        print(f"BTC Trend ({btc_trend_portfolio_name}): Return = {btc_trend_metrics['total_return']:.2%}, "
+            f"Max Drawdown = {btc_trend_metrics['max_drawdown']:.2%}")
+        
+        print("\nIndividual Asset Performance:")
+        metrics_df = pd.DataFrame.from_dict(asset_metrics, orient='index')
+        metrics_df = metrics_df.sort_values('Total Return', ascending=False)
+        
+        # Format metrics for display
+        metrics_df['Total Return'] = metrics_df['Total Return'].map('{:.2%}'.format)
+        metrics_df['Max Drawdown'] = metrics_df['Max Drawdown'].map('{:.2%}'.format)
+        metrics_df['Sharpe Ratio'] = metrics_df['Sharpe Ratio'].map('{:.2f}'.format)
+        metrics_df['Sortino Ratio'] = metrics_df['Sortino Ratio'].map('{:.2f}'.format)
+        metrics_df['Win Rate'] = metrics_df['Win Rate'].map('{:.2%}'.format)
+        metrics_df['Avg Win'] = metrics_df['Avg Win'].map('{:.2%}'.format)
+        metrics_df['Avg Loss'] = metrics_df['Avg Loss'].map('{:.2%}'.format)
+        metrics_df['Avg Holding Days'] = metrics_df['Avg Holding Days'].map('{:.1f}'.format)
+        metrics_df['Total Costs'] = metrics_df['Total Costs'].map('${:,.2f}'.format)
+        
+        print("\n" + tabulate(metrics_df, headers='keys', tablefmt='pipe', showindex=True))
+        
+        # Print detailed trade history for each asset
+        print("\nDetailed Trade History:")
+        for asset, trades_df in trade_history.items():
+            print(f"\n{asset} Trades:")
+            # Format trade returns and price returns as percentages
+            trades_df['trade_return'] = trades_df['trade_return'].map('{:.2%}'.format)
+            trades_df['price_return'] = trades_df['price_return'].map('{:.2%}'.format)
+            print(tabulate(trades_df, headers='keys', tablefmt='pipe', showindex=False))
+        
+        return fig
+
+    def create_roc_based_portfolio(self, portfolio_name, btc_trend_gating=None, usd_conditions=None, btc_conditions=None, 
+                             rsi_conditions_usd=False, rsi_conditions_btc=False, btc_only=False, 
+                             use_volatility_filter=False, volatility_weight=1.0, use_ssr_signal=False,
+                             use_ssr_gate=False, btc_rsi_gate=False, use_btc_rsi_signal=False,
+                             follow_portfolio=None, short_term_condition=True, 
+                             medium_term_condition=False, long_term_condition=False,
+                             trend_conditions=None, use_btc_adjusted=False, **kwargs):
+        """
+        Create a portfolio that uses only Rate of Change (RoC) metrics for trend analysis.
+        Accepts the same parameters as create_portfolio for compatibility.
+        
+        Args:
+            portfolio_name (str): Name to identify the portfolio
+            btc_trend_gating (dict, optional): BTC trend condition that gates all others
+            usd_conditions (dict, optional): USD trend conditions
+            btc_conditions (dict, optional): BTC trend conditions
+            rsi_conditions_usd (bool): If True, requires RSI signal vs USD to be 1
+            rsi_conditions_btc (bool): If True, requires RSI signal vs BTC to be 1 (altcoins only)
+            btc_only (bool): If True, creates a BTC-only portfolio
+            use_volatility_filter (bool): If True, include volatility signals in decision making
+            volatility_weight (float): Weight of volatility signal (1.0 = equal to other signals)
+            use_ssr_signal (bool): If True, include SSR oscillator signal in decision making
+            use_ssr_gate (bool): If True, use SSR signal as a gate rather than an additive signal
+            btc_rsi_gate (bool): If True, use BTC's RSI signal as a gate for altcoin selection
+            use_btc_rsi_signal (bool): If True, include BTC's RSI signal as a component (not a gate)
+            follow_portfolio (str, optional): Name of another portfolio to follow signals from
+            short_term_condition (bool): If True, include short-term trends in conditions
+            medium_term_condition (bool): If True, include medium-term trends in conditions
+            long_term_condition (bool): If True, include long-term trends in conditions
+            trend_conditions (list): List of acceptable trend conditions (e.g., ["Strong Bull", "Weak Bull"])
+                                    Default: ["Strong Bull", "Weak Bull"]
+            use_btc_adjusted (bool): If True, use BTC-adjusted prices for altcoins
+            
+        Returns:
+            str: The portfolio name
+        """
+        if not self.static_computed:
+            self.logger.error("Static computations not performed.")
+            raise ValueError("Run analyze_multiple_assets() first.")
+        
+        # If specific trend conditions already provided via usd_conditions or btc_conditions, use those
+        if usd_conditions or btc_conditions:
+            self.logger.info("Using provided trend conditions from usd_conditions/btc_conditions parameters")
+            return self.create_portfolio(
+                portfolio_name=portfolio_name,
+                btc_trend_gating=btc_trend_gating,
+                usd_conditions=usd_conditions,
+                btc_conditions=btc_conditions,
+                rsi_conditions_usd=rsi_conditions_usd,
+                rsi_conditions_btc=rsi_conditions_btc,
+                btc_only=btc_only,
+                use_volatility_filter=use_volatility_filter,
+                volatility_weight=volatility_weight,
+                use_ssr_signal=use_ssr_signal,
+                use_ssr_gate=use_ssr_gate,
+                btc_rsi_gate=btc_rsi_gate,
+                use_btc_rsi_signal=use_btc_rsi_signal,
+                follow_portfolio=follow_portfolio
+            )
+            
+        # Otherwise, build RoC-based conditions
+        if trend_conditions is None:
+            trend_conditions = ["Strong Bull", "Weak Bull"]
+            
+        # Determine which conditions to include based on timeframes
+        conditions = {}
+        if short_term_condition:
+            if use_btc_adjusted and not btc_only:
+                conditions["Short Term (BTC)"] = trend_conditions
+            else:
+                conditions["Short Term (USD)"] = trend_conditions
+                
+        if medium_term_condition:
+            if use_btc_adjusted and not btc_only:
+                conditions["Medium Term (BTC)"] = trend_conditions
+            else:
+                conditions["Medium Term (USD)"] = trend_conditions
+                
+        if long_term_condition:
+            if use_btc_adjusted and not btc_only:
+                conditions["Long Term (BTC)"] = trend_conditions
+            else:
+                conditions["Long Term (USD)"] = trend_conditions
+        
+        # If no conditions specified, use at least one
+        if not conditions:
+            if use_btc_adjusted and not btc_only:
+                conditions["Short Term (BTC)"] = trend_conditions
+            else:
+                conditions["Short Term (USD)"] = trend_conditions
+        
+        # Create portfolio with appropriate conditions
+        if btc_only:
+            return self.create_portfolio(
+                portfolio_name=portfolio_name,
+                usd_conditions=conditions,
+                btc_only=True,
+                rsi_conditions_usd=rsi_conditions_usd,
+                use_volatility_filter=use_volatility_filter,
+                volatility_weight=volatility_weight,
+                use_ssr_signal=use_ssr_signal,
+                use_ssr_gate=use_ssr_gate,
+                btc_rsi_gate=btc_rsi_gate,
+                use_btc_rsi_signal=use_btc_rsi_signal,
+                follow_portfolio=follow_portfolio
+            )
+        else:
+            if use_btc_adjusted:
+                return self.create_portfolio(
+                    portfolio_name=portfolio_name,
+                    btc_conditions=conditions,
+                    btc_only=False,
+                    rsi_conditions_usd=rsi_conditions_usd,
+                    rsi_conditions_btc=rsi_conditions_btc,
+                    use_volatility_filter=use_volatility_filter,
+                    volatility_weight=volatility_weight,
+                    use_ssr_signal=use_ssr_signal,
+                    use_ssr_gate=use_ssr_gate,
+                    btc_rsi_gate=btc_rsi_gate,
+                    use_btc_rsi_signal=use_btc_rsi_signal,
+                    follow_portfolio=follow_portfolio
+                )
+            else:
+                return self.create_portfolio(
+                    portfolio_name=portfolio_name,
+                    usd_conditions=conditions,
+                    btc_only=False,
+                    rsi_conditions_usd=rsi_conditions_usd,
+                    rsi_conditions_btc=rsi_conditions_btc,
+                    use_volatility_filter=use_volatility_filter,
+                    volatility_weight=volatility_weight,
+                    use_ssr_signal=use_ssr_signal,
+                    use_ssr_gate=use_ssr_gate,
+                    btc_rsi_gate=btc_rsi_gate,
+                    use_btc_rsi_signal=use_btc_rsi_signal,
+                    follow_portfolio=follow_portfolio
+                )
