@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import logging
+from tqdm.auto import tqdm
 
 class TrendClassifier:
     """
@@ -16,7 +17,7 @@ class TrendClassifier:
         self.logger = logging.getLogger(__name__)
         self.ma_calculator = ma_calculator
         
-    def calculate_indicators(self, data, price_column, asset_id, suffix=''):
+    def _calculate_indicators(self, data, price_column, asset_id, suffix=''):
         """
         Calculate technical indicators for trend classification.
         
@@ -43,58 +44,64 @@ class TrendClassifier:
         
         return data, ma_columns, roc_columns
     
-    def classify_trend(self, data, asset_id, price_type='USD'):
+    def classify_trend(self, mas, rocs, data, suffix):
         """
         Classify trend for an asset based on technical indicators.
         
         Args:
-            data (pd.DataFrame): DataFrame with technical indicators
-            asset_id (str): Asset ID for logging
-            price_type (str, optional): Type of price to analyze ('USD' or 'BTC'). Defaults to 'USD'.
+            mas (dict): Dictionary of MA columns by term
+            rocs (dict): Dictionary of RoC columns by term
+            data (pd.DataFrame): DataFrame with price data
+            suffix (str): Suffix for trend columns ('_USD' or '_BTC')
             
         Returns:
             pd.DataFrame: DataFrame with trend classifications added
         """
         if data.empty:
-            self.logger.warning(f"Empty data provided for trend classification for {asset_id}.")
+            self.logger.warning(f"Empty data provided for trend classification.")
             return data
         
         # Make a copy to avoid modifying the original DataFrame
         df = data.copy()
         
-        # Determine which price column to use
-        price_col = 'close' if price_type == 'USD' else f'{asset_id}_btc'
-        suffix = f'_{price_type}'
+        # Extract price column from suffix
+        price_type = suffix.strip('_')
+        price_col = 'close' if price_type == 'USD' else next((col for col in df.columns if col.endswith('_btc')), None)
         
-        self.logger.info(f"Processing {price_type} trend data for {asset_id}")
-        
-        # Calculate indicators if not already present
-        if not any(col.startswith('MA') and col.endswith(price_col) for col in df.columns):
-            df, ma_columns, roc_columns = self.calculate_indicators(df, price_col, asset_id, suffix)
-        else:
-            # Extract existing MA and RoC columns
-            ma_columns = {}
-            roc_columns = {}
-            
-            for term in ['Short Term', 'Medium Term', 'Long Term']:
-                ma_columns[term] = [col for col in df.columns if col.startswith('MA') and col.endswith(price_col)]
-                roc_columns[term] = [col for col in df.columns if col.startswith('RoC') and col.endswith(price_col)]
+        if not price_col:
+            self.logger.warning(f"No price column found for {price_type}")
+            return df
         
         # Create columns for trend classifications
-        for term in ['Short Term', 'Medium Term', 'Long Term']:
-            df[f'Trend_{term}{suffix}'] = np.nan
+        term_mapping = {
+            'Short Term': 'short_term',
+            'Medium Term': 'medium_term',
+            'Long Term': 'long_term'
+        }
+        
+        terms = ['Short Term', 'Medium Term', 'Long Term']
+        for term in terms:
+            # Use the new snake_case column naming format
+            snake_case_term = term_mapping[term]
+            df[f'{snake_case_term}_trend{suffix}'] = np.nan
             
-            ma_cols = ma_columns.get(term, [])
+            ma_cols = mas.get(term, [])
             ma_cols_filtered = [col for col in ma_cols if col in df.columns]
-            roc_cols = roc_columns.get(term, [])
+            roc_cols = rocs.get(term, [])
             roc_cols_filtered = [col for col in roc_cols if col in df.columns]
             
             if not ma_cols_filtered or not roc_cols_filtered:
                 self.logger.warning(f"Not enough MA or RoC columns for {term}{suffix} trend classification")
                 continue
             
-            # For each row in the DataFrame
-            for i in range(len(df)):
+            # For each row in the DataFrame - with a progress bar for long datasets
+            total_rows = len(df)
+            if total_rows > 5000:  # Only show progress for large datasets
+                iterator = tqdm(range(total_rows), desc=f"Classifying {term}{suffix}", leave=False)
+            else:
+                iterator = range(total_rows)
+                
+            for i in iterator:
                 row = df.iloc[i]
                 
                 # Get MA and RoC values for this row
@@ -108,9 +115,6 @@ class TrendClassifier:
                 if not ma_values or not roc_values:
                     continue
                 
-                # Calculate MA trend: avg MA above price = bearish (-1), below = bullish (+1)
-                price_col = ma_cols_filtered[0].split('_', 1)[1]  # Extract price column name from MA column
-                
                 # Make sure we're getting the value from the correct row
                 if price_col not in row:
                     self.logger.warning(f"Price column {price_col} not found in row")
@@ -120,26 +124,61 @@ class TrendClassifier:
                 if pd.isna(price_val):
                     continue
                     
-                avg_ma = np.mean(ma_values)
-                ma_trend = 1 if price_val > avg_ma else -1
+                # Calculate MA trend proportions
+                ma_bullish_count = sum(1 for ma in ma_values if price_val > ma)
+                ma_bearish_count = sum(1 for ma in ma_values if price_val < ma)
+                ma_total = len(ma_values)
+                ma_bullish_prop = ma_bullish_count / ma_total if ma_total > 0 else 0
+                ma_bearish_prop = ma_bearish_count / ma_total if ma_total > 0 else 0
                 
-                # Calculate RoC trend: positive avg RoC = bullish (+1), negative = bearish (-1)
-                avg_roc = np.mean(roc_values)
-                roc_trend = 1 if avg_roc > 0 else -1
+                # Calculate RoC trend proportions
+                roc_bullish_count = sum(1 for roc in roc_values if roc > 0)
+                roc_bearish_count = sum(1 for roc in roc_values if roc < 0)
+                roc_total = len(roc_values)
+                roc_bullish_prop = roc_bullish_count / roc_total if roc_total > 0 else 0
+                roc_bearish_prop = roc_bearish_count / roc_total if roc_total > 0 else 0
                 
-                # Combined trend: bullish only if both MA and RoC trends agree
-                combined_trend = ma_trend if ma_trend == roc_trend else 0
+                # Determine MA trend direction
+                if ma_bullish_prop > 0.6:  # Strong bullish MA
+                    ma_trend = 1
+                elif ma_bearish_prop > 0.6:  # Strong bearish MA
+                    ma_trend = -1
+                else:  # Mixed or weak MA signals
+                    ma_trend = 0
                 
-                # Set trend value for this row
-                df.loc[df.index[i], f'Trend_{term}{suffix}'] = combined_trend
+                # Determine RoC trend direction
+                if roc_bullish_prop > 0.6:  # Strong bullish RoC
+                    roc_trend = 1
+                elif roc_bearish_prop > 0.6:  # Strong bearish RoC
+                    roc_trend = -1
+                else:  # Mixed or weak RoC signals
+                    roc_trend = 0
+                
+                # Calculate trend strength based on agreement and proportions
+                if ma_trend == roc_trend:
+                    if ma_trend == 1:  # Bullish
+                        # Strong bull if both MA and RoC show strong bullish proportions
+                        if ma_bullish_prop > 0.8 and roc_bullish_prop > 0.8:
+                            combined_trend = 2  # Strong Bull
+                        else:
+                            combined_trend = 1  # Weak Bull
+                    elif ma_trend == -1:  # Bearish
+                        # Strong bear if both MA and RoC show strong bearish proportions
+                        if ma_bearish_prop > 0.8 and roc_bearish_prop > 0.8:
+                            combined_trend = -2  # Strong Bear
+                        else:
+                            combined_trend = -1  # Weak Bear
+                    else:  # Neutral
+                        combined_trend = 0
+                else:
+                    # If trends disagree, use neutral
+                    combined_trend = 0
+                
+                # Set trend value for this row using the new naming convention
+                df.loc[df.index[i], f'{snake_case_term}_trend{suffix}'] = combined_trend
         
         # Create overall trend classification
         self._calculate_overall_trend(df, price_type)
-        
-        # Calculate trend coverage
-        trend_columns = [col for col in df.columns if col.startswith('Trend_') and col.endswith(suffix)]
-        trend_coverage = (df[trend_columns].count().sum() / (len(df) * len(trend_columns))) * 100
-        self.logger.info(f"{asset_id} {price_type} trend coverage: {trend_coverage:.2f}%")
         
         return df
     
@@ -155,12 +194,14 @@ class TrendClassifier:
             pd.DataFrame: DataFrame with overall trend column added
         """
         suffix = f'_{price_type}'
-        short_term_col = f'Trend_Short Term{suffix}'
-        medium_term_col = f'Trend_Medium Term{suffix}'
-        long_term_col = f'Trend_Long Term{suffix}'
         
-        # Initialize overall trend column
-        overall_col = f'Overall_Trend{suffix}'
+        # Use the new snake_case column names
+        short_term_col = f'short_term_trend{suffix}'
+        medium_term_col = f'medium_term_trend{suffix}'
+        long_term_col = f'long_term_trend{suffix}'
+        
+        # Initialize overall trend column with the new naming format
+        overall_col = f'overall_trend{suffix}'
         df[overall_col] = np.nan
         
         # Return if not all required columns are present
@@ -182,20 +223,25 @@ class TrendClassifier:
             # Short term: 30%, Medium term: 40%, Long term: 30%
             weighted_trend = (0.3 * short) + (0.4 * medium) + (0.3 * long)
             
-            # Discretize: >0.3 is bullish, <-0.3 is bearish, else neutral
-            if weighted_trend > 0.3:
-                overall_trend = 1  # Bullish
-            elif weighted_trend < -0.3:
-                overall_trend = -1  # Bearish
-            else:
+            # Discretize based on thresholds
+            # Five classifications: -2, -1, 0, 1, 2
+            if weighted_trend > 1.5:
+                overall_trend = 2  # Strong Bullish
+            elif weighted_trend > 0.5:
+                overall_trend = 1  # Weak Bullish
+            elif weighted_trend > -0.5:
                 overall_trend = 0  # Neutral
+            elif weighted_trend > -1.5:
+                overall_trend = -1  # Weak Bearish
+            else:
+                overall_trend = -2  # Strong Bearish
             
             # Set value
             df.loc[df.index[i], overall_col] = overall_trend
         
         return df
     
-    def compute_overall_classification(self, trends):
+    def _compute_overall_classification(self, trends):
         """
         Compute overall trend classification from individual trend signals.
         
@@ -208,14 +254,14 @@ class TrendClassifier:
         # Extract all trend values
         trend_values = []
         
-        # Check if trends is a Series with integer index (as in create_classified_data)
+        # Check if trends is a Series with integer index
         if isinstance(trends, pd.Series) and trends.index.dtype.kind in 'iu':
             # Just use the values directly
             trend_values = [v for v in trends.values if pd.notna(v)]
         else:
-            # Original logic for DataFrame with column names
+            # For DataFrame with column names
             for col in trends.index:
-                if isinstance(col, str) and col.startswith('Trend_') and pd.notna(trends[col]):
+                if isinstance(col, str) and '_trend_' in col and pd.notna(trends[col]):
                     trend_values.append(trends[col])
         
         if not trend_values:
@@ -226,17 +272,17 @@ class TrendClassifier:
         
         # Map average to discrete classification
         if avg_trend <= -1.5:
-            return -2
+            return -2  # Strong Bear
         elif avg_trend <= -0.5:
-            return -1
+            return -1  # Weak Bear
         elif avg_trend <= 0.5:
-            return 0
+            return 0   # Neutral
         elif avg_trend <= 1.5:
-            return 1
+            return 1   # Weak Bull
         else:
-            return 2
+            return 2   # Strong Bull
     
-    def create_classified_data(self, data, asset_id):
+    def _create_classified_data(self, data, asset_id):
         """
         Create a dataset with trend classifications for both USD and BTC price data.
         
@@ -253,32 +299,56 @@ class TrendClassifier:
         
         # Create copy for classified data
         classified_data = data.copy()
+        self.logger.info(f"Creating classified data for {asset_id} with {len(data)} rows")
         
-        # Process USD price data
-        if 'close' in data.columns:
-            usd_classified = self.classify_trend(data, asset_id, 'USD')
+        # Process USD and BTC price data with progress tracking
+        with tqdm(total=2, desc=f"Creating trend data for {asset_id}", leave=False) as pbar:
+            # Process USD price data
+            if 'close' in data.columns:
+                # Calculate indicators for USD
+                df_usd, ma_usd, roc_usd = self._calculate_indicators(data, 'close', asset_id)
+                
+                # Classify USD trends
+                usd_classified = self.classify_trend(ma_usd, roc_usd, df_usd, '_USD')
+                
+                # Get all newly created columns from USD classification
+                usd_cols = [col for col in usd_classified.columns if col not in classified_data.columns]
+                
+                # Add them to the result DataFrame
+                for col in usd_cols:
+                    classified_data[col] = usd_classified[col]
+                
+                pbar.update(1)
+            else:
+                self.logger.warning(f"No 'close' column found for {asset_id}, USD trend classification skipped")
+                pbar.update(1)
             
-            # Get all newly created columns from USD classification
-            usd_cols = [col for col in usd_classified.columns if col not in classified_data.columns]
-            
-            # Add them to the result DataFrame
-            for col in usd_cols:
-                classified_data[col] = usd_classified[col]
-        else:
-            self.logger.warning(f"No 'close' column found for {asset_id}, USD trend classification skipped")
+            # Process BTC price data (if available)
+            btc_price_col = f'{asset_id}_btc'
+            if btc_price_col in data.columns:
+                # Calculate indicators for BTC
+                df_btc, ma_btc, roc_btc = self._calculate_indicators(data, btc_price_col, asset_id)
+                
+                # Classify BTC trends
+                btc_classified = self.classify_trend(ma_btc, roc_btc, df_btc, '_BTC')
+                
+                # Get all newly created columns from BTC classification
+                btc_cols = [col for col in btc_classified.columns if col not in classified_data.columns]
+                
+                # Add them to the result DataFrame
+                for col in btc_cols:
+                    classified_data[col] = btc_classified[col]
+                
+                pbar.update(1)
+            else:
+                self.logger.debug(f"No '{btc_price_col}' column found for {asset_id}, BTC trend classification skipped")
+                pbar.update(1)
         
-        # Process BTC price data (if available)
-        btc_price_col = f'{asset_id}_btc'
-        if btc_price_col in data.columns:
-            btc_classified = self.classify_trend(data, asset_id, 'BTC')
-            
-            # Get all newly created columns from BTC classification
-            btc_cols = [col for col in btc_classified.columns if col not in classified_data.columns]
-            
-            # Add them to the result DataFrame
-            for col in btc_cols:
-                classified_data[col] = btc_classified[col]
-        else:
-            self.logger.debug(f"No '{btc_price_col}' column found for {asset_id}, BTC trend classification skipped")
+        # Log summary of classification
+        trend_cols = [col for col in classified_data.columns if '_trend_' in col and (col.endswith('_USD') or col.endswith('_BTC'))]
+        self.logger.debug(f"Created {len(trend_cols)} trend columns for {asset_id}")
         
-        return classified_data 
+        return classified_data
+        
+    # Alias for backwards compatibility
+    create_classified_data = _create_classified_data 

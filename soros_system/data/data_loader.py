@@ -8,7 +8,7 @@ class DataLoader:
     """
     Handles loading and preprocessing of asset price data from CSV files.
     """
-    def __init__(self, data_path, btc_data_path, ssr_data_path=None):
+    def __init__(self, data_path, btc_data_path, ssr_data_path=None, asset_ids=None):
         """
         Initialize the DataLoader.
         
@@ -16,11 +16,13 @@ class DataLoader:
             data_path (str): Path to the directory containing asset data files
             btc_data_path (str): Path to the Bitcoin data file
             ssr_data_path (str, optional): Path to the SSR data file
+            asset_ids (list, optional): List of asset IDs to use for ticker mapping
         """
         self.data_path = data_path
         self.btc_data_path = btc_data_path
         self.ssr_data_path = ssr_data_path
         self.logger = logging.getLogger(__name__)
+        self.asset_ids = asset_ids or []
         
         # Cache for loaded data
         self.asset_data_cache = {}
@@ -32,57 +34,31 @@ class DataLoader:
     def _get_ticker_mapping(self):
         """
         Create a mapping between asset tickers and their IDs using CoinGecko API.
+        Only includes mappings for assets in asset_ids.
         
         Returns:
             dict: Mapping of tickers to asset IDs
         """
-        try:
-            cg = CoinGeckoAPI()
-            coins_list = cg.get_coins_list()
-            coins_df = pd.DataFrame(coins_list)
-            
-            # Known mappings for assets that might have different tickers in CoinGecko
-            known_mappings = {
-                # Special cases
-                'VIRTUAL': 'virtual-protocol', 
-                'HYPE': 'hyperliquid', 
-                'YNE': 'yesnoerror',
-                # Common cryptocurrencies with standard tickers
-                'BTC': 'bitcoin',
-                'ETH': 'ethereum',
-                'BNB': 'binancecoin',
-                'XRP': 'ripple',
-                'ADA': 'cardano',
-                'SOL': 'solana',
-                'DOGE': 'dogecoin',
-                'DOT': 'polkadot',
-                'AVAX': 'avalanche-2',
-                'MATIC': 'polygon',
-                'LINK': 'chainlink',
-                'UNI': 'uniswap',
-                'LTC': 'litecoin'
-            }
-            
-            # Initialize with known mappings
-            mapping = {ticker: coin_id for ticker, coin_id in known_mappings.items()}
-            
-            # Add mappings from CoinGecko data
-            for _, row in coins_df.iterrows():
-                ticker = row['symbol'].upper()
-                if ticker not in mapping:
-                    mapping[ticker] = row['id']
-            
-            return mapping
-        except Exception as e:
-            self.logger.error(f"Failed to get ticker mapping: {e}")
-            # Return at least our hardcoded mappings to ensure we have basic functionality
-            return {
-                'BTC': 'bitcoin',
-                'ETH': 'ethereum',
-                'BNB': 'binancecoin',
-                'XRP': 'ripple',
-                'ADA': 'cardano'
-            }
+        cg = CoinGeckoAPI()
+        coins_list = cg.get_coins_list()
+        coins_df = pd.DataFrame(coins_list)
+        
+        # Known mappings for assets that might have different tickers in CoinGecko
+        known_mappings = {'VIRTUAL': 'virtual-protocol', 'HYPE': 'hyperliquid', 'YNE': 'yesnoerror'}
+        
+        # Only include mappings for assets in self.asset_ids
+        mapping = {ticker: coin_id for ticker, coin_id in known_mappings.items() if coin_id in self.asset_ids}
+        
+        # Filter coins to only include those in asset_ids
+        filtered_coins_df = coins_df[coins_df['id'].isin(self.asset_ids)]
+        
+        # Add mappings from filtered CoinGecko data
+        for _, row in filtered_coins_df.iterrows():
+            ticker = row['symbol'].upper()
+            if ticker not in mapping:
+                mapping[ticker] = row['id']
+        
+        return mapping
         
     def load_asset_data(self, asset_id):
         """
@@ -96,21 +72,27 @@ class DataLoader:
         """
         # Return cached data if available
         if asset_id in self.asset_data_cache:
+            self.logger.debug(f"Returning cached data for {asset_id}")
             return self.asset_data_cache[asset_id]
         
-        data_path = f"{self.data_path}{asset_id}_candles.csv"
+        # Construct file path
+        data_path = os.path.join(self.data_path, f"{asset_id}_candles.csv")
+        
         if not os.path.exists(data_path):
             self.logger.warning(f"File not found for {asset_id}: {data_path}")
             return pd.DataFrame()
         
         try:
+            self.logger.info(f"Loading data from file: {data_path}")
             data = pd.read_csv(data_path)
             data['date'] = pd.to_datetime(data['date'])
             data.dropna(subset=['close'], inplace=True)
+            
             if data.empty:
                 self.logger.warning(f"No valid data for {asset_id} after dropping NaN in 'close'.")
                 return pd.DataFrame()
             
+            # For non-Bitcoin assets, merge with BTC data for relative pricing
             if asset_id != 'bitcoin':
                 try:
                     # Load BTC data
@@ -141,8 +123,9 @@ class DataLoader:
             
             self.logger.info(f"Successfully loaded data for {asset_id} with {len(data)} rows.")
             
-            # Cache the data
+            # Cache the data with asset_id as the key
             self.asset_data_cache[asset_id] = data
+            
             return data
         except Exception as e:
             self.logger.error(f"Failed to load data for {asset_id}: {e}")

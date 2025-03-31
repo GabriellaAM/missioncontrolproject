@@ -20,19 +20,26 @@ class RSICalculator:
             window (int, optional): Window size for RSI calculation. Defaults to 14.
             
         Returns:
-            float: RSI value (0-100)
+            pd.Series: RSI values for the entire price series (with NaN for the first window elements)
         """
         # Convert numpy array to pandas Series if needed
         if isinstance(prices, np.ndarray):
             prices = pd.Series(prices)
             
-        if len(prices) < window + 1:
-            return np.nan
+        # Create a result Series filled with NaN values
+        rsi_series = pd.Series(np.nan, index=prices.index)
         
-        # Convert to numeric and drop NaN values
-        prices = pd.to_numeric(prices, errors='coerce').dropna()
         if len(prices) < window + 1:
-            return np.nan
+            print(f"WARNING: Insufficient data for RSI calculation. Need at least {window + 1} points, but only have {len(prices)}")
+            return rsi_series
+        
+        # Convert to numeric
+        prices = pd.to_numeric(prices, errors='coerce')
+        
+        # Return NaN Series if we don't have enough data after handling NaNs
+        if prices.count() < window + 1:
+            print(f"WARNING: Not enough valid data points for RSI calculation after converting to numeric. Needed: {window+1}, Got: {prices.count()}")
+            return rsi_series
         
         # Calculate price changes
         price_diff = prices.diff(1)
@@ -41,20 +48,23 @@ class RSICalculator:
         gains = price_diff.where(price_diff > 0, 0)
         losses = -price_diff.where(price_diff < 0, 0)
         
-        # Calculate average gains and losses
+        # Traditional RSI calculation (using SMA for first window, EMA after)
         avg_gain = gains.rolling(window=window, min_periods=1).mean()
         avg_loss = losses.rolling(window=window, min_periods=1).mean()
         
-        # Calculate RS and RSI
+        # Calculate RS
         rs = avg_gain / avg_loss
         
         # Handle zero division
-        if avg_loss.iloc[-1] == 0:
-            return 100
+        rs = rs.replace([np.inf, -np.inf], np.nan)
         
-        rsi = 100 - (100 / (1 + rs.iloc[-1]))
+        # Calculate RSI
+        rsi_series = 100 - (100 / (1 + rs))
         
-        return rsi
+        # For the window before we have full data, set to NaN
+        rsi_series[:window] = np.nan
+        
+        return rsi_series
     
     def calculate_smooth_rsi(self, data, price_column, rsi_length=28, roc_length=28):
         """
@@ -69,13 +79,15 @@ class RSICalculator:
         Returns:
             pd.DataFrame: DataFrame with RSI and RoC columns added
         """
+        self.logger.debug(f"Calculating RSI for {price_column} with length {rsi_length}")
+        
         if data.empty:
             self.logger.warning("Empty data provided for RSI calculation.")
-            return data
-            
+            raise ValueError("Empty data provided for RSI calculation.")
+        
         if price_column not in data.columns:
-            self.logger.warning(f"Column '{price_column}' not found for RSI calculation.")
-            return data
+            self.logger.warning(f"Column '{price_column}' not found for RSI calculation. Available columns: {data.columns.tolist()}")
+            raise ValueError(f"Column '{price_column}' not found for RSI calculation.")
         
         # Make a copy to avoid modifying the original DataFrame
         df = data.copy()
@@ -83,20 +95,15 @@ class RSICalculator:
         # Ensure all price columns are numeric
         df[price_column] = pd.to_numeric(df[price_column], errors='coerce')
         
-        # Check if we have enough data
-        if len(df) < rsi_length + 1:
-            self.logger.warning(f"Not enough data points for RSI calculation. Needed: {rsi_length+1}, Got: {len(df)}")
-            return df
-        
         # Infer OHLC columns from price column
         high_col, open_col, low_col, close_col = self._infer_ohlc_columns(df, price_column)
         
         # Ensure all needed columns are present
         required_cols = [col for col in [high_col, open_col, low_col, close_col] if col is not None]
         if not all(col in df.columns for col in required_cols):
-            self.logger.warning(f"Not all required OHLC columns found for {price_column}.")
-            # Try to use price_column for all calculations
-            high_col = open_col = low_col = close_col = price_column
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            self.logger.warning(f"Missing OHLC columns for RSI calculation: {missing_cols}")
+            raise ValueError(f"Missing required OHLC columns for RSI calculation: {missing_cols}")
         
         # Calculate RSI for each OHLC column (if available)
         rsi_values = {}
@@ -106,11 +113,12 @@ class RSICalculator:
                 try:
                     # Convert to Series first to ensure consistent handling
                     df[col] = pd.Series(df[col])
-                    rsi_values[col_name] = df[col].rolling(rsi_length).apply(
-                        lambda x: self.calculate_rsi(x), raw=False).bfill()
+                    
+                    # Calculate RSI directly (returns full series)
+                    rsi_values[col_name] = self.calculate_rsi(df[col], window=rsi_length)
                 except Exception as e:
-                    self.logger.warning(f"Error calculating RSI for {col}: {e}")
-                    rsi_values[col_name] = pd.Series(np.nan, index=df.index)
+                    self.logger.error(f"Error calculating RSI for {col}: {e}")
+                    raise RuntimeError(f"Error calculating RSI for {col}: {e}")
         
         # Calculate RoC for each OHLC column (if available)
         roc_values = {}
@@ -122,8 +130,8 @@ class RSICalculator:
                     df[col] = pd.Series(df[col])
                     roc_values[col_name] = (df[col] - df[col].shift(roc_length)) / df[col].shift(roc_length) * 100
                 except Exception as e:
-                    self.logger.warning(f"Error calculating RoC for {col}: {e}")
-                    roc_values[col_name] = pd.Series(np.nan, index=df.index)
+                    self.logger.error(f"Error calculating RoC for {col}: {e}")
+                    raise RuntimeError(f"Error calculating RoC for {col}: {e}")
         
         # Smooth RSI and RoC as average of available values
         if rsi_values:
@@ -132,8 +140,10 @@ class RSICalculator:
             if rsi_series:
                 smooth_rsi = pd.concat(rsi_series, axis=1).mean(axis=1)
             else:
+                self.logger.warning("No valid RSI series found, all values are NaN")
                 smooth_rsi = pd.Series(np.nan, index=df.index)
         else:
+            self.logger.warning("No RSI values calculated")
             smooth_rsi = pd.Series(np.nan, index=df.index)
         
         if roc_values:
@@ -142,8 +152,10 @@ class RSICalculator:
             if roc_series:
                 smooth_roc = pd.concat(roc_series, axis=1).mean(axis=1)
             else:
+                self.logger.warning("No valid RoC series found, all values are NaN")
                 smooth_roc = pd.Series(np.nan, index=df.index)
         else:
+            self.logger.warning("No RoC values calculated")
             smooth_roc = pd.Series(np.nan, index=df.index)
         
         # Add RSI and RoC columns
@@ -152,15 +164,20 @@ class RSICalculator:
         
         # Binary signal: +1 for Bull (RSI > 50 AND RoC > 0), -1 for Bear
         df[f'RSI_Signal_{price_column}'] = np.where(
-            (smooth_rsi > 50) & (smooth_roc > 0), 
-            1, 
+            pd.isna(smooth_rsi) | pd.isna(smooth_roc),
+            np.nan,  # If either RSI or RoC is NaN, signal should be NaN
             np.where(
-                (smooth_rsi <= 50) & (smooth_roc < 0),
-                -1,
-                0  # Neutral for mixed signals
+                (smooth_rsi > 50) & (smooth_roc > 0), 
+                1, 
+                np.where(
+                    (smooth_rsi <= 50) & (smooth_roc < 0),
+                    -1,
+                    0  # Neutral for mixed signals
+                )
             )
         )
         
+        self.logger.debug(f"RSI calculation complete for {price_column}")
         return df
     
     def _infer_ohlc_columns(self, df, price_column):
@@ -187,9 +204,15 @@ class RSICalculator:
             open_col = f'{asset_prefix}_btc_open' if f'{asset_prefix}_btc_open' in df.columns else None
             low_col = f'{asset_prefix}_btc_low' if f'{asset_prefix}_btc_low' in df.columns else None
             close_col = price_column
-        # For any other price column, use it for all OHLC values
+        # For any other price column, set non-close columns to None
         else:
-            self.logger.info(f"Using {price_column} for all OHLC values in RSI calculation.")
-            high_col = open_col = low_col = close_col = price_column
+            self.logger.warning(f"Unable to infer OHLC columns for {price_column}. Will use only close price.")
+            high_col = None
+            open_col = None
+            low_col = None
+            close_col = price_column
+        
+        # Log the inferred columns
+        self.logger.debug(f"Inferred OHLC columns for {price_column}: high={high_col}, open={open_col}, low={low_col}, close={close_col}")
         
         return high_col, open_col, low_col, close_col 

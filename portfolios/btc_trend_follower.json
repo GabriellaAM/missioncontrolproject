@@ -1,0 +1,26 @@
+{
+    "criteria": {
+        "usd_conditions": {
+            "Short Term": [
+                1,
+                2
+            ],
+            "Overall": [
+                1,
+                2
+            ]
+        },
+        "signal_weights": {
+            "usd_trend": 0.7,
+            "rsi": 0.2,
+            "volatility": 0.1
+        },
+        "rsi_conditions_usd": true,
+        "use_volatility_filter": true,
+        "trade_mode": "all_in",
+        "btc_only": true
+    },
+    "created_at": "2025-03-31T20:13:37.455858",
+    "updated_at": "2025-03-31T20:13:37.455866",
+    "assets": []
+}

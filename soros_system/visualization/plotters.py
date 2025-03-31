@@ -295,10 +295,11 @@ class PortfolioVisualizer:
             self.logger.warning("Empty data provided for trend distribution plot.")
             return None
         
-        # Ensure we have trend column
-        trend_col = f'Overall_Trend_{trend_type}'
+        # Get trend column
+        trend_col = f'overall_trend_{trend_type}'
+        
         if trend_col not in asset_data.columns:
-            self.logger.warning(f"Column {trend_col} not found in data.")
+            self.logger.warning(f"Column {trend_col} not found in data, cannot create trend distribution plot")
             return None
         
         # Create copy with date as index
@@ -361,12 +362,13 @@ class PortfolioVisualizer:
         
         return fig
     
-    def plot_transitions_heatmap(self, transition_matrix, show_plot=True):
+    def plot_transitions_heatmap(self, transition_matrix, title="Trend State Transition Probabilities", show_plot=True):
         """
         Plot a heatmap of transition probabilities between trend states.
         
         Args:
             transition_matrix (pd.DataFrame): Transition probability matrix
+            title (str, optional): Title for the plot
             show_plot (bool, optional): Whether to display the plot
             
         Returns:
@@ -406,7 +408,7 @@ class PortfolioVisualizer:
         
         # Update layout
         fig.update_layout(
-            title="Trend State Transition Probabilities",
+            title=title,
             xaxis_title="To State",
             yaxis_title="From State",
             template="plotly_white"

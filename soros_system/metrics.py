@@ -115,7 +115,7 @@ class MetricsCalculator:
                 self.logger.warning(f"Invalid lookback value: {lookback}. Using all available data.")
         
         # Ensure we have trend column
-        trend_col = f'overall_trend_{trend_type}'
+        trend_col = f'Overall_Trend_{trend_type}'
         if trend_col not in df.columns:
             self.logger.warning(f"Column {trend_col} not found in data.")
             return pd.DataFrame()
@@ -302,18 +302,12 @@ class MetricsCalculator:
             except (ValueError, TypeError):
                 # If conversion fails, log a warning
                 self.logger.warning(f"Invalid lookback value: {lookback}. Using all available data.")
-
-        # Map term to snake_case column name format
-        term_mapping = {
-            'Short Term': 'short_term',
-            'Medium Term': 'medium_term',
-            'Long Term': 'long_term',
-            'Overall': 'overall'
-        }
-        snake_case_term = term_mapping.get(term, term.lower().replace(' ', '_'))
         
-        # Determine trend column using snake_case format
-        trend_col = f'{snake_case_term}_trend_{trend_type}'
+        # Determine trend column based on term
+        if term == 'Overall':
+            trend_col = f'Overall_Trend_{trend_type}'
+        else:
+            trend_col = f'Trend_{term}_{trend_type}'
             
         if trend_col not in df.columns:
             self.logger.warning(f"Column {trend_col} not found in data.")
@@ -424,25 +418,13 @@ class MetricsCalculator:
         # Calculate metrics for each term and combine them
         all_metrics = []
         
-        # Define term mapping to match the new column naming scheme
-        term_mapping = {
-            'Short Term': 'short_term',
-            'Medium Term': 'medium_term',
-            'Long Term': 'long_term',
-            'Overall': 'overall'
-        }
-        
-        for display_term, snake_case_term in term_mapping.items():
-            # Check if the corresponding column exists
-            col_name = f'{snake_case_term}_trend_{trend_type}'
+        for term in ['Short Term', 'Medium Term', 'Long Term', 'Overall']:
+            term_metrics = self.calculate_trend_term_metrics(data, trend_type, term, lookback)
             
-            if col_name in data.columns:
-                term_metrics = self.calculate_trend_term_metrics(data, trend_type, display_term, lookback)
-                
-                if not term_metrics.empty:
-                    # Add term column
-                    term_metrics['Term'] = display_term
-                    all_metrics.append(term_metrics)
+            if not term_metrics.empty:
+                # Add term column
+                term_metrics['Term'] = term
+                all_metrics.append(term_metrics)
         
         if not all_metrics:
             self.logger.warning(f"No trend metrics calculated for {trend_type}.")
@@ -462,174 +444,4 @@ class MetricsCalculator:
         # Apply the new column order
         consolidated_metrics = consolidated_metrics[cols]
         
-        return consolidated_metrics
-        
-    def calculate_all_metrics(self, data, asset_id, trend_type, lookback):
-        """
-        Calculate all metrics and transition matrices for an asset with a single call.
-        
-        Args:
-            data (pd.DataFrame): DataFrame with price and trend data
-            asset_id (str): ID of the asset
-            trend_type (str): Type of trend to analyze ('USD' or 'BTC')
-            lookback (str or int): Lookback period ('all' or number of days)
-            
-        Returns:
-            tuple: (trend_metrics, transition_matrices, consolidated_metrics)
-        """
-        if data.empty:
-            self.logger.warning(f"Empty data provided for all metrics calculation for {asset_id}.")
-            return pd.DataFrame(), {}, pd.DataFrame()
-            
-        # Check if trend column exists
-        trend_col = f'overall_trend_{trend_type}'
-        if trend_col not in data.columns:
-            self.logger.warning(f"Column {trend_col} not found in data for {asset_id}. Available columns: {data.columns.tolist()}")
-            return pd.DataFrame(), {}, pd.DataFrame()
-            
-        # Calculate trend type metrics
-        try:
-            trend_metrics = self.calculate_trend_type_metrics(data, trend_type, lookback)
-        except Exception as e:
-            self.logger.error(f"Error calculating trend metrics for {asset_id} {trend_type}: {str(e)}")
-            trend_metrics = pd.DataFrame()
-            
-        # Calculate consolidated metrics
-        try:
-            consolidated_metrics = self.calculate_consolidated_trend_metrics(data, trend_type, lookback)
-        except Exception as e:
-            self.logger.error(f"Error calculating consolidated metrics for {asset_id} {trend_type}: {str(e)}")
-            consolidated_metrics = pd.DataFrame()
-            
-        # Calculate transition matrices for each term
-        transition_matrices = {}
-        
-        # Define consistent term mapping using snake_case format
-        term_mapping = {
-            'short_term': 'short_term',
-            'medium_term': 'medium_term', 
-            'long_term': 'long_term',
-            'overall': 'overall'
-        }
-        
-        # Log available trend columns to help with debugging
-        trend_cols = [col for col in data.columns if '_trend_' in col and trend_type in col]
-        self.logger.info(f"Available trend columns for {asset_id} {trend_type}: {trend_cols}")
-        
-        # Log data shape and first few rows for debugging
-        self.logger.debug(f"Data shape for {asset_id}: {data.shape}")
-        if not data.empty:
-            self.logger.debug(f"First row date for {asset_id}: {data['date'].iloc[0] if 'date' in data.columns else 'No date column'}")
-        
-        for snake_case_term in term_mapping.keys():
-            # For each term, calculate transition probabilities
-            term_col = f'{snake_case_term}_trend_{trend_type}'
-            self.logger.info(f"Checking for column {term_col} for {asset_id}")
-            
-            if term_col in data.columns:
-                try:
-                    self.logger.info(f"Calculating transition matrix for {asset_id} {term_col}")
-                    # Create a copy of the required data
-                    transition_df = data[[term_col]].copy()
-                    if 'date' in data.columns:
-                        transition_df['date'] = data['date']
-                        
-                    # Count non-null values
-                    non_null_count = transition_df[term_col].count()
-                    self.logger.info(f"Non-null values in {term_col}: {non_null_count} out of {len(transition_df)}")
-                    
-                    # Print first few values for debugging
-                    if non_null_count > 0:
-                        first_values = transition_df[term_col].dropna().head(5).tolist()
-                        self.logger.debug(f"First few {term_col} values: {first_values}")
-                    else:
-                        self.logger.warning(f"No non-null values found in {term_col} for {asset_id}")
-                    
-                    # Rename column for consistency with what the Markov analyzer expects
-                    temp_col_name = f'overall_trend_{trend_type}'
-                    transition_df[temp_col_name] = transition_df[term_col]
-                    
-                    # We would normally call markov_analyzer here, but since it's not
-                    # directly accessible in the metrics calculator, we'll return the
-                    # prepared dataframe for the caller to use
-                    transition_matrices[snake_case_term] = transition_df
-                    self.logger.info(f"Successfully prepared transition data for {asset_id} {term_col}")
-                except Exception as e:
-                    self.logger.error(f"Error preparing transition data for {asset_id} {term_col}: {str(e)}")
-                    self.logger.exception(e)
-            else:
-                self.logger.warning(f"Column {term_col} not found in data for {asset_id}. Available columns: {data.columns.tolist()}")
-        
-        # Log summary of prepared transition matrices
-        self.logger.info(f"Prepared {len(transition_matrices)} transition matrices for {asset_id} {trend_type}: {list(transition_matrices.keys())}")
-        
-        return trend_metrics, transition_matrices, consolidated_metrics
-
-    def calculate_all_transition_metrics(self, data, asset_id, trend_type, lookback_days=30):
-        """
-        Calculate transition metrics for all trend terms (short, medium, long term and overall).
-        
-        Args:
-            data (pd.DataFrame): Data with trend classifications
-            asset_id (str): Asset ID for logging
-            trend_type (str): Type of trend (USD or BTC)
-            lookback_days (int, optional): Number of days to look back
-            
-        Returns:
-            dict: Dict of DataFrames with transition data for each term
-        """
-        # Prepare trend column name
-        trend_col = f'overall_trend_{trend_type}'
-        
-        if trend_col not in data.columns:
-            self.logger.warning(f"Column {trend_col} not found in data, cannot calculate transition metrics")
-            return {}
-            
-        # Assign trend terms mapping using snake_case format
-        trend_terms = {
-            'short_term': 'short_term',
-            'medium_term': 'medium_term',
-            'long_term': 'long_term',
-            'overall': 'overall'
-        }
-        
-        # Apply lookback filter if needed
-        if lookback_days != 'all' and lookback_days > 0:
-            if 'date' in data.columns:
-                last_date = data['date'].max()
-                start_date = last_date - pd.Timedelta(days=lookback_days)
-                data = data[data['date'] >= start_date].copy()
-            else:
-                # If no date column, assume the index is a date
-                if isinstance(data.index, pd.DatetimeIndex):
-                    last_date = data.index.max()
-                    start_date = last_date - pd.Timedelta(days=lookback_days)
-                    data = data[data.index >= start_date].copy()
-                else:
-                    # If no date information, take the last n rows
-                    data = data.iloc[-min(lookback_days, len(data)):].copy()
-        
-        # Initialize result dictionary
-        transition_dfs = {}
-        
-        # Calculate transition metrics for each term
-        for storage_term, data_term in trend_terms.items():
-            # For each term, calculate transition probabilities
-            term_col = f'{data_term}_trend_{trend_type}'
-            if term_col in data.columns:
-                try:
-                    # Create a copy of the data for this term
-                    transition_df = data[['date', term_col]].copy() if 'date' in data.columns else data[[term_col]].copy()
-                    
-                    # Rename column for consistency with what the Markov analyzer expects
-                    temp_col_name = f'overall_trend_{trend_type}'
-                    transition_df[temp_col_name] = transition_df[term_col]
-                    
-                    # Store in result dictionary
-                    transition_dfs[storage_term] = transition_df
-                except Exception as e:
-                    self.logger.error(f"Error calculating transition metrics for {asset_id} {trend_type} {storage_term}: {str(e)}")
-            else:
-                self.logger.warning(f"Column {term_col} not found in data for {asset_id} {trend_type} {storage_term}")
-        
-        return transition_dfs 
+        return consolidated_metrics 

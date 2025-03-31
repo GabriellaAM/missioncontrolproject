@@ -123,19 +123,35 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 
 ## **Phase 3: Risk Management & Portfolio Integration**
 
-### **Step 3.1: Drawdown & Stop-Loss Logic**
-- Calculate rolling drawdowns and categorize risk levels.
-- Implement ATR-based stop-loss and dynamic profit targets, potentially tied to the current macro regime.
+### **Step 3.1: Drawdown & Stop-Loss Logic** ✅
+- Implemented rolling drawdown calculation and risk level categorization
+- Added ATR-based stop-loss calculation and dynamic profit targets
+- Integrated risk management with trend classification and portfolio backtesting
+- Fixed critical issues in portfolio backtesting to ensure proper risk management
 
-**Outcome**: A dynamic risk management module providing daily recommendations for stop-losses and exits.
+**Outcome**: A robust risk management module with dynamic stop-loss recommendations based on market conditions.
 
-### **Step 3.2: Portfolio Sheets Integration**
-- Integrate Google Sheets for reading daily portfolio allocations.
-- Monitor and calculate asset-level and overall portfolio performance.
+### **Step 3.2: Portfolio Sheets Integration** ✅
+- Implemented portfolio management system with backtesting capabilities
+- Added support for reading and tracking portfolio allocations
+- Developed comprehensive asset-level and portfolio-wide performance metrics
+- Fixed critical errors in backtest_portfolio method to ensure reliable calculations
 
-**Outcome**: Seamless sync between real-world allocations and performance metrics, facilitating dynamic tracking.
+**Outcome**: Reliable portfolio tracking with accurate performance metrics and backtesting capabilities.
 
-### **Step 3.3: Attribution & Reporting**
+### **Step 3.3: Enhanced Portfolio Backtesting** ✅
+- Removed hardcoded signal weights, thresholds, and trading parameters from the backtester
+- Implemented fully configurable portfolio criteria parameters:
+  - **Signal Calculation Parameters**: Customizable signal weights, RSI thresholds, and volatility filtering
+  - **Trading Parameters**: Configurable trade mode, position sizing, scale in/out options, and min trade size
+  - **Decision Criteria**: Flexible threshold settings for trade signals
+- Updated docstrings to clearly document all available configuration options
+- Improved the main script to demonstrate proper parameter usage with examples
+- Enhanced results reporting with detailed trade metrics (win rate, avg win/loss)
+
+**Outcome**: A flexible and transparent backtesting system that allows complete customization of trading parameters without hardcoded assumptions, increasing reliability and avoiding misleading signals.
+
+### **Step 3.4: Attribution & Reporting**
 - Implement multi-period attribution analysis (monthly or as needed).
 - Develop routines to compile daily metrics into comprehensive, user-friendly reports.
 

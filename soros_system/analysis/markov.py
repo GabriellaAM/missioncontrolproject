@@ -25,7 +25,7 @@ class MarkovAnalyzer:
         Args:
             data (pd.DataFrame): DataFrame with trend classification data
             trend_type (str): Type of trend to analyze ('USD' or 'BTC')
-            lookback_days (int, optional): Number of days to look back
+            lookback_days (int or str, optional): Number of days to look back, or 'all' to use all data
             
         Returns:
             pd.DataFrame: Transition probability matrix
@@ -34,6 +34,10 @@ class MarkovAnalyzer:
             self.logger.warning("Empty data provided for transition probability calculation.")
             return self._create_default_transition_matrix()
         
+        # Log input data details
+        self.logger.info(f"Calculating transitions for {trend_type} data with shape {data.shape}")
+        self.logger.debug(f"Columns in input data: {data.columns.tolist()}")
+        
         # Create a copy of the data
         df = data.copy()
         
@@ -41,27 +45,45 @@ class MarkovAnalyzer:
         if 'date' in df.columns and not isinstance(df.index, pd.DatetimeIndex):
             df.set_index('date', inplace=True)
         
-        # Filter data by lookback period if specified
-        if lookback_days is not None:
-            end_date = df.index.max()
-            start_date = end_date - pd.Timedelta(days=lookback_days)
-            df = df[df.index >= start_date]
+        # Filter data by lookback period if specified and not 'all'
+        if lookback_days is not None and lookback_days != 'all':
+            try:
+                # Convert to int in case it's a numeric string
+                lookback_days_int = int(lookback_days)
+                end_date = df.index.max()
+                start_date = end_date - pd.Timedelta(days=lookback_days_int)
+                df = df[df.index >= start_date]
+                self.logger.debug(f"Filtered data by lookback period: {len(df)} rows from {start_date} to {end_date}")
+            except (ValueError, TypeError):
+                # If conversion fails and it's not 'all', log a warning
+                if lookback_days != 'all':
+                    self.logger.warning(f"Invalid lookback_days value: {lookback_days}. Using all available data.")
         
-        # Ensure we have trend column
-        trend_col = f'Overall_Trend_{trend_type}'
+        # Set trend column name
+        trend_col = f'overall_trend_{trend_type}'
+        
+        # Check for the trend column
         if trend_col not in df.columns:
-            self.logger.warning(f"Column {trend_col} not found in data.")
-            return self._create_default_transition_matrix()
+            self.logger.warning(f"Column {trend_col} not found in transition data. Available columns: {df.columns.tolist()}")
+            return pd.DataFrame()
+        
+        # Check for non-null values
+        non_null_count = df[trend_col].count()
+        self.logger.info(f"Found {non_null_count} non-null values out of {len(df)} for {trend_col}")
         
         # Get trend values and drop NaN
         trends = df[trend_col].dropna()
         
         if len(trends) < 2:
-            self.logger.warning("Not enough trend data points for transition probability calculation.")
+            self.logger.warning(f"Not enough trend data points for transition probability calculation. Only {len(trends)} valid points found.")
             return self._create_default_transition_matrix()
+        
+        # Log the first few trend values for debugging
+        self.logger.debug(f"First few trend values: {trends.head().tolist()}")
         
         # Get unique trend values
         unique_trends = sorted(trends.unique())
+        self.logger.info(f"Unique trend values: {unique_trends}")
         n_states = len(unique_trends)
         
         # Create transition count matrix
@@ -79,6 +101,9 @@ class MarkovAnalyzer:
             row_sum = np.sum(transition_counts[i, :])
             if row_sum > 0:
                 transition_probs[i, :] = transition_counts[i, :] / row_sum
+                
+        # Log the transition counts
+        self.logger.debug(f"Transition counts matrix:\n{transition_counts}")
         
         # Create DataFrame for the transition matrix
         transition_matrix = pd.DataFrame(
@@ -86,6 +111,8 @@ class MarkovAnalyzer:
             index=[f"From {t}" for t in unique_trends],
             columns=[f"To {t}" for t in unique_trends]
         )
+        
+        self.logger.info(f"Successfully created transition matrix for {trend_type} with shape {transition_matrix.shape}")
         
         return transition_matrix
     

@@ -166,30 +166,6 @@ class PortfolioManager:
         
         return processed_conditions
     
-    def create_roc_based_portfolio(self, portfolio_name, **criteria):
-        """
-        Create a new portfolio based on Rate of Change (RoC) criteria.
-        
-        Args:
-            portfolio_name (str): Name of the portfolio
-            **criteria: RoC-based criteria for the portfolio
-            
-        Returns:
-            bool: True if portfolio was created successfully, False otherwise
-        """
-        # Add specific RoC flags to criteria
-        criteria['is_roc_based'] = True
-        
-        # Add trend conditions if not present
-        if 'trend_conditions' not in criteria:
-            criteria['trend_conditions'] = {
-                'short_term': criteria.get('short_term_condition', True),
-                'medium_term': criteria.get('medium_term_condition', False),
-                'long_term': criteria.get('long_term_condition', False)
-            }
-        
-        return self.create_portfolio(portfolio_name, **criteria)
-    
     def list_portfolios(self):
         """
         List all available portfolios.
@@ -352,4 +328,66 @@ class PortfolioManager:
                     filtered_df['trend_strength'] = filtered_df[trend_cols].abs().mean(axis=1)
                     filtered_df = filtered_df[filtered_df['trend_strength'] >= min_strength]
         
-        return filtered_df 
+        return filtered_df
+    
+    def get_portfolio(self, portfolio_name):
+        """
+        Get a portfolio with the specified name.
+        
+        Args:
+            portfolio_name (str): Name of the portfolio to retrieve
+            
+        Returns:
+            dict: Portfolio object with its criteria, or None if not found
+        """
+        try:
+            # First check if it's in the manager's portfolio cache
+            if hasattr(self, 'portfolios') and portfolio_name in self.portfolios:
+                self.logger.info(f"Found portfolio '{portfolio_name}' in memory cache")
+                portfolio = self.portfolios[portfolio_name]
+                
+                # Format the portfolio data structure
+                if 'criteria' not in portfolio:
+                    # The portfolio itself is likely the criteria
+                    portfolio = {
+                        'name': portfolio_name,
+                        'criteria': portfolio
+                    }
+                
+                return portfolio
+                
+            # Otherwise, try to load portfolio details from database
+            portfolio_path = os.path.join(self.portfolios_dir, f"{portfolio_name}.json")
+            if not os.path.exists(portfolio_path):
+                self.logger.error(f"Portfolio '{portfolio_name}' not found in database")
+                return None
+                
+            # Get portfolio details
+            with open(portfolio_path, 'r') as f:
+                portfolio_details = json.load(f)
+            
+            if not portfolio_details:
+                self.logger.error(f"Failed to retrieve details for portfolio '{portfolio_name}'")
+                return None
+                
+            # Create a formatted portfolio object with criteria
+            criteria = portfolio_details.get('criteria', {})
+            if not criteria and 'usd_conditions' in portfolio_details:
+                # The portfolio itself might contain the criteria
+                criteria = portfolio_details
+                
+            portfolio = {
+                'name': portfolio_name,
+                'criteria': criteria
+            }
+            
+            # Cache the portfolio for future use
+            if not hasattr(self, 'portfolios'):
+                self.portfolios = {}
+            self.portfolios[portfolio_name] = portfolio
+            
+            return portfolio
+            
+        except Exception as e:
+            self.logger.error(f"Error retrieving portfolio '{portfolio_name}': {str(e)}")
+            return None 
