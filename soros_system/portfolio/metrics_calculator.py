@@ -45,8 +45,8 @@ class PortfolioMetricsCalculator:
             portfolio_df['returns'] = portfolio_df['portfolio_value'].pct_change()
         
         # Calculate cumulative returns if not provided
-        if 'cum_return' not in portfolio_df.columns:
-            portfolio_df['cum_return'] = (1 + portfolio_df['returns']).cumprod() - 1
+        if 'cum_returns' not in portfolio_df.columns:
+            portfolio_df['cum_returns'] = (1 + portfolio_df['returns']).cumprod() - 1
         
         # Initialize metrics dictionary
         metrics = {}
@@ -74,7 +74,7 @@ class PortfolioMetricsCalculator:
         returns = portfolio_df['returns'].fillna(0)
         
         # Annualized return
-        annualized_return = ((1 + portfolio_df['cum_return'].iloc[-1]) ** (1 / calendar_years)) - 1 if calendar_years > 0 else 0
+        annualized_return = ((1 + portfolio_df['cum_returns'].iloc[-1]) ** (1 / calendar_years)) - 1 if calendar_years > 0 else 0
         metrics['annualized_return'] = annualized_return * 100
         
         # Volatility metrics
@@ -151,14 +151,14 @@ class PortfolioMetricsCalculator:
         
         Args:
             portfolio_df (pd.DataFrame): DataFrame with portfolio values
-                Required columns: 'portfolio_value' or 'cum_return'
+                Required columns: 'portfolio_value' or 'cum_returns'
             
         Returns:
             float: Maximum drawdown as a decimal (not percentage)
         """
-        if 'cum_return' in portfolio_df.columns:
+        if 'cum_returns' in portfolio_df.columns:
             # Use cumulative returns if available
-            cum_returns = portfolio_df['cum_return']
+            cum_returns = portfolio_df['cum_returns']
             running_max = np.maximum.accumulate(cum_returns + 1)
             drawdowns = (cum_returns + 1) / running_max - 1
         else:
@@ -351,11 +351,11 @@ class PortfolioMetricsCalculator:
                          label='Benchmark (Scaled)', linewidth=2, linestyle='--')
         
         # Plot cumulative returns on second axis
-        if 'cum_return' in results_df.columns:
-            axes[1].plot(results_df['date'], results_df['cum_return'] * 100, label='Portfolio', linewidth=2)
+        if 'cum_returns' in results_df.columns:
+            axes[1].plot(results_df['date'], results_df['cum_returns'] * 100, label='Portfolio', linewidth=2)
             
-            if benchmark_df is not None and 'cum_return' in benchmark_df.columns:
-                axes[1].plot(benchmark_df['date'], benchmark_df['cum_return'] * 100, 
+            if benchmark_df is not None and 'cum_returns' in benchmark_df.columns:
+                axes[1].plot(benchmark_df['date'], benchmark_df['cum_returns'] * 100, 
                           label='Benchmark', linewidth=2, linestyle='--')
         
         # Style the charts
@@ -393,8 +393,8 @@ class PortfolioMetricsCalculator:
         results_df['date'] = pd.to_datetime(results_df['date'])
         
         # Calculate drawdowns
-        if 'cum_return' in results_df.columns:
-            cum_returns = results_df['cum_return']
+        if 'cum_returns' in results_df.columns:
+            cum_returns = results_df['cum_returns']
         else:
             cum_returns = (results_df['portfolio_value'] / results_df['portfolio_value'].iloc[0]) - 1
         

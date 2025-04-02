@@ -3,1464 +3,467 @@ import numpy as np
 import logging
 from datetime import datetime, timedelta
 from ..analysis.metrics import MetricsCalculator
-import traceback
 from tqdm import tqdm
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 class PortfolioBacktester:
     """
-    Class for backtesting portfolio performance.
+    Class for backtesting portfolio strategies by simulating trades for each asset independently.
     """
+
     def __init__(self, portfolio_manager, data_loader):
         """
         Initialize the PortfolioBacktester.
         
         Args:
-            portfolio_manager: PortfolioManager instance
-            data_loader: DataLoader instance
+            portfolio_manager: Manager for portfolios
+            data_loader: Loader for asset data
         """
-        self.logger = logging.getLogger(__name__)
         self.portfolio_manager = portfolio_manager
         self.data_loader = data_loader
         self.metrics_calculator = MetricsCalculator()
-    
-    def backtest_portfolio(self, 
+        self.logger = logging.getLogger(__name__)
+
+    def backtest_portfolio(self,
                            portfolio_name,
-                           start_date, 
-                           end_date, 
-                           initial_capital=10000, 
-                           trade_size_pct=1.0,
-                           fee_pct=0.001,
-                           slippage_pct=0.001,
-                           signal_threshold=65,
-                           pre_classified_btc_data=None):
+                           start_date,
+                           end_date,
+                           initial_capital=10000.0,
+                           btc_cost=0.001,
+                           alt_cost=0.005,
+                           slippage_pct=0.0):
         """
-        Backtest a portfolio strategy.
+        Backtest a portfolio strategy by simulating trades for each asset independently with full cash.
         
         Args:
             portfolio_name (str): Name of the portfolio to backtest
             start_date (str or datetime): Start date for backtesting
             end_date (str or datetime): End date for backtesting
-            initial_capital (float): Initial capital
-            trade_size_pct (float): Percentage of available capital to use per trade
-            fee_pct (float): Trading fee percentage
-            slippage_pct (float): Slippage percentage
-            signal_threshold (float): Threshold for signals to trigger trades (0-100)
-            pre_classified_btc_data (pd.DataFrame, optional): Pre-classified Bitcoin data with trend columns
+            initial_capital (float): Initial capital for backtesting (default: 10000.0)
+            btc_cost (float): Fee rate for Bitcoin transactions (default: 0.001)
+            alt_cost (float): Fee rate for altcoin transactions (default: 0.005)
+            slippage_pct (float): Slippage percentage for trading (default: 0.0)
             
         Returns:
-            dict: Dictionary with backtest results including:
-                - results: Dictionary of dataframes with strategy vs buy & hold results per asset
-                - signals: Dictionary of dataframes with signal components and decisions per asset
-                - trades: Dictionary of dataframes with trade history per asset
-                - metrics: Dictionary of dataframes with performance metrics per asset
-                - basket_selection: DataFrame showing asset selection over time
+            dict: Dictionary with backtest results
         """
-        self.logger.info(f"Starting backtest for portfolio {portfolio_name} from {start_date} to {end_date}")
+        self.logger.info(f"Starting backtest for portfolio '{portfolio_name}' from {start_date} to {end_date}")
         
-        # Get portfolio configuration
-        portfolio = self.portfolio_manager.get_portfolio(portfolio_name)
-        
-        if not portfolio:
-            self.logger.error(f"Portfolio {portfolio_name} not found")
+        # Convert dates to datetime
+        try:
+            start_date = pd.to_datetime(start_date)
+            end_date = pd.to_datetime(end_date)
+        except ValueError as e:
+            self.logger.error(f"Invalid date format: {e}")
             return None
         
-        # Extract portfolio criteria
-        portfolio_criteria = portfolio.get('criteria', {})
+        # Get signal tables from portfolio manager
+        signal_tables = self.portfolio_manager.get_portfolio_signals(portfolio_name)
+        if signal_tables is None:
+            self.logger.error(f"Failed to get signal tables for portfolio '{portfolio_name}'")
+            return None
         
-        # Make sure we have dates in datetime format
-        if isinstance(start_date, str):
-            start_date = pd.to_datetime(start_date)
-        if isinstance(end_date, str):
-            end_date = pd.to_datetime(end_date)
+        if not signal_tables:
+            self.logger.error(f"No signal tables available for portfolio '{portfolio_name}'")
+            return None
         
-        # Get portfolio parameters from criteria
-        alt_cost = portfolio_criteria.get('alt_cost', 0.005)  # Default 0.5% for alts
-        btc_cost = portfolio_criteria.get('btc_cost', 0.001)  # Default 0.1% for BTC
-        btc_only = portfolio_criteria.get('btc_only', False)
-        trade_mode = portfolio_criteria.get('trade_mode', 'all_in')  # 'all_in', 'fixed_pct', or 'proportional'
-        position_sizing = portfolio_criteria.get('position_sizing', 1.0)
+        self.logger.info(f"Retrieved signal tables for {len(signal_tables)} assets")
         
-        # Process pre-classified BTC data if provided
-        btc_data = None
-        if pre_classified_btc_data is not None:
-            self.logger.info("Using pre-classified Bitcoin data")
-            btc_data = pre_classified_btc_data.copy()
-            
-            # Make sure btc_data has a datetime index or a date column
-            if 'date' in btc_data.columns and not isinstance(btc_data.index, pd.DatetimeIndex):
-                if not pd.api.types.is_datetime64_any_dtype(btc_data['date']):
-                    btc_data['date'] = pd.to_datetime(btc_data['date'])
-                btc_data = btc_data.set_index('date')
-            
-            # Filter to our date range
-            btc_data = btc_data.loc[(btc_data.index >= start_date) & (btc_data.index <= end_date)]
-            
-            # Check that we have the necessary trend columns (supporting different naming formats)
-            trend_cols = [col for col in btc_data.columns if 
-                         (('trend' in col.lower() or 'Trend' in col) and 
-                          ('usd' in col.lower() or 'USD' in col))]
-            
-            if not trend_cols:
-                self.logger.warning("Pre-classified BTC data doesn't contain trend columns")
-                self.logger.debug(f"Available columns: {btc_data.columns.tolist()}")
-            else:
-                self.logger.info(f"Found trend columns in pre-classified data: {trend_cols}")
-            
-            # Reset index to have date as a column
-            if isinstance(btc_data.index, pd.DatetimeIndex):
-                btc_data = btc_data.reset_index()
-        else:
-            self.logger.info("No pre-classified BTC data provided, will attempt to load/generate")
-        
-        # Generate dates for the backtest
-        date_range = pd.date_range(start=start_date, end=end_date, freq='D')
-        self.logger.info(f"Created date range from {date_range[0]} to {date_range[-1]} ({len(date_range)} days)")
-        
-        # Create the base portfolio dataframe
-        results_df = pd.DataFrame({
-            'date': date_range,
-            'initial_capital': float(initial_capital),
-            'cash': float(initial_capital),
-            'portfolio_value': float(initial_capital),
-            'returns': 0.0,
-            'cum_return': 0.0
-        })
-        results_df = results_df.set_index('date')
-        
-        # Initialize signal tracking data
-        signal_data = []
-        trade_list = []
-        daily_holdings = []
-        
-        # Get assets from the portfolio
-        portfolio_assets = self._get_portfolio_assets(portfolio, portfolio_criteria)
-        if btc_only:
-            portfolio_assets = ['bitcoin']
-        
-        self.logger.info(f"Portfolio assets: {portfolio_assets}")
-        
-        # Create asset data cache for efficiency
-        asset_data_cache = {}
-        for asset_id in portfolio_assets:
-            asset_data = self._get_asset_data(asset_id, {})
-            if asset_data is not None:
-                asset_data_cache[asset_id] = asset_data
-        
-        # Get BTC data for gating and volatility filtering
-        btc_data_processed = asset_data_cache.get('bitcoin', btc_data)
-        
-        # Initialize position state
-        btc_position = False
-        previous_signal = False
-        
-        # Process each day
-        for i, date in enumerate(tqdm(date_range, desc="Backtesting")):
-            # Get today's portfolio value
-            if len(daily_holdings) > 0:
-                # Copy yesterday's holdings
-                today_holdings = daily_holdings[-1].copy()
-            else:
-                # First day - all cash
-                today_holdings = {'cash': float(initial_capital)}
-            
-            # Skip first day (no signal yet)
-            if i == 0:
-                daily_holdings.append(today_holdings)
-                continue
-                
-            # Calculate signals for this date
-            today_signals = []
-                
-            # Get BTC data up to this date for trend analysis
-            if btc_data is not None:
-                # Use pre-classified BTC data for signal generation
-                today_btc_data = btc_data[btc_data['date'] <= date]
-                if not today_btc_data.empty:
-                    latest_btc = today_btc_data.iloc[-1]
-                    
-                    # Process each asset in the portfolio
-                    for asset_id in portfolio_assets:
-                        # Get asset data
-                        asset_data = asset_data_cache.get(asset_id)
-                        if asset_data is None:
-                            continue
-                            
-                        # Get ticker for the asset
-                        ticker = self.data_loader.get_ticker_from_id(asset_id)
-                        if ticker is None:
-                            ticker = asset_id.upper()
-                            
-                        # Calculate signals using comprehensive approach
-                        asset_signal = self._calculate_asset_signals(
-                            latest_btc if asset_id == 'bitcoin' else asset_data,
-                            asset_id,
-                            portfolio_criteria
-                        )
-                        
-                        if asset_signal:
-                            # Add date and asset identifier
-                            asset_signal['date'] = date
-                            asset_signal['asset'] = ticker
-                            asset_signal['asset_id'] = asset_id
-                            
-                            # Compare with threshold for final decision
-                            decision_criteria = portfolio_criteria.get('decision_criteria', 'threshold')
-                            if decision_criteria == 'threshold':
-                                combined_signal = asset_signal.get('combined_signal', 0)
-                                asset_signal['final_decision'] = 1 if combined_signal >= signal_threshold else 0
-                            elif decision_criteria == 'directional':
-                                combined_signal = asset_signal.get('combined_signal', 0)
-                                asset_signal['final_decision'] = 1 if combined_signal > 0 else 0
-                            elif decision_criteria == 'custom' and 'decision_function' in portfolio_criteria:
-                                # Custom decision function provided in criteria
-                                try:
-                                    decision_func = portfolio_criteria['decision_function']
-                                    asset_signal['final_decision'] = decision_func(asset_signal)
-                                except Exception as e:
-                                    self.logger.error(f"Error applying custom decision function: {e}")
-                                    asset_signal['final_decision'] = 0
-                            else:
-                                # Default to threshold
-                                combined_signal = asset_signal.get('combined_signal', 0)
-                                asset_signal['final_decision'] = 1 if combined_signal >= signal_threshold else 0
-                                
-                            # Add to signals
-                            today_signals.append(asset_signal)
-                            signal_data.append(asset_signal)
-                            
-                    # For BTC-only portfolio, execute trades based on signal
-                    if btc_only and len(today_signals) > 0:
-                        btc_signal = next((s for s in today_signals if s.get('asset_id') == 'bitcoin'), None)
-                        if btc_signal:
-                            current_signal = btc_signal.get('final_decision', 0) == 1
-                            
-                            # Check if we need to change position
-                            if i > 1 and current_signal != btc_position:
-                                # Get transaction cost
-                                prev_value = results_df.iloc[i-1]['portfolio_value']
-                                transaction_cost = btc_cost * prev_value
-                                
-                                # Log the trade
-                                if current_signal:  # Entering position
-                                    self.logger.info(f"Entering BTC position on {date}: Cost = {transaction_cost:.2f}")
-                                    trade = {
-                                        'date': date,
-                                        'asset': 'BTC', 
-                                        'asset_id': 'bitcoin',
-                                        'action': 'BUY',
-                                        'amount': prev_value - transaction_cost,
-                                        'price': self._get_asset_price('bitcoin', date, asset_data_cache),
-                                        'value': prev_value - transaction_cost,
-                                        'transaction_cost': transaction_cost
-                                    }
-                                    trade_list.append(trade)
-                                    
-                                    # Update holdings
-                                    today_holdings = {
-                                        'bitcoin': prev_value - transaction_cost,
-                                        'cash': 0
-                                    }
-                                else:  # Exiting position
-                                    self.logger.info(f"Exiting BTC position on {date}: Cost = {transaction_cost:.2f}")
-                                    trade = {
-                                        'date': date,
-                                        'asset': 'BTC',
-                                        'asset_id': 'bitcoin',
-                                        'action': 'SELL',
-                                        'amount': prev_value,
-                                        'price': self._get_asset_price('bitcoin', date, asset_data_cache),
-                                        'value': prev_value - transaction_cost,
-                                        'transaction_cost': transaction_cost
-                                    }
-                                    trade_list.append(trade)
-                                    
-                                    # Update holdings
-                                    today_holdings = {
-                                        'bitcoin': 0,
-                                        'cash': prev_value - transaction_cost
-                                    }
-                                
-                                btc_position = current_signal
-                            
-                            # If we're in BTC position, update value based on price change
-                            if btc_position:
-                                if 'bitcoin' in today_holdings:
-                                    btc_price_today = self._get_asset_price('bitcoin', date, asset_data_cache)
-                                    btc_price_yesterday = self._get_asset_price('bitcoin', date_range[i-1], asset_data_cache)
-                                    
-                                    if btc_price_yesterday > 0:
-                                        daily_return = (btc_price_today / btc_price_yesterday) - 1
-                                        today_holdings['bitcoin'] *= (1 + daily_return)
-                    else:
-                        # For multi-asset portfolios, execute trades based on signals
-                        new_holdings, trades = self._execute_trades(
-                            today_signals, 
-                            today_holdings,
-                            date, 
-                            alt_cost if not btc_only else btc_cost,
-                            slippage_pct,
-                            portfolio_criteria
-                        )
-                        
-                        # Add trades to the list
-                        if trades:
-                            trade_list.extend(trades)
-                        
-                        # Update holdings
-                        today_holdings = new_holdings
-            
-            # Calculate portfolio value (ensure float data type)
-            portfolio_value = float(sum(today_holdings.values()))
-            
-            # Store portfolio value in results
-            results_df.loc[date, 'portfolio_value'] = portfolio_value
-            results_df.loc[date, 'cash'] = float(today_holdings.get('cash', 0))
-            
-            # Store holdings
-            for asset, amount in today_holdings.items():
-                if asset != 'cash':
-                    results_df.loc[date, f'{asset}_position'] = float(amount)
-            
-            # Store holdings for next day
-            daily_holdings.append(today_holdings)
-        
-        # Calculate returns
-        results_df['returns'] = results_df['portfolio_value'].pct_change()
-        results_df['cum_return'] = (1 + results_df['returns']).cumprod() - 1
-        
-        # Fill NaN values for the first day
-        results_df.loc[results_df.index[0], 'returns'] = 0
-        results_df.loc[results_df.index[0], 'cum_return'] = 0
-        
-        # Convert signals to DataFrame
-        signals_df = pd.DataFrame(signal_data) if signal_data else pd.DataFrame()
-        
-        # Convert trades to DataFrame
-        trades_df = pd.DataFrame(trade_list) if trade_list else pd.DataFrame()
-        
-        # Set position columns to 0 where NaN (no position)
-        for col in results_df.columns:
-            if '_position' in col:
-                results_df[col] = results_df[col].fillna(0)
-        
-        # Create structured output according to requirements
-        
-        # 1. Results - strategy vs buy-and-hold per asset
+        # Initialize results containers
         results = {}
-        for asset_id in portfolio_assets:
-            # Get asset ticker
-            ticker = self.data_loader.get_ticker_from_id(asset_id)
-            if ticker is None:
-                ticker = asset_id.upper()
+        signals = {}
+        trades = {}
+        metrics = {}
+        basket_selection = pd.DataFrame()
+        
+        # Process each asset independently
+        for asset_id, signal_df in signal_tables.items():
+            self.logger.info(f"Simulating trades for {asset_id}")
             
-            # Extract daily position data for this asset
-            asset_col = f'{asset_id}_position'
-            if asset_col in results_df.columns:
-                # Extract asset data from results
-                asset_data = results_df.reset_index()
-                asset_data['strategy_value'] = results_df['portfolio_value']
-                asset_data['strategy_returns'] = results_df['returns']
-                asset_data['strategy_cum_returns'] = results_df['cum_return']
+            # Filter to date range
+            if 'date' in signal_df.columns:
+                if not pd.api.types.is_datetime64_any_dtype(signal_df['date']):
+                    signal_df['date'] = pd.to_datetime(signal_df['date'])
+                # Filter by date range
+                signal_df = signal_df[(signal_df['date'] >= start_date) & (signal_df['date'] <= end_date)]
+                # Set index for easier processing
+                signal_df = signal_df.set_index('date')
+            elif isinstance(signal_df.index, pd.DatetimeIndex):
+                # Filter by date range using index
+                signal_df = signal_df[(signal_df.index >= start_date) & (signal_df.index <= end_date)]
+            else:
+                self.logger.error(f"No date column or DatetimeIndex in signal data for {asset_id}")
+                continue
+            
+            if signal_df.empty:
+                self.logger.warning(f"No data available for {asset_id} in the specified date range")
+                continue
+            
+            # Check for necessary columns
+            required_cols = ['open', 'close', 'final_decision_shifted']
+            missing_cols = [col for col in required_cols if col not in signal_df.columns]
+            
+            if missing_cols:
+                self.logger.warning(f"Missing required columns for {asset_id}: {missing_cols}")
+                # Try to fill missing price columns if possible
+                if 'open' in missing_cols and 'close' in signal_df.columns:
+                    self.logger.info(f"Using 'close' for 'open' in {asset_id}")
+                    signal_df['open'] = signal_df['close']
+                    missing_cols.remove('open')
                 
-                # Calculate buy and hold values
-                initial_price = self._get_asset_price(asset_id, start_date, asset_data_cache)
-                if initial_price is not None and initial_price > 0:
-                    # For each date, calculate buy-and-hold values
-                    buy_hold_values = []
-                    for date in asset_data['date']:
-                        price = self._get_asset_price(asset_id, date, asset_data_cache)
-                        if price is not None:
-                            # Calculate buy-and-hold value
-                            asset_qty = initial_capital / initial_price
-                            value = asset_qty * price
-                            buy_hold_values.append(value)
-                        else:
-                            buy_hold_values.append(None)
+                if 'close' in missing_cols and 'open' in signal_df.columns:
+                    self.logger.info(f"Using 'open' for 'close' in {asset_id}")
+                    signal_df['close'] = signal_df['open']
+                    missing_cols.remove('close')
+                
+                if 'final_decision_shifted' in missing_cols:
+                    self.logger.error(f"Missing critical signal column 'final_decision_shifted' for {asset_id}")
+                    continue
+            
+            # Fill missing prices with forward fill
+            if signal_df[['open', 'close']].isnull().any().any():
+                self.logger.warning(f"Filling missing prices for {asset_id} with forward fill")
+                signal_df[['open', 'close']] = signal_df[['open', 'close']].ffill()
+            
+            # Drop rows with remaining NaN prices
+            initial_len = len(signal_df)
+            signal_df = signal_df.dropna(subset=['open', 'close'])
+            if len(signal_df) < initial_len:
+                self.logger.warning(f"Dropped {initial_len - len(signal_df)} rows with NaN prices for {asset_id}")
+            
+            if signal_df.empty:
+                self.logger.warning(f"No data left after dropping rows with NaN prices for {asset_id}")
+                continue
+            
+            # Ensure numeric price columns
+            signal_df[['open', 'close']] = signal_df[['open', 'close']].apply(pd.to_numeric, errors='coerce')
+            
+            # Create results dataframe
+            asset_results = pd.DataFrame(index=signal_df.index)
+            
+            # Simulate trades for this asset with full initial capital
+            asset_trades_list = []
+            
+            # Initial state
+            current_cash = initial_capital
+            current_holdings_qty = 0.0
+            last_entry_price = 0.0
+            last_entry_date = None
+            trade_id = 0
+            
+            # Date-sorted index for chronological processing
+            for date in signal_df.index:
+                # Get data for this date
+                row = signal_df.loc[date]
+                open_price = row['open']
+                close_price = row['close']
+                signal = row['final_decision_shifted']
+                
+                # Skip first day if signal is NaN
+                if pd.isna(signal):
+                    asset_results.loc[date, 'cash'] = current_cash
+                    asset_results.loc[date, f'{asset_id}_holdings_qty'] = 0.0
+                    asset_results.loc[date, f'{asset_id}_holdings_value'] = 0.0
+                    asset_results.loc[date, 'portfolio_value'] = current_cash
+                    continue
+                
+                # Skip if invalid price
+                if open_price <= 0:
+                    self.logger.warning(f"Invalid price ({open_price}) for {asset_id} on {date}. Skipping.")
+                    # Maintain current state
+                    asset_results.loc[date, 'cash'] = current_cash
+                    asset_results.loc[date, f'{asset_id}_holdings_qty'] = current_holdings_qty
+                    asset_results.loc[date, f'{asset_id}_holdings_value'] = current_holdings_qty * close_price if close_price > 0 else 0
+                    asset_results.loc[date, 'portfolio_value'] = current_cash + asset_results.loc[date, f'{asset_id}_holdings_value']
+                    continue
+                
+                # Determine fee rate based on asset
+                fee_rate = btc_cost if asset_id == 'bitcoin' else alt_cost
+                total_cost_rate = fee_rate + slippage_pct
+                
+                # Trading logic
+                trade_executed = False
+                
+                # Buy signal and not currently holding
+                if signal == 1 and current_holdings_qty == 0:
+                    trade_id += 1
                     
-                    # Add buy-and-hold values
-                    asset_data['asset_buy_n_hold_value'] = buy_hold_values
+                    # Calculate transaction cost
+                    transaction_cost = current_cash * total_cost_rate
+                    cash_for_purchase = current_cash - transaction_cost
+                    
+                    # Buy with all available cash
+                    quantity = cash_for_purchase / open_price
+                    
+                    # Record entry
+                    current_cash = 0
+                    current_holdings_qty = quantity
+                    last_entry_price = open_price
+                    last_entry_date = date
+                    
+                    # Record trade
+                    entry_trade = {
+                        'trade_id': trade_id,
+                        'asset': asset_id,
+                        'entry_date': date,
+                        'exit_date': None,
+                        'holding_days': 0,
+                        'entry_price': open_price,
+                        'exit_price': None,
+                        'price_return': "0.00%",
+                        'entry_value': cash_for_purchase,
+                        'entry_cost': -transaction_cost,
+                        'exit_value': None,
+                        'exit_cost': None,
+                        'trade_return': "0.00%",
+                        'is_open': True
+                    }
+                    
+                    asset_trades_list.append(entry_trade)
+                    trade_executed = True
+                    
+                    self.logger.debug(f"{date}: BUY {quantity:.6f} {asset_id} @ {open_price:.2f}")
+                
+                # Sell signal and currently holding
+                elif signal == 0 and current_holdings_qty > 0:
+                    # Calculate gross value and transaction cost
+                    gross_value = current_holdings_qty * open_price
+                    transaction_cost = gross_value * total_cost_rate
+                    net_value = gross_value - transaction_cost
                     
                     # Calculate returns
-                    asset_data['asset_buy_n_hold_returns'] = asset_data['asset_buy_n_hold_value'].pct_change()
-                    asset_data['asset_buy_n_hold_cum_returns'] = (1 + asset_data['asset_buy_n_hold_returns']).cumprod() - 1
+                    if last_entry_price > 0:
+                        price_return_pct = (open_price / last_entry_price - 1) * 100
+                        price_return_str = f"{price_return_pct:.2f}%"
+                        
+                        # Calculate holding period
+                        if last_entry_date:
+                            holding_days = (date - last_entry_date).days
+                        else:
+                            holding_days = 0
+                        
+                        # Find the entry trade to update
+                        for trade in asset_trades_list:
+                            if trade['is_open']:
+                                # Update exit info
+                                trade['exit_date'] = date
+                                trade['holding_days'] = holding_days
+                                trade['exit_price'] = open_price
+                                trade['price_return'] = price_return_str
+                                trade['exit_value'] = net_value
+                                trade['exit_cost'] = -transaction_cost
+                                
+                                # Calculate net trade return (including costs)
+                                entry_value = trade['entry_value']
+                                entry_cost = trade['entry_cost']
+                                initial_investment = initial_capital  # Original cash before entry
+                                
+                                # Net return calculation including costs
+                                trade_return_pct = ((net_value - (initial_investment + entry_cost)) / (initial_investment + entry_cost)) * 100
+                                trade['trade_return'] = f"{trade_return_pct:.2f}%"
+                                trade['is_open'] = False
+                                break
                     
-                    # Fill first-day NaN values
-                    asset_data.loc[0, 'asset_buy_n_hold_returns'] = 0
-                    asset_data.loc[0, 'asset_buy_n_hold_cum_returns'] = 0
-                else:
-                    # If price data not available, set all to NaN
-                    asset_data['asset_buy_n_hold_value'] = np.nan
-                    asset_data['asset_buy_n_hold_returns'] = np.nan
-                    asset_data['asset_buy_n_hold_cum_returns'] = np.nan
+                    # Execute sell
+                    current_cash = net_value
+                    current_holdings_qty = 0
+                    last_entry_price = 0
+                    last_entry_date = None
+                    trade_executed = True
+                    
+                    self.logger.debug(f"{date}: SELL @ {open_price:.2f}, received {net_value:.2f}")
                 
-                results[ticker] = asset_data
-        
-        # 2. Signals - per asset
-        signals = {}
-        if not signals_df.empty:
-            for asset_id in portfolio_assets:
-                # Get asset ticker
-                ticker = self.data_loader.get_ticker_from_id(asset_id)
-                if ticker is None:
-                    ticker = asset_id.upper()
+                # Update portfolio value
+                holdings_value = current_holdings_qty * close_price
+                portfolio_value = current_cash + holdings_value
                 
-                # Filter signals for this asset
-                asset_signals = signals_df[signals_df['asset_id'] == asset_id].copy()
-                if not asset_signals.empty:
-                    signals[ticker] = asset_signals
-        
-        # 3. Trades - per asset with the required format
-        trades = {}
-        if not trades_df.empty:
-            for asset_id in portfolio_assets:
-                # Get asset ticker
-                ticker = self.data_loader.get_ticker_from_id(asset_id)
-                if ticker is None:
-                    ticker = asset_id.upper()
-                
-                # Filter trades for this asset
-                asset_trades = trades_df[(trades_df['asset_id'] == asset_id) | 
-                                         (trades_df['asset'] == ticker)].copy()
-                
-                if not asset_trades.empty:
-                    # Process trades to match required format
-                    processed_trades = self._process_trades_for_output(asset_trades, asset_data_cache)
-                    trades[ticker] = processed_trades
-        
-        # 4. Metrics - per asset
-        metrics = {}
-        for asset_id in portfolio_assets:
-            # Get asset ticker
-            ticker = self.data_loader.get_ticker_from_id(asset_id)
-            if ticker is None:
-                ticker = asset_id.upper()
+                # Store daily results
+                asset_results.loc[date, 'cash'] = current_cash
+                asset_results.loc[date, f'{asset_id}_holdings_qty'] = current_holdings_qty
+                asset_results.loc[date, f'{asset_id}_holdings_value'] = holdings_value
+                asset_results.loc[date, 'portfolio_value'] = portfolio_value
             
-            if ticker in results:
-                # Calculate metrics for this asset
-                asset_metrics = self._calculate_performance_metrics(results[ticker])
-                metrics[ticker] = pd.DataFrame([asset_metrics])
-        
-        # 5. Basket selection - which assets were selected on each day
-        # Create a DataFrame showing asset selection over time
-        basket_data = []
-        for i, date in enumerate(date_range):
-            if i < len(daily_holdings):
-                holdings = daily_holdings[i]
-                row = {'date': date}
+            # Close any open trades at the end of the simulation
+            if current_holdings_qty > 0:
+                final_date = signal_df.index[-1]
+                final_close = signal_df.loc[final_date, 'close']
                 
-                # Add position flags for each asset
-                for asset_id in portfolio_assets:
-                    # Get asset ticker
-                    ticker = self.data_loader.get_ticker_from_id(asset_id)
-                    if ticker is None:
-                        ticker = asset_id.upper()
-                    
-                    row[ticker] = 1 if asset_id in holdings and holdings[asset_id] > 0 else 0
-                
-                basket_data.append(row)
+                # Find open trade to update
+                for trade in asset_trades_list:
+                    if trade['is_open']:
+                        # Calculate holding period
+                        if last_entry_date:
+                            holding_days = (final_date - last_entry_date).days
+                        else:
+                            holding_days = 0
+                        
+                        # Update exit info
+                        trade['exit_date'] = final_date
+                        trade['holding_days'] = holding_days
+                        trade['exit_price'] = final_close
+                        
+                        # Calculate returns
+                        if last_entry_price > 0:
+                            price_return_pct = (final_close / last_entry_price - 1) * 100
+                            trade['price_return'] = f"{price_return_pct:.2f}%"
+                            
+                            # Calculate gross value and transaction cost
+                            gross_value = current_holdings_qty * final_close
+                            transaction_cost = gross_value * total_cost_rate
+                            net_value = gross_value - transaction_cost
+                            
+                            trade['exit_value'] = net_value
+                            trade['exit_cost'] = -transaction_cost
+                            
+                            # Calculate net trade return (including costs)
+                            entry_value = trade['entry_value']
+                            entry_cost = trade['entry_cost']
+                            initial_investment = initial_capital
+                            
+                            trade_return_pct = ((net_value - (initial_investment + entry_cost)) / (initial_investment + entry_cost)) * 100
+                            trade['trade_return'] = f"{trade_return_pct:.2f}%"
+                            
+                            # Mark trade as "still open at end of simulation"
+                            trade['is_open'] = True
+                            break
+            
+            # Calculate daily returns
+            asset_results['daily_returns'] = asset_results['portfolio_value'].pct_change()
+            asset_results['daily_returns'].iloc[0] = 0.0  # First day
+            asset_results['cumulative_returns'] = (1 + asset_results['daily_returns']).cumprod() - 1
+            
+            # Calculate buy & hold benchmark
+            first_valid_open = signal_df['open'].iloc[0]
+            if first_valid_open > 0:
+                buy_hold_qty = initial_capital / first_valid_open
+                asset_results['buy_hold_value'] = buy_hold_qty * signal_df['close']
+                asset_results['buy_hold_daily_returns'] = asset_results['buy_hold_value'].pct_change()
+                asset_results['buy_hold_daily_returns'].iloc[0] = 0.0
+                asset_results['buy_hold_cumulative_returns'] = (1 + asset_results['buy_hold_daily_returns']).cumprod() - 1
+            
+            # Calculate performance metrics
+            asset_metrics = self._calculate_asset_metrics(asset_results, asset_trades_list, initial_capital)
+            
+            # Convert trades list to DataFrame
+            asset_trades_df = pd.DataFrame(asset_trades_list)
+            
+            # Create basket selection series (1 if holding, 0 if not)
+            asset_selection = (asset_results[f'{asset_id}_holdings_qty'] > 0).astype(int)
+            
+            # Store results
+            results[asset_id] = asset_results.reset_index().rename(columns={
+                'portfolio_value': 'strategy_value',
+                'daily_returns': 'strategy_daily_returns',
+                'cumulative_returns': 'strategy_cumulative_returns'
+            })
+            
+            signals[asset_id] = signal_df.reset_index()
+            trades[asset_id] = asset_trades_df
+            metrics[asset_id] = pd.DataFrame([asset_metrics])
+            
+            # Add this asset's selection to the basket_selection DataFrame
+            if basket_selection.empty:
+                basket_selection = pd.DataFrame(index=asset_results.index)
+            
+            basket_selection[asset_id] = asset_selection
         
-        basket_selection = pd.DataFrame(basket_data)
+        # If no assets were processed successfully
+        if not results:
+            self.logger.error("No assets could be processed successfully in backtest")
+            return None
         
-        # Return complete structured results
-        return {
+        # Finalize basket selection
+        basket_selection = basket_selection.reset_index()
+        
+        # Package and return results
+        backtest_results = {
             'results': results,
             'signals': signals,
             'trades': trades,
             'metrics': metrics,
             'basket_selection': basket_selection
         }
-
-    def _calculate_asset_signals(self, data, asset_id, criteria):
-        """
-        Calculate signals for an asset based on portfolio criteria.
         
-        Args:
-            data (pd.DataFrame or pd.Series): Asset data for the current date
-            asset_id (str): Asset ID
-            criteria (dict): Portfolio criteria
-            
-        Returns:
-            dict: Signal data for the asset
-        """
-        # Initialize signal data
-        signal_data = {
-            'usd_trend_signal': None,
-            'btc_trend_signal': None,
-            'rsi_usd_signal': None,
-            'rsi_btc_signal': None,
-            'volatility_signal': None,
-            'ssr_signal': None,
-            'ssr_gate': None,
-            'btc_gate': None,
-            'btc_rsi_gate': None,
-            'btc_rsi_signal': None,
-            'followed_portfolio_signal': None,
-            'combined_signal': 0,
-        }
+        self.logger.info(f"Completed backtest for portfolio '{portfolio_name}' with {len(results)} assets")
         
-        # Extract criteria
-        usd_conditions = criteria.get('usd_conditions', {})
-        btc_conditions = criteria.get('btc_conditions', {})
-        btc_trend_gating = criteria.get('btc_trend_gating', None)
-        rsi_conditions_usd = criteria.get('rsi_conditions_usd', False)
-        rsi_conditions_btc = criteria.get('rsi_conditions_btc', False)
-        use_volatility_filter = criteria.get('use_volatility_filter', False)
-        volatility_params = criteria.get('volatility_params', {})
-        use_ssr_signal = criteria.get('use_ssr_signal', False)
-        use_ssr_gate = criteria.get('use_ssr_gate', False)
-        btc_rsi_gate = criteria.get('btc_rsi_gate', False)
-        use_btc_rsi_signal = criteria.get('use_btc_rsi_signal', False)
-        follow_portfolio = criteria.get('follow_portfolio', None)
-        
-        # Signal weights (for weighted average)
-        signal_weights = criteria.get('signal_weights', {
-            'usd_trend': 0.6,
-            'btc_trend': 0.0,
-            'rsi': 0.3,
-            'volatility': 0.1,
-            'ssr': 0.0,
-            'btc_rsi': 0.0
-        })
-        
-        # Extract data from Series if needed
-        if isinstance(data, pd.Series):
-            data_dict = data.to_dict()
-        else:
-            data_dict = data
-
-        # Check if this is Bitcoin or an altcoin
-        is_bitcoin = asset_id == 'bitcoin'
-        
-        # Process USD trend conditions
-        usd_trend_signal = 0
-        if usd_conditions:
-            usd_condition_met = True
-            
-            if isinstance(usd_conditions, dict):
-                # Process each term (short, medium, long, overall)
-                for term, allowed_values in usd_conditions.items():
-                    # Convert term to column name
-                    if 'term' in term.lower():
-                        # It's already a term like "Short Term" or "short_term"
-                        term_clean = term.replace(' ', '_').lower()
-                        col_name = f"{term_clean}_trend_USD"
-                    else:
-                        # It's just a label like "Short" or "Overall"
-                        term_lower = term.lower()
-                        if 'short' in term_lower:
-                            col_name = 'short_term_trend_USD'
-                        elif 'medium' in term_lower:
-                            col_name = 'medium_term_trend_USD'
-                        elif 'long' in term_lower:
-                            col_name = 'long_term_trend_USD'
-                        elif 'overall' in term_lower:
-                            col_name = 'overall_trend_USD'
-                        else:
-                            # Try to use term directly as column name
-                            col_name = f"{term.lower()}_trend_USD"
-                    
-                    # Get actual trend value
-                    trend_value = data_dict.get(col_name)
-                    if trend_value is None:
-                        # Try alternative column naming patterns
-                        alt_patterns = [
-                            f"Trend_{term}_USD",
-                            f"{term.replace(' ', '')}_trend_USD",
-                            f"{term.replace(' ', '')}_Trend_USD"
-                        ]
-                        for alt_col in alt_patterns:
-                            if alt_col in data_dict:
-                                trend_value = data_dict.get(alt_col)
-                                break
-                    
-                    # Check if trend value is in allowed values
-                    if trend_value is not None:
-                        # Handle both string and numeric comparisons
-                        if isinstance(trend_value, str) and trend_value not in [str(v) for v in allowed_values]:
-                            usd_condition_met = False
-                            break
-                        elif not isinstance(trend_value, str) and trend_value not in allowed_values:
-                            usd_condition_met = False
-                            break
-                    else:
-                        # Column not found
-                        usd_condition_met = False
-                        break
-            else:
-                # It's a list of allowed values for overall trend
-                trend_value = data_dict.get('overall_trend_USD')
-                if trend_value is None:
-                    # Try alternative column names
-                    alt_cols = ['Overall_Trend_USD', 'overall_Trend_USD', 'Overall_trend_USD']
-                    for alt_col in alt_cols:
-                        if alt_col in data_dict:
-                            trend_value = data_dict.get(alt_col)
-                            break
-                
-                if trend_value is not None:
-                    # Handle both string and numeric comparisons
-                    if isinstance(trend_value, str) and trend_value not in [str(v) for v in usd_conditions]:
-                        usd_condition_met = False
-                    elif not isinstance(trend_value, str) and trend_value not in usd_conditions:
-                        usd_condition_met = False
-                else:
-                    # Column not found
-                    usd_condition_met = False
-            
-            # Set signal based on condition
-            usd_trend_signal = 100 if usd_condition_met else 0
-            
-            # Use custom signal values if provided
-            if usd_condition_met and 'usd_signal_values' in criteria:
-                signal_values = criteria['usd_signal_values']
-                
-                # Get custom signal value based on trend values
-                if isinstance(signal_values, dict):
-                    for term, values in signal_values.items():
-                        col_name = f"{term.replace(' ', '_').lower()}_trend_USD"
-                        trend_value = data_dict.get(col_name)
-                        
-                        if trend_value is not None and str(trend_value) in values:
-                            usd_trend_signal = values[str(trend_value)]
-                            break
-            
-            signal_data['usd_trend_signal'] = usd_trend_signal
-        
-        # Process BTC trend conditions for altcoins
-        btc_trend_signal = 0
-        if not is_bitcoin and btc_conditions:
-            btc_condition_met = True
-            
-            # Similar logic as USD trend but for BTC quote
-            # (This would be based on BTC-quoted price trends for the altcoin)
-            # ...
-            
-            signal_data['btc_trend_signal'] = btc_trend_signal
-        
-        # Process RSI signals
-        rsi_usd_signal = 0
-        if rsi_conditions_usd:
-            # Get RSI value
-            rsi_col = 'RSI_Signal_28_USD'
-            rsi_value = data_dict.get(rsi_col)
-            
-            if rsi_value is None:
-                # Try alternative column names
-                alt_rsi_cols = ['RSI_Signal_close', f'RSI_Signal_{asset_id}']
-                for alt_col in alt_rsi_cols:
-                    if alt_col in data_dict:
-                        rsi_value = data_dict.get(alt_col)
-                        break
-            
-            if rsi_value is not None:
-                # Default RSI behavior - use the RSI signal directly (-1 to 1)
-                if isinstance(rsi_conditions_usd, bool):
-                    rsi_usd_signal = rsi_value * 100  # Scale to match other signals
-                elif isinstance(rsi_conditions_usd, dict):
-                    # Advanced RSI configuration
-                    oversold = rsi_conditions_usd.get('oversold', 30)
-                    overbought = rsi_conditions_usd.get('overbought', 70)
-                    oversold_signal = rsi_conditions_usd.get('oversold_signal', 100)  # Full bull signal when oversold
-                    overbought_signal = rsi_conditions_usd.get('overbought_signal', -50)  # Partial bear signal when overbought
-                    neutral_fn = rsi_conditions_usd.get('neutral_signal_function', 'linear')
-                    
-                    # Get the raw RSI value (not the signal)
-                    raw_rsi_col = 'RSI_close'
-                    raw_rsi = data_dict.get(raw_rsi_col)
-                    
-                    if raw_rsi is None:
-                        # Try alternative columns
-                        alt_raw_rsi_cols = [f'RSI_{asset_id}', 'RSI']
-                        for alt_col in alt_raw_rsi_cols:
-                            if alt_col in data_dict:
-                                raw_rsi = data_dict.get(alt_col)
-                                break
-                    
-                    if raw_rsi is not None:
-                        # Calculate signal based on RSI zones
-                        if raw_rsi <= oversold:
-                            rsi_usd_signal = oversold_signal
-                        elif raw_rsi >= overbought:
-                            rsi_usd_signal = overbought_signal
-                        else:
-                            # Neutral zone - apply interpolation function
-                            if neutral_fn == 'linear':
-                                # Linear mapping from oversold to overbought
-                                # Normalize RSI to 0-1 within the neutral range
-                                normalized = (raw_rsi - oversold) / (overbought - oversold)
-                                # Map to signal range (oversold_signal to overbought_signal)
-                                rsi_usd_signal = oversold_signal + normalized * (overbought_signal - oversold_signal)
-                            else:
-                                # Default to RSI signal
-                                rsi_usd_signal = rsi_value * 100
-                    else:
-                        # Fall back to RSI signal if raw RSI not available
-                        rsi_usd_signal = rsi_value * 100
-                    
-                    # Apply custom function if provided
-                    if 'custom_function' in rsi_conditions_usd:
-                        try:
-                            custom_fn = rsi_conditions_usd['custom_function']
-                            rsi_usd_signal = custom_fn(raw_rsi, rsi_value)
-                        except Exception as e:
-                            self.logger.error(f"Error applying custom RSI function: {e}")
-            
-            signal_data['rsi_usd_signal'] = rsi_usd_signal
-        
-        # Process RSI signals for BTC quotes (for altcoins)
-        rsi_btc_signal = 0
-        if not is_bitcoin and rsi_conditions_btc:
-            # Similar logic as USD RSI but for BTC quote
-            # ...
-            
-            signal_data['rsi_btc_signal'] = rsi_btc_signal
-        
-        # Process volatility signal
-        volatility_signal = 0
-        if use_volatility_filter:
-            # Get volatility value
-            vol_col = 'Volatility_30'
-            volatility = data_dict.get(vol_col)
-            
-            if volatility is not None:
-                # Use volatility filtering parameters
-                max_vol = volatility_params.get('max_volatility', 100)
-                min_vol = volatility_params.get('min_volatility', 20)
-                max_signal = volatility_params.get('max_signal', 100)
-                min_signal = volatility_params.get('min_signal', 0)
-                
-                # Implement volatility filtering curve
-                if volatility <= min_vol:
-                    volatility_signal = max_signal
-                elif volatility >= max_vol:
-                    volatility_signal = min_signal
-                else:
-                    # Linear mapping from min_vol to max_vol
-                    normalized = 1 - ((volatility - min_vol) / (max_vol - min_vol))
-                    volatility_signal = min_signal + normalized * (max_signal - min_signal)
-            
-            signal_data['volatility_signal'] = volatility_signal
-        
-        # Process BTC trend gating (for altcoins)
-        btc_gate_multiplier = 1
-        if not is_bitcoin and btc_trend_gating:
-            # Implement BTC trend gating logic
-            # ...
-            
-            signal_data['btc_gate'] = btc_gate_multiplier
-        
-        # Calculate combined signal
-        signal_components = []
-        weights = []
-        
-        # Add trend signals
-        if usd_trend_signal is not None and signal_weights.get('usd_trend', 0) > 0:
-            signal_components.append(usd_trend_signal)
-            weights.append(signal_weights['usd_trend'])
-            
-        if btc_trend_signal is not None and signal_weights.get('btc_trend', 0) > 0:
-            signal_components.append(btc_trend_signal)
-            weights.append(signal_weights['btc_trend'])
-            
-        # Add RSI signals
-        if rsi_usd_signal is not None and signal_weights.get('rsi', 0) > 0:
-            signal_components.append(rsi_usd_signal)
-            weights.append(signal_weights['rsi'])
-            
-        if rsi_btc_signal is not None and signal_weights.get('btc_rsi', 0) > 0:
-            signal_components.append(rsi_btc_signal)
-            weights.append(signal_weights['btc_rsi'])
-            
-        # Add volatility signal
-        if volatility_signal is not None and signal_weights.get('volatility', 0) > 0:
-            signal_components.append(volatility_signal)
-            weights.append(signal_weights['volatility'])
-            
-        # Calculate weighted signal
-        if signal_components and weights:
-            # Normalize weights
-            weights_sum = sum(weights)
-            if weights_sum > 0:
-                normalized_weights = [w / weights_sum for w in weights]
-                combined_signal = sum(s * w for s, w in zip(signal_components, normalized_weights))
-                
-                # Apply gates
-                if not is_bitcoin and btc_gate_multiplier == 0:
-                    combined_signal = 0
-                    
-                signal_data['combined_signal'] = combined_signal
-        
-        return signal_data
+        return backtest_results
     
-    def _get_portfolio_assets(self, portfolio, criteria):
+    def _calculate_asset_metrics(self, asset_results, asset_trades_list, initial_capital):
         """
-        Get the list of assets for a portfolio.
+        Calculate performance metrics for an asset's simulation.
         
         Args:
-            portfolio (dict): Portfolio details
-            criteria (dict): Portfolio criteria
-            
-        Returns:
-            list: List of asset IDs
-        """
-        # Check for explicitly defined assets
-        if 'assets' in portfolio and portfolio['assets']:
-            return portfolio['assets']
-        
-        # If BTC only, return just Bitcoin
-        if criteria.get('btc_only', False):
-            return ['bitcoin']
-        
-        # Check if asset_data_cache exists in data_loader
-        if hasattr(self.data_loader, 'asset_data_cache'):
-            return [asset_id for asset_id in self.data_loader.asset_data_cache.keys()]
-        
-        # Fallback to using a default set of assets
-        self.logger.warning("No asset_data_cache found in data_loader. Using default assets.")
-        return ['bitcoin', 'ethereum']  # Default to Bitcoin and Ethereum if no cache exists
-    
-    def _get_asset_data(self, asset_id, cache):
-        """
-        Get data for a specific asset in the backtest timeframe.
-        
-        Args:
-            asset_id (str): Asset ID to get data for
-            cache (dict): Cache to store loaded data
-            
-        Returns:
-            pd.DataFrame: Filtered asset data or None if data is not available
-        """
-        if asset_id in cache:
-            return cache[asset_id]
-        
-        try:
-            self.logger.info(f"Loading data for {asset_id}")
-            data = self.data_loader.load_asset_data(asset_id)
-            
-            if data.empty:
-                self.logger.warning(f"No data found for {asset_id}")
-                return None
-            
-            # Get date range from BTC data
-            btc_data = cache.get('bitcoin')
-            if btc_data is not None:
-                min_date = btc_data['date'].min()
-                max_date = btc_data['date'].max()
-                
-                # Filter by date range
-                data = data[(data['date'] >= min_date) & (data['date'] <= max_date)].copy()
-            
-            if data.empty:
-                self.logger.warning(f"No data for {asset_id} in backtest date range")
-                return None
-            
-            # Add asset_id column if not present
-            if 'asset_id' not in data.columns:
-                data['asset_id'] = asset_id
-                
-            # Ensure date is datetime
-            data['date'] = pd.to_datetime(data['date'])
-            
-            # Store in cache
-            cache[asset_id] = data
-            self.logger.info(f"Successfully loaded {len(data)} rows for {asset_id}")
-            return data
-            
-        except Exception as e:
-            self.logger.error(f"Error loading data for {asset_id}: {str(e)}")
-            return None
-    
-    def _get_asset_price(self, asset_id, date, asset_data_cache):
-        """
-        Get the price of an asset on a specific date.
-        
-        Args:
-            asset_id (str): ID of the asset
-            date (datetime or str): Date to get price for
-            asset_data_cache (dict): Cache of asset data
-        
-        Returns:
-            float: Asset price or None if not available
-        """
-        if asset_id not in asset_data_cache:
-            self.logger.warning(f"No data available for {asset_id}")
-            return None
-        
-        # Ensure date is in datetime format
-        date = pd.to_datetime(date)
-        
-        # Find the row with the matching date
-        asset_data = asset_data_cache[asset_id]
-        
-        # Check if date column exists
-        if 'date' not in asset_data.columns:
-            self.logger.warning(f"No date column in data for {asset_id}")
-            return None
-        
-        # Convert dates to datetime if needed
-        if not pd.api.types.is_datetime64_any_dtype(asset_data['date']):
-            asset_data['date'] = pd.to_datetime(asset_data['date'])
-        
-        # Find the matching date row
-        matching_row = asset_data[asset_data['date'] == date]
-        
-        if matching_row.empty:
-            # Try to find the closest date
-            closest_date = asset_data['date'].iloc[(asset_data['date'] - date).abs().argmin()]
-            matching_row = asset_data[asset_data['date'] == closest_date]
-            
-            if matching_row.empty:
-                self.logger.warning(f"No price data found for {asset_id} on or near {date}")
-                return None
-        
-        # Return the closing price
-        if 'close' in matching_row.columns:
-            return matching_row['close'].iloc[0]
-        else:
-            self.logger.warning(f"No close column found for {asset_id}")
-            return None
-    
-    def _get_btc_trend(self, btc_data, date, criteria):
-        """
-        Get the Bitcoin trend classification for a date.
-        
-        Args:
-            btc_data (pd.DataFrame): Bitcoin data
-            date (datetime): Date to get the trend for
-            criteria (dict): Portfolio criteria
-            
-        Returns:
-            int: Bitcoin trend (-2 to 2)
-        """
-        # Find closest date
-        closest_data = btc_data[btc_data['date'] <= date].tail(1)
-        if closest_data.empty:
-            self.logger.warning(f"No Bitcoin data found for date {date}")
-            return 0
-        
-        # Try different trend column formats (both old and new patterns for compatibility)
-        # Start with new snake_case format, then try old formats, then fallbacks
-        trend_columns = [
-            # New snake_case format
-            'overall_trend_USD',
-            'short_term_trend_USD',
-            'medium_term_trend_USD',
-            'long_term_trend_USD',
-            # Old CamelCase format
-            'Overall_Trend_USD', 
-            # Old Mixed format with spaces
-            'Trend_Short Term_USD',
-            'Trend_Medium Term_USD',
-            'Trend_Long Term_USD',
-            'Trend_Overall_USD',
-            # Very old formats
-            'Trend_ShortTerm_USD',
-            'Trend_MediumTerm_USD',
-            'Trend_LongTerm_USD',
-            # Last resort
-            'trend'  # Fallback
-        ]
-        
-        # Log available columns for debugging
-        self.logger.debug(f"Available columns in BTC data: {list(closest_data.columns)}")
-        
-        # Check trend columns that include "_trend_" pattern (new format)
-        snake_case_columns = [col for col in closest_data.columns if '_trend_' in col.lower()]
-        if snake_case_columns:
-            self.logger.info(f"Found snake_case trend columns: {snake_case_columns}")
-            # Prioritize overall trend if available
-            for col in snake_case_columns:
-                if 'overall' in col.lower():
-                    self.logger.info(f"Using column {col} for BTC trend")
-                    trend_value = closest_data[col].iloc[0]
-                    return trend_value
-            
-            # Otherwise use the first available trend column
-            col = snake_case_columns[0]
-            self.logger.info(f"Using column {col} for BTC trend (first available)")
-            trend_value = closest_data[col].iloc[0]
-            return trend_value
-        
-        # Check if any of the trend columns exist in order of preference
-        for col in trend_columns:
-            if col in closest_data.columns:
-                self.logger.info(f"Using column {col} for BTC trend")
-                trend_value = closest_data[col].iloc[0]
-                return trend_value
-        
-        # No trend column found
-        self.logger.warning(f"No trend column found in Bitcoin data. Available columns: {list(closest_data.columns)}")
-        return 0
-    
-    def _get_volatility(self, date, criteria):
-        """
-        Get volatility state for a specific date.
-        
-        Args:
-            date (datetime): Date to get volatility for
-            criteria (dict): Portfolio criteria
-            
-        Returns:
-            int: Volatility state (0 for low, 1 for high)
-        """
-        # Check if we have a Markov model
-        if hasattr(self, 'markov_analyzer') and self.markov_analyzer:
-            return self.markov_analyzer.get_volatility_state(date)
-        
-        return 0  # Default to low volatility
-    
-    def _execute_trades(self, signals, current_holdings, date, fee_pct, slippage_pct, portfolio_criteria=None):
-        """
-        Execute trades based on signals.
-        
-        Args:
-            signals (dict): Dictionary of trading signals
-            current_holdings (dict): Current portfolio holdings
-            date (datetime): Trade date
-            fee_pct (float): Trading fee percentage
-            slippage_pct (float): Slippage percentage
-            portfolio_criteria (dict): Portfolio configuration parameters
-            
-        Returns:
-            tuple: (new_holdings, trades)
-        """
-        if signals is None:
-            return current_holdings, []
-        
-        # Default to empty dict if None
-        portfolio_criteria = portfolio_criteria or {}
-        
-        # Create a copy of current holdings
-        new_holdings = current_holdings.copy()
-        trades = []
-        
-        # Get the final decision from signals
-        decision = signals.get('final_decision', 0)
-        asset = signals.get('asset', 'bitcoin')
-        
-        # Get trading parameters from portfolio criteria
-        trade_mode = portfolio_criteria.get('trade_mode', 'all_in')  # 'all_in', 'fixed_pct', 'proportional'
-        position_sizing = portfolio_criteria.get('position_sizing', 1.0)  # Default to full position
-        max_position_count = portfolio_criteria.get('max_position_count', 1)  # Default to single position
-        min_trade_size = portfolio_criteria.get('min_trade_size', 0.0)  # Minimum trade size as % of portfolio
-        scale_in = portfolio_criteria.get('scale_in', False)  # Whether to scale into positions
-        scale_out = portfolio_criteria.get('scale_out', False)  # Whether to scale out of positions
-        
-        # Calculate total portfolio value
-        portfolio_value = sum(new_holdings.values())
-        
-        # Get current position in the asset
-        current_position = new_holdings.get(asset, 0)
-        
-        # Total trading costs
-        total_cost_pct = fee_pct + slippage_pct
-        
-        # Execute trade based on decision
-        if decision == 1:  # Buy/Hold
-            if current_position == 0 or scale_in:  # Not in position or scaling in
-                # Get available cash
-                cash = new_holdings.get('cash', 0)
-                
-                if cash > 0:
-                    # Calculate trade amount based on trade_mode
-                    if trade_mode == 'all_in':
-                        # Invest all available cash
-                        trade_amount = cash * (1 - total_cost_pct)
-                        trade_costs = cash * total_cost_pct
-                        new_cash = 0
-                    elif trade_mode == 'fixed_pct':
-                        # Invest a fixed percentage of portfolio
-                        trade_value = portfolio_value * position_sizing
-                        # Don't trade more than available cash
-                        trade_value = min(trade_value, cash)
-                        # Calculate costs
-                        trade_costs = trade_value * total_cost_pct
-                        trade_amount = trade_value - trade_costs
-                        new_cash = cash - trade_value
-                    elif trade_mode == 'proportional':
-                        # Invest proportionally to signal strength
-                        signal_strength = signals.get('combined_signal', 50) / 100  # Normalize to 0-1
-                        trade_value = cash * signal_strength
-                        # Apply minimum trade size if specified
-                        if trade_value < portfolio_value * min_trade_size:
-                            trade_value = 0  # Skip small trades
-                        # Calculate costs
-                        trade_costs = trade_value * total_cost_pct
-                        trade_amount = trade_value - trade_costs
-                        new_cash = cash - trade_value
-                    else:
-                        # Default to all_in if mode not recognized
-                        trade_amount = cash * (1 - total_cost_pct)
-                        trade_costs = cash * total_cost_pct
-                        new_cash = 0
-                    
-                    # Skip trades below minimum size
-                    if trade_amount >= portfolio_value * min_trade_size:
-                        # Update holdings
-                        new_holdings[asset] = current_position + trade_amount
-                        new_holdings['cash'] = new_cash
-                        
-                        # Record trade
-                        trades.append({
-                            'date': date,
-                            'asset': asset,
-                            'action': 'buy',
-                            'amount': trade_amount,
-                            'price': 1.0,  # Normalized price
-                            'costs': trade_costs,
-                            'signal_value': signals.get('combined_signal', 0),
-                            'portfolio_value': portfolio_value
-                        })
-        elif decision == 0:  # Sell/Cash
-            if current_position > 0:  # Currently invested, need to sell
-                # Determine sell size based on scale_out parameter
-                if scale_out:
-                    # Scale out gradually based on signal
-                    inverse_signal = 100 - signals.get('combined_signal', 50)
-                    sell_pct = inverse_signal / 100  # Normalize to 0-1
-                    sell_amount = current_position * sell_pct
-                else:
-                    # Sell entire position
-                    sell_amount = current_position
-                
-                # Calculate trade costs
-                trade_costs = sell_amount * total_cost_pct
-                cash_amount = sell_amount * (1 - total_cost_pct)
-                
-                # Update holdings
-                new_holdings[asset] = current_position - sell_amount
-                new_holdings['cash'] = new_holdings.get('cash', 0) + cash_amount
-                
-                # Record trade
-                trades.append({
-                    'date': date,
-                    'asset': asset,
-                    'action': 'sell',
-                    'amount': sell_amount,
-                    'price': 1.0,  # Normalized price
-                    'costs': trade_costs,
-                    'signal_value': signals.get('combined_signal', 0),
-                    'portfolio_value': portfolio_value
-                })
-                
-                # Clean up tiny positions
-                if new_holdings[asset] < portfolio_value * min_trade_size:
-                    additional_cash = new_holdings[asset] * (1 - total_cost_pct)
-                    additional_costs = new_holdings[asset] * total_cost_pct
-                    new_holdings['cash'] += additional_cash
-                    new_holdings[asset] = 0
-                    
-                    # Record cleanup trade
-                    if additional_cash > 0:
-                        trades.append({
-                            'date': date,
-                            'asset': asset,
-                            'action': 'cleanup',
-                            'amount': new_holdings[asset],
-                            'price': 1.0,
-                            'costs': additional_costs,
-                            'signal_value': signals.get('combined_signal', 0),
-                            'portfolio_value': portfolio_value
-                        })
-            # Otherwise already in cash, do nothing
-        
-        return new_holdings, trades
-
-    def _calculate_performance_metrics(self, results_df):
-        """
-        Calculate performance metrics for the backtest.
-        
-        Args:
-            results_df (pd.DataFrame): DataFrame with backtest results
+            asset_results (pd.DataFrame): DataFrame with daily results
+            asset_trades_list (list): List of trade dictionaries
+            initial_capital (float): Initial capital
             
         Returns:
             dict: Dictionary with performance metrics
         """
         metrics = {}
         
-        # Get the appropriate column names
-        if 'strategy_value' in results_df.columns:
-            value_col = 'strategy_value'
-            returns_col = 'strategy_returns'
-        elif 'portfolio_value' in results_df.columns:
-            value_col = 'portfolio_value'
-            returns_col = 'returns'
-        else:
-            self.logger.warning("No recognizable value column found in results_df")
-            return metrics
+        # Basic return metrics
+        final_value = asset_results['portfolio_value'].iloc[-1]
+        metrics['total_return_pct'] = ((final_value / initial_capital) - 1) * 100
         
-        initial_value = results_df[value_col].iloc[0] if not results_df.empty else 0
-        final_value = results_df[value_col].iloc[-1] if not results_df.empty else 0
+        # Max drawdown
+        # The max_drawdown method expects cumulative returns + 1 (i.e., growth factor)
+        if 'cum_returns_plus_one' not in asset_results.columns:
+            asset_results['cum_returns_plus_one'] = asset_results['cumulative_returns'] + 1
         
-        # Calculate total return
-        metrics['total_return'] = ((final_value / initial_value) - 1) * 100 if initial_value > 0 else 0
+        metrics['max_drawdown_pct'] = self.metrics_calculator.max_drawdown(asset_results['cum_returns_plus_one']) * 100
         
-        # Calculate max drawdown
-        if returns_col in results_df.columns:
-            returns = results_df[returns_col]
-            cum_returns = (1 + returns).cumprod() - 1
-            running_max = np.maximum.accumulate(cum_returns + 1)
-            drawdowns = (cum_returns + 1) / running_max - 1
-            metrics['max_drawdown'] = abs(min(drawdowns) * 100) if len(drawdowns) > 0 else 0
-        else:
-            metrics['max_drawdown'] = 0
-        
-        # Calculate Sharpe and Sortino ratios
-        if returns_col in results_df.columns:
-            daily_returns = results_df[returns_col]
-            annualized_return = ((1 + np.mean(daily_returns)) ** 365) - 1
-            annualized_volatility = np.std(daily_returns) * np.sqrt(365)
-            metrics['annualized_volatility'] = annualized_volatility * 100
+        # Sharpe & Sortino ratios
+        if not asset_results['daily_returns'].empty:
+            sharpe, sortino, avg_daily_return, _ = self.metrics_calculator.calculate_sharpe_sortino(
+                asset_results, 'daily_returns'
+            )
+            metrics['sharpe_ratio'] = sharpe
+            metrics['sortino_ratio'] = sortino
             
-            # Sharpe ratio (assuming 0% risk-free rate for simplicity)
-            metrics['sharpe'] = annualized_return / annualized_volatility if annualized_volatility != 0 else 0
+            # Annualized metrics
+            trading_days_per_year = 252
+            daily_std_dev = asset_results['daily_returns'].std()
+            annualized_volatility = daily_std_dev * np.sqrt(trading_days_per_year)
+            metrics['annualized_volatility_pct'] = annualized_volatility * 100
             
-            # Sortino ratio (downside deviation)
-            negative_returns = daily_returns[daily_returns < 0]
-            downside_deviation = np.std(negative_returns) * np.sqrt(365) if len(negative_returns) > 0 else 0.0001
-            metrics['sortino'] = annualized_return / downside_deviation if downside_deviation != 0 else 0
-        else:
-            metrics['annualized_volatility'] = 0
-            metrics['sharpe'] = 0
-            metrics['sortino'] = 0
-        
-        return metrics
-
-    def _calculate_trade_metrics(self, trades_df):
-        """
-        Calculate metrics for trade performance.
-        
-        Args:
-            trades_df (pd.DataFrame): DataFrame with trade data
-            
-        Returns:
-            dict: Dictionary with trade metrics
-        """
-        metrics = {}
-        
-        # If we have no trades or empty DataFrame, return empty metrics
-        if trades_df is None or trades_df.empty:
-            metrics['total_trades'] = 0
-            metrics['winning_trades'] = 0
-            metrics['losing_trades'] = 0
-            metrics['win_rate'] = 0
-            metrics['avg_win'] = 0
-            metrics['avg_loss'] = 0
-            metrics['profit_factor'] = 0
-            metrics['avg_holding_days'] = 0
-            metrics['total_costs'] = 0
-            return metrics
-        
-        # Check if trades_df is a DataFrame
-        if not isinstance(trades_df, pd.DataFrame):
-            self.logger.error(f"trades_df is not a DataFrame: {type(trades_df)}")
-            return metrics
-        
-        # Calculate closed trades
-        if 'is_open' in trades_df.columns:
-            closed_trades = trades_df[~trades_df['is_open']]
-        else:
-            closed_trades = trades_df  # Consider all trades closed
-        
-        # Calculate metrics
-        metrics['total_trades'] = len(closed_trades)
-        
-        # If we have trade_return column, calculate win/loss metrics
-        if 'trade_return' in closed_trades.columns:
-            winning_trades = closed_trades[closed_trades['trade_return'] > 0]
-            losing_trades = closed_trades[closed_trades['trade_return'] <= 0]
-            
-            metrics['winning_trades'] = len(winning_trades)
-            metrics['losing_trades'] = len(losing_trades)
-            
-            if len(closed_trades) > 0:
-                metrics['win_rate'] = (len(winning_trades) / len(closed_trades)) * 100
+            if pd.notna(avg_daily_return):
+                annualized_return = ((1 + avg_daily_return) ** trading_days_per_year) - 1
+                metrics['annualized_return_pct'] = annualized_return * 100
             else:
-                metrics['win_rate'] = 0
-            
-            # Calculate average win/loss
-            if len(winning_trades) > 0:
-                metrics['avg_win'] = winning_trades['trade_return'].mean() * 100
-            else:
-                metrics['avg_win'] = 0
-            
-            if len(losing_trades) > 0:
-                metrics['avg_loss'] = losing_trades['trade_return'].mean() * 100
-            else:
-                metrics['avg_loss'] = 0
-            
-            # Calculate profit factor
-            total_gains = winning_trades['trade_return'].sum()
-            total_losses = abs(losing_trades['trade_return'].sum())
-            
-            if total_losses > 0:
-                metrics['profit_factor'] = total_gains / total_losses
-            else:
-                metrics['profit_factor'] = float('inf') if total_gains > 0 else 0
+                metrics['annualized_return_pct'] = 0.0
         else:
-            # No trade return information
-            metrics['winning_trades'] = 0
-            metrics['losing_trades'] = 0
+            metrics['sharpe_ratio'] = 0.0
+            metrics['sortino_ratio'] = 0.0
+            metrics['annualized_volatility_pct'] = 0.0
+            metrics['annualized_return_pct'] = 0.0
+        
+        # Trade metrics
+        metrics['total_trades'] = len([t for t in asset_trades_list if not t['is_open']])
+        
+        # Calculate win rate and avg win/loss only for closed trades
+        closed_trades = [t for t in asset_trades_list if not t['is_open']]
+        if closed_trades:
+            # Extract trade returns from percentage strings
+            trade_returns = [float(t['trade_return'].replace('%', '')) for t in closed_trades]
+            winning_trades = [r for r in trade_returns if r > 0]
+            losing_trades = [r for r in trade_returns if r <= 0]
+            
+            metrics['win_rate'] = (len(winning_trades) / len(trade_returns)) * 100 if trade_returns else 0
+            metrics['avg_win'] = np.mean(winning_trades) if winning_trades else 0
+            metrics['avg_loss'] = np.mean(losing_trades) if losing_trades else 0
+            metrics['profit_factor'] = abs(sum(winning_trades) / sum(losing_trades)) if sum(losing_trades) != 0 else 0
+        else:
             metrics['win_rate'] = 0
             metrics['avg_win'] = 0
             metrics['avg_loss'] = 0
             metrics['profit_factor'] = 0
         
-        # Calculate average holding period
-        if 'holding_days' in closed_trades.columns:
-            metrics['avg_holding_days'] = closed_trades['holding_days'].mean()
-        else:
-            metrics['avg_holding_days'] = 0
-        
-        # Calculate total costs
-        if 'costs' in closed_trades.columns:
-            metrics['total_costs'] = closed_trades['costs'].sum()
-        else:
-            metrics['total_costs'] = 0
+        # Transaction costs
+        entry_costs = sum([t['entry_cost'] for t in asset_trades_list])
+        exit_costs = sum([t['exit_cost'] for t in asset_trades_list if t['exit_cost'] is not None])
+        metrics['total_transaction_costs'] = abs(entry_costs) + abs(exit_costs)
         
         return metrics
-
-    def _process_trades_for_output(self, trades_df, asset_data_cache):
-        """
-        Process trades dataframe to match the required output format.
-        
-        Args:
-            trades_df (pd.DataFrame): Raw trades dataframe
-            asset_data_cache (dict): Cache of asset data
-            
-        Returns:
-            pd.DataFrame: Formatted trades dataframe
-        """
-        if trades_df.empty:
-            return pd.DataFrame()
-        
-        # Group trades into entry/exit pairs
-        processed_trades = []
-        open_trades = {}
-        asset_id = trades_df['asset_id'].iloc[0] if 'asset_id' in trades_df.columns else None
-        
-        # Sort by date
-        trades_df = trades_df.sort_values('date')
-        
-        trade_id = 1
-        
-        for _, trade in trades_df.iterrows():
-            action = trade.get('action', '').lower()
-            
-            if action == 'buy':
-                # This is an entry
-                entry_date = trade['date']
-                entry_price = trade['price']
-                entry_value = trade['value'] if 'value' in trade else trade['amount']
-                entry_cost = trade['transaction_cost'] if 'transaction_cost' in trade else 0
-                
-                # Store the open trade
-                open_trades[trade_id] = {
-                    'trade_id': trade_id,
-                    'entry_date': entry_date,
-                    'entry_price': entry_price,
-                    'entry_value': entry_value,
-                    'entry_cost': -entry_cost,  # Negative because it's a cost
-                    'asset_id': trade.get('asset_id', None),
-                    'asset': trade.get('asset', None)
-                }
-                trade_id += 1
-                
-            elif action == 'sell':
-                # This is an exit - find matching entry (most recent open trade)
-                if open_trades:
-                    # Get the trade ID of the most recent open trade
-                    last_trade_id = max(open_trades.keys())
-                    entry = open_trades[last_trade_id]
-                    
-                    # Calculate holding period and returns
-                    exit_date = trade['date']
-                    exit_price = trade['price']
-                    exit_value = trade['value'] if 'value' in trade else trade['amount']
-                    exit_cost = trade['transaction_cost'] if 'transaction_cost' in trade else 0
-                    
-                    # Calculate price return
-                    price_return = (exit_price / entry['entry_price']) - 1 if entry['entry_price'] > 0 else 0
-                    
-                    # Calculate trade return (including costs)
-                    trade_return = ((exit_value - exit_cost) / (entry['entry_value'] - entry['entry_cost'])) - 1
-                    
-                    # Calculate holding days
-                    if isinstance(exit_date, pd.Timestamp) and isinstance(entry['entry_date'], pd.Timestamp):
-                        holding_days = (exit_date - entry['entry_date']).days
-                    else:
-                        # Convert to datetime if needed
-                        entry_date = pd.to_datetime(entry['entry_date'])
-                        exit_date = pd.to_datetime(exit_date)
-                        holding_days = (exit_date - entry_date).days
-                    
-                    # Format the trade record
-                    trade_record = {
-                        'trade_id': entry['trade_id'],
-                        'entry_date': entry['entry_date'],
-                        'exit_date': exit_date,
-                        'holding_days': holding_days,
-                        'entry_price': entry['entry_price'],
-                        'exit_price': exit_price,
-                        'price_return': f"{price_return*100:.2f}%",
-                        'entry_value': entry['entry_value'],
-                        'entry_cost': entry['entry_cost'],
-                        'exit_value': exit_value,
-                        'exit_cost': -exit_cost,  # Negative because it's a cost
-                        'trade_return': f"{trade_return*100:.2f}%",
-                        'is_open': False
-                    }
-                    
-                    processed_trades.append(trade_record)
-                    
-                    # Remove the trade from open trades
-                    del open_trades[last_trade_id]
-        
-        # Handle any remaining open trades
-        for tid, entry in open_trades.items():
-            # Get latest price for the asset
-            latest_date = max(trades_df['date'])
-            asset_id = entry['asset_id']
-            latest_price = self._get_asset_price(asset_id, latest_date, asset_data_cache)
-            
-            if latest_price:
-                # Calculate price return
-                price_return = (latest_price / entry['entry_price']) - 1 if entry['entry_price'] > 0 else 0
-                
-                # Calculate holding days
-                if isinstance(latest_date, pd.Timestamp) and isinstance(entry['entry_date'], pd.Timestamp):
-                    holding_days = (latest_date - entry['entry_date']).days
-                else:
-                    # Convert to datetime if needed
-                    entry_date = pd.to_datetime(entry['entry_date'])
-                    latest_date = pd.to_datetime(latest_date)
-                    holding_days = (latest_date - entry_date).days
-                
-                # Calculate exit value (current market value)
-                entry_qty = entry['entry_value'] / entry['entry_price'] if entry['entry_price'] > 0 else 0
-                exit_value = entry_qty * latest_price
-                
-                # Add open trade to processed trades
-                trade_record = {
-                    'trade_id': entry['trade_id'],
-                    'entry_date': entry['entry_date'],
-                    'exit_date': latest_date,
-                    'holding_days': holding_days,
-                    'entry_price': entry['entry_price'],
-                    'exit_price': latest_price,
-                    'price_return': f"{price_return*100:.2f}%",
-                    'entry_value': entry['entry_value'],
-                    'entry_cost': entry['entry_cost'],
-                    'exit_value': exit_value,
-                    'exit_cost': 0,  # No exit cost yet since trade is open
-                    'trade_return': f"{((exit_value / entry['entry_value']) - 1)*100:.2f}%",
-                    'is_open': True
-                }
-                
-                processed_trades.append(trade_record)
-        
-        # Convert to DataFrame
-        if processed_trades:
-            return pd.DataFrame(processed_trades)
-        else:
-            return pd.DataFrame() 

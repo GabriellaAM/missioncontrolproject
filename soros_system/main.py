@@ -62,7 +62,7 @@ class TrendAnalyzer:
     def __init__(self, asset_ids=None, data_path=None, btc_data_path=None, lookback_days=30, 
                  ssr_data_path=None, data_loader=None, logger=None, portfolio_manager=None, 
                  backtester=None, plotter=None, metrics_calculator=None, 
-                 trend_classifier=None, markov_analyzer=None):
+                 trend_classifier=None, markov_analyzer=None, markov_vol_model_path=None):
         """
         Initialize the TrendAnalyzer with necessary components.
         
@@ -80,7 +80,8 @@ class TrendAnalyzer:
             plotter (Plotter, optional): Pre-initialized Plotter instance.
             metrics_calculator (MetricsCalculator, optional): Pre-initialized MetricsCalculator instance.
             trend_classifier (TrendClassifier, optional): Pre-initialized TrendClassifier instance.
-            markov_analyzer (MarkovAnalyzer, optional): Pre-initialized MarkovAnalyzer instance.
+            markov_analyzer (MarkovAnalyzer, optional): Pre-initialized MarkovAnalyzer instance for trend analysis.
+            markov_vol_model_path (str, optional): Path to a pre-trained MarkovVolatility model.
         """
         self.logger = logger or logging.getLogger(__name__)
         self.logger.info("Initializing TrendAnalyzer...")
@@ -91,6 +92,7 @@ class TrendAnalyzer:
         # Set configuration
         self.use_btc_adjusted = True  # Default to using BTC-adjusted prices
         self.skip_metrics_comp = False  # Set default for skipping metrics computation
+        self.lookback_days = lookback_days  # Set lookback period for metrics calculations
         
         # Initialize data loading components
         if data_loader:
@@ -107,20 +109,57 @@ class TrendAnalyzer:
             from soros_system.data.ssr_data import SSRDataHandler
             self.ssr_handler = SSRDataHandler(ssr_data_path)
             self.logger.info(f"Initialized SSRDataHandler with data from {ssr_data_path}")
+            
+            # Attach SSR handler to data_loader for easy access
+            self.data_loader.ssr_handler = self.ssr_handler
         
         # Initialize portfolio management components
         if portfolio_manager:
             self.portfolio_manager = portfolio_manager
         else:
             from soros_system.portfolio.portfolio_manager import PortfolioManager
-            self.portfolio_manager = PortfolioManager()
+            # Pass SSR handler and markov_vol_model to PortfolioManager
+            self.portfolio_manager = PortfolioManager(ssr_handler=self.ssr_handler)
+        
+        # Initialize Markov model for trend analysis
+        if markov_analyzer is not None and hasattr(markov_analyzer, 'calculate_transition_probabilities'):
+            # Only use if it's a valid MarkovAnalyzer instance
+            self.markov_analyzer = markov_analyzer
+            self.logger.info("Using provided MarkovAnalyzer for trend analysis")
+        else:
+            # Create a new MarkovAnalyzer instance
+            from soros_system.analysis.markov import MarkovAnalyzer
+            self.markov_analyzer = MarkovAnalyzer()
+            self.logger.info("Created new MarkovAnalyzer for trend analysis")
+        
+        # Initialize Markov Volatility model for regime detection
+        from soros_system.analysis.markov_vol_model import MarkovVolModel
+        
+        # Check if the provided markov_analyzer is actually a MarkovVolModel
+        # This handles backward compatibility if user passed MarkovVolModel to markov_analyzer
+        if markov_analyzer is not None and hasattr(markov_analyzer, 'get_volatility_state') and not hasattr(markov_analyzer, 'calculate_transition_probabilities'):
+            self.logger.warning("Detected MarkovVolModel passed as markov_analyzer - using it for volatility analysis")
+            self.markov_vol_model = markov_analyzer
+        else:
+            # Create a new MarkovVolModel with the provided path
+            self.markov_vol_model = MarkovVolModel(model_path=markov_vol_model_path)
+            
+        # Pass markov_vol_model to portfolio_manager if not already set
+        if self.portfolio_manager.markov_vol_model is None:
+            self.portfolio_manager.markov_vol_model = self.markov_vol_model
+        
+        self.logger.info("Initialized MarkovVolModel for volatility analysis")
         
         # Initialize backtesting components
         if backtester:
             self.backtester = backtester
         else:
             from soros_system.portfolio.backtest import PortfolioBacktester
-            self.backtester = PortfolioBacktester(self.portfolio_manager, self.data_loader)
+            # Note: No need to pass markov_analyzer anymore as signal calculation is in PortfolioManager
+            self.backtester = PortfolioBacktester(
+                self.portfolio_manager, 
+                self.data_loader
+            )
         
         # Initialize visualization components
         if plotter:
@@ -148,15 +187,6 @@ class TrendAnalyzer:
         else:
             from soros_system.indicators.trend_classifier import TrendClassifier
             self.trend_classifier = TrendClassifier(self.ma_calculator)
-        
-        if markov_analyzer:
-            self.markov_analyzer = markov_analyzer
-        else:
-            from soros_system.analysis.markov import MarkovAnalyzer
-            self.markov_analyzer = MarkovAnalyzer()
-        
-        # Set lookback period for metrics calculations
-        self.lookback_days = lookback_days
         
         # Initialize cache for processed data
         self.classified_data = {}
@@ -775,59 +805,62 @@ class TrendAnalyzer:
                 
                 # RSI parameters
                 rsi_conditions_usd (bool/dict): Whether/how to apply RSI filter for USD trends
-                    If dict, can include: 'oversold', 'overbought', 'oversold_signal', 'overbought_signal',
-                    'neutral_signal_function', 'neutral_value', 'custom_function'
                 rsi_conditions_btc (bool/dict): Whether/how to apply RSI filter for BTC trends (for altcoins)
                 
                 # Signal calculation parameters
-                usd_signal_values (dict): Custom signal values for specific trend values
-                    Example: {'Short Term': {'1': 30, '2': 60}, 'Overall': {'1': 40, '2': 80}}
-                signal_weights (dict): Weights for combining different signals
-                    Example: {'usd_trend': 0.6, 'btc_trend': 0.0, 'rsi': 0.3, 'volatility': 0.1}
-                decision_criteria (str): How to determine final trading decision - 'threshold', 'directional', or 'custom'
-                decision_function (callable): Custom function for determining trade decision if decision_criteria='custom'
+                signal_threshold (float): Threshold for signals to trigger trades (0-100, default 50)
                 
                 # Volatility filter parameters
                 use_volatility_filter (bool): Whether to apply volatility filtering
-                volatility_params (dict): Volatility filter parameters
-                    Example: {'max_volatility': 100, 'min_volatility': 20, 'max_signal': 100, 'min_signal': 0}
                 
-                # Trading parameters
-                trade_mode (str): How to size positions - 'all_in', 'fixed_pct', or 'proportional'
-                position_sizing (float): Position size as fraction of portfolio (for fixed_pct mode)
-                max_position_count (int): Maximum number of positions to hold at once
-                min_trade_size (float): Minimum trade size as fraction of portfolio
-                scale_in (bool): Whether to scale into positions
-                scale_out (bool): Whether to scale out of positions
-                
-                # Portfolio type
-                btc_only (bool): Whether to only include BTC in the portfolio
-                use_btc_rsi_signal (bool): Whether to use BTC RSI as signal
-                follow_portfolio (str): Name of portfolio to follow
+                # SSR parameters
                 use_ssr_signal (bool): Whether to use SSR signal
                 use_ssr_gate (bool): Whether to use SSR as gate
                 
-                # Trading costs
+                # Trading parameters
+                btc_only (bool): Whether to only include BTC in the portfolio
+                
+                # Transaction costs
                 alt_cost (float): Transaction cost for altcoins (default: 0.005 or 0.5%)
                 btc_cost (float): Transaction cost for Bitcoin (default: 0.001 or 0.1%)
             
         Returns:
             bool: True if portfolio was created successfully, False otherwise
         """
-        return self.portfolio_manager.create_portfolio(portfolio_name, **criteria)
-    
-    def create_roc_based_portfolio(self, portfolio_name, **criteria):
-        """
-        Create a new portfolio based on Rate of Change (RoC) criteria.
+        # Ensure needed assets have been analyzed
+        assets_to_analyze = set(self.asset_ids)
+        if 'btc_trend_gating' in criteria and 'bitcoin' not in assets_to_analyze:
+            assets_to_analyze.add('bitcoin')
+            self.logger.info("Adding Bitcoin to analyzed assets for BTC gating")
         
-        Args:
-            portfolio_name (str): Name of the portfolio
-            **criteria: RoC-based criteria for the portfolio
-            
-        Returns:
-            bool: True if portfolio was created successfully, False otherwise
-        """
-        return self.portfolio_manager.create_roc_based_portfolio(portfolio_name, **criteria)
+        # Analyze all needed assets if not already analyzed
+        for asset_id in assets_to_analyze:
+            if asset_id not in self.classified_data:
+                self.analyze_asset(asset_id)
+        
+        # Collect all classified data
+        classified_data = {}
+        for asset_id in assets_to_analyze:
+            if asset_id in self.classified_data and not self.classified_data[asset_id].empty:
+                classified_data[asset_id] = self.classified_data[asset_id].copy()
+            else:
+                self.logger.warning(f"No classified data for {asset_id}, skipping")
+        
+        # Pass ssr_handler and markov_vol_model to PortfolioManager if not already set
+        if self.portfolio_manager.ssr_handler is None and hasattr(self, 'ssr_handler'):
+            self.portfolio_manager.ssr_handler = self.ssr_handler
+        
+        if self.portfolio_manager.markov_vol_model is None and hasattr(self, 'markov_vol_model'):
+            self.portfolio_manager.markov_vol_model = self.markov_vol_model
+        
+        # Create the portfolio with classified data
+        result = self.portfolio_manager.create_portfolio(
+            portfolio_name, 
+            classified_data=classified_data,
+            **criteria
+        )
+        
+        return result
     
     def list_portfolios(self):
         """
@@ -862,357 +895,64 @@ class TrendAnalyzer:
         """
         return self.portfolio_manager.get_portfolio_details(portfolio_name)
     
-    def backtest_portfolio(self, portfolio_name, start_date=None, end_date=None, initial_capital=10000, signal_threshold=50):
+    def backtest_portfolio(self, portfolio_name, start_date=None, end_date=None, initial_capital=10000, 
+                          signal_threshold=50, btc_cost=0.001, alt_cost=0.005, slippage_pct=0.0):
         """
-        Backtest a portfolio using the PortfolioBacktester.
+        Backtest a portfolio strategy.
         
         Args:
-            portfolio_name (str): Name of the portfolio to backtest.
-            start_date (str): Start date for backtesting in format 'YYYY-MM-DD'.
-            end_date (str): End date for backtesting in format 'YYYY-MM-DD'.
-            initial_capital (float): Initial capital for the portfolio.
-            signal_threshold (int, optional): Threshold value (0-100) for trade signals. 
-                Used when portfolio's decision_criteria is 'threshold'. 
-                Higher values = more conservative trading, lower values = more active trading.
-                Defaults to 50.
+            portfolio_name (str): Name of the portfolio to backtest
+            start_date (str or datetime, optional): Start date for backtesting
+            end_date (str or datetime, optional): End date for backtesting
+            initial_capital (float, optional): Initial capital for backtesting
+            signal_threshold (float, optional): Threshold for signals to trigger trades (0-100)
+            btc_cost (float, optional): Fee rate for Bitcoin transactions (default: 0.001)
+            alt_cost (float, optional): Fee rate for altcoin transactions (default: 0.005)
+            slippage_pct (float, optional): Slippage percentage for trading (default: 0.0)
             
         Returns:
-            dict: Dictionary containing backtest results with keys:
-                - results: Dictionary of dataframes with strategy vs buy & hold results per asset
-                - signals: Dictionary of dataframes with signal components and decisions per asset
-                - trades: Dictionary of dataframes with trade history per asset
-                - metrics: Dictionary of dataframes with performance metrics per asset
-                - basket_selection: DataFrame showing asset selection over time
+            dict: Dictionary with backtest results
         """
+        # Convert dates to datetime if needed
         if start_date is None:
-            start_date = "2022-01-01"
+            start_date = pd.Timestamp.now() - pd.Timedelta(days=365)  # Default to 1 year ago
         if end_date is None:
-            end_date = "2023-12-31"
-            
-        self.logger.info(f"Starting backtest for portfolio {portfolio_name} from {start_date} to {end_date}")
+            end_date = pd.Timestamp.now()
         
-        # Ensure Bitcoin is in the asset_ids list for analysis
-        if 'bitcoin' not in self.asset_ids:
-            self.logger.info("Adding Bitcoin to the asset list for analysis")
-            self.asset_ids.append('bitcoin')
-            
-        # Analyze bitcoin with the trend classifier to generate trend columns
-        self.logger.info("Analyzing Bitcoin with trend classifier to generate trend columns...")
-        bitcoin_data = self.analyze_asset('bitcoin')
+        start_date = pd.to_datetime(start_date)
+        end_date = pd.to_datetime(end_date)
         
-        if bitcoin_data is None or bitcoin_data.empty:
-            self.logger.error("Failed to analyze Bitcoin data. Cannot proceed with backtest.")
-            return None
-            
-        # Check for trend columns in the analyzed data - look for various naming patterns
-        trend_cols = [col for col in bitcoin_data.columns if '_trend_' in col.lower()]
-        if not trend_cols:
-            # Check for alternative naming patterns as well
-            trend_cols = [col for col in bitcoin_data.columns if 'trend_' in col.lower() or 'trend' in col.lower()]
-        
-        if not trend_cols:
-            self.logger.error(f"No trend columns found in analyzed Bitcoin data. Available columns: {bitcoin_data.columns.tolist()}")
+        # Ensure portfolio exists
+        portfolio = self.portfolio_manager.get_portfolio(portfolio_name)
+        if not portfolio:
+            self.logger.error(f"Portfolio '{portfolio_name}' not found.")
             return None
         
-        self.logger.info(f"Bitcoin analysis successful. Found trend columns: {trend_cols}")
-        self.logger.info(f"Using classified Bitcoin data for backtest")
+        # Get portfolio criteria
+        portfolio_criteria = portfolio.get('criteria', {})
+        # Override signal_threshold if specified in portfolio criteria
+        if 'signal_threshold' in portfolio_criteria:
+            signal_threshold = portfolio_criteria.get('signal_threshold')
+            self.logger.info(f"Using signal threshold from portfolio criteria: {signal_threshold}")
         
-        btc_data = self.classified_data['bitcoin']
-        self.logger.info(f"Classified BTC data range before filtering: {btc_data['date'].min()} to {btc_data['date'].max()}")
-        
-        # Ensure required trend columns are present or create them from available columns
-        expected_trend_columns = [
-            'short_term_trend_USD', 'medium_term_trend_USD', 'long_term_trend_USD', 'overall_trend_USD'
-        ]
-        alternate_columns = [
-            'Trend_Short Term_USD', 'Trend_Medium Term_USD', 'Trend_Long Term_USD', 'Overall_Trend_USD'
-        ]
-        
-        # Map between different column naming conventions
-        column_map = {
-            'short_term_trend_USD': ['Trend_Short Term_USD', 'ShortTerm_trend_USD', 'short_term_Trend_USD'],
-            'medium_term_trend_USD': ['Trend_Medium Term_USD', 'MediumTerm_trend_USD', 'medium_term_Trend_USD'],
-            'long_term_trend_USD': ['Trend_Long Term_USD', 'LongTerm_trend_USD', 'long_term_Trend_USD'],
-            'overall_trend_USD': ['Overall_Trend_USD', 'overall_Trend_USD', 'Overall_trend_USD']
-        }
-        
-        # Ensure all required columns exist, mapping from alternatives if needed
-        for target_col, alternative_cols in column_map.items():
-            if target_col not in btc_data.columns:
-                # Try to find an alternative column that exists
-                found = False
-                for alt_col in alternative_cols:
-                    if alt_col in btc_data.columns:
-                        btc_data[target_col] = btc_data[alt_col]
-                        self.logger.info(f"Mapped column {alt_col} to {target_col}")
-                        found = True
-                        break
-                
-                if not found:
-                    self.logger.warning(f"Required column {target_col} not found and no alternatives available")
-        
-        # Add RSI if not present
-        if 'RSI_Signal_28_USD' not in btc_data.columns and 'close' in btc_data.columns:
-            self.logger.info("Adding RSI_28_USD column to Bitcoin data")
-            try:
-                btc_data = self.rsi_calculator.calculate_smooth_rsi(btc_data, 'close', rsi_length=28, roc_length=28)
-                if 'RSI_Signal_close' in btc_data.columns:
-                    btc_data['RSI_Signal_28_USD'] = btc_data['RSI_Signal_close']
-                    btc_data.drop(['RSI_close', 'RoC_close', 'RSI_Signal_close'], axis=1, inplace=True, errors='ignore')
-            except Exception as e:
-                self.logger.error(f"Error calculating RSI: {str(e)}")
-        
-        # Add volatility if not present
-        if 'Volatility_30' not in btc_data.columns and 'close' in btc_data.columns:
-            self.logger.info("Adding Volatility_30 column to Bitcoin data")
-            try:
-                btc_returns = btc_data['close'].pct_change()
-                btc_data['Volatility_30'] = btc_returns.rolling(window=30).std() * np.sqrt(365)
-            except Exception as e:
-                self.logger.error(f"Error calculating volatility: {str(e)}")
-        
-        # Print detailed debugging information
-        self.logger.info(f"Available columns in Bitcoin data: {btc_data.columns.tolist()}")
-        
-        if btc_data is not None:
-            self.logger.info(f"Passing BTC data from {btc_data['date'].min()} to {btc_data['date'].max()}, {len(btc_data)} rows")
-            self.logger.info(f"Trend columns in BTC data: {[col for col in btc_data.columns if 'trend' in col.lower()]}")
-        else:
-            self.logger.warning("No BTC data available!")
-        
-        self.logger.info(f"\nRunning backtest for portfolio {portfolio_name} from {start_date} to {end_date}")
-        
-        # Run backtest
-        self.logger.info(f"Running backtest with signal threshold: {signal_threshold}")
-        
-        # Parse dates if they're string format
-        if isinstance(start_date, str):
-            start_date = pd.to_datetime(start_date)
-        if isinstance(end_date, str):
-            end_date = pd.to_datetime(end_date)
-        
-        backtester = PortfolioBacktester(
-            self.portfolio_manager,
-            self.data_loader
-        )
-        
-        backtest_results = backtester.backtest_portfolio(
+        # Run backtest using the portfolio manager's signals
+        backtest_results = self.backtester.backtest_portfolio(
             portfolio_name=portfolio_name,
             start_date=start_date,
             end_date=end_date,
             initial_capital=initial_capital,
-            signal_threshold=signal_threshold,
-            pre_classified_btc_data=btc_data
+            btc_cost=btc_cost,
+            alt_cost=alt_cost,
+            slippage_pct=slippage_pct
         )
         
         # Check and process results
         if backtest_results is not None:
-            self.logger.info(f"Backtest completed successfully")
-            
-            # Process results to expected format
-            if 'results' in backtest_results:
-                # Results are already in the expected format
-                self.logger.info(f"Backtest produced results for {len(backtest_results['results'])} assets")
-                
-                # Print summary metrics
-                if 'metrics' in backtest_results:
-                    print("\nPerformance Metrics:")
-                    for asset, metrics_df in backtest_results['metrics'].items():
-                        print(f"\n{asset}:")
-                        print(metrics_df.to_string(index=False))
-                
-                # Print trade summary if available
-                if 'trades' in backtest_results:
-                    total_trades = sum(len(df) for df in backtest_results['trades'].values())
-                    print(f"\nTrade Summary: {total_trades} trades across {len(backtest_results['trades'])} assets")
-                    
-                    for asset, trades_df in backtest_results['trades'].items():
-                        if not trades_df.empty:
-                            print(f"\n{asset} Trades ({len(trades_df)}):")
-                            print(trades_df.head(3).to_string(index=False))
-                            if len(trades_df) > 3:
-                                print("...")
-                
-                # Return the complete results dictionary
-                return backtest_results
-            else:
-                # Convert legacy format to new format if needed
-                self.logger.info("Converting legacy backtest results to new format")
-                
-                # Initialize the new format
-                results = {}
-                signals = {}
-                trades = {}
-                metrics = {}
-                
-                # Extract results data
-                if 'results_df' in backtest_results:
-                    results_df = backtest_results['results_df']
-                    position_cols = [col for col in results_df.columns if '_position' in col]
-                    asset_ids = [col.replace('_position', '') for col in position_cols]
-                    
-                    for asset_id in asset_ids:
-                        # Get asset ticker
-                        ticker = self.data_loader.get_ticker_from_id(asset_id)
-                        if ticker is None:
-                            ticker = asset_id.upper()
-                        
-                        # Create results dataframe for this asset
-                        asset_df = results_df.reset_index().copy()
-                        asset_df['strategy_value'] = results_df['portfolio_value']
-                        asset_df['strategy_returns'] = results_df['returns']
-                        asset_df['strategy_cum_returns'] = results_df['cum_return']
-                        
-                        # Add buy and hold values
-                        asset_df['asset_buy_n_hold_value'] = np.nan
-                        asset_df['asset_buy_n_hold_returns'] = np.nan
-                        asset_df['asset_buy_n_hold_cum_returns'] = np.nan
-                        
-                        results[ticker] = asset_df
-                
-                # Extract signals data
-                if 'signals_df' in backtest_results:
-                    signals_df = backtest_results['signals_df']
-                    
-                    if not signals_df.empty and 'asset_id' in signals_df.columns:
-                        unique_assets = signals_df['asset_id'].unique()
-                        
-                        for asset_id in unique_assets:
-                            # Get asset ticker
-                            ticker = self.data_loader.get_ticker_from_id(asset_id)
-                            if ticker is None:
-                                ticker = asset_id.upper()
-                            
-                            # Filter signals for this asset
-                            asset_signals = signals_df[signals_df['asset_id'] == asset_id].copy()
-                            if not asset_signals.empty:
-                                signals[ticker] = asset_signals
-                
-                # Extract trades data
-                if 'trades_df' in backtest_results:
-                    trades_df = backtest_results['trades_df']
-                    
-                    if not trades_df.empty:
-                        # Assuming all trades are for the same asset in legacy format
-                        if 'asset' in trades_df.columns:
-                            unique_assets = trades_df['asset'].unique()
-                            
-                            for asset in unique_assets:
-                                # Filter trades for this asset
-                                asset_trades = trades_df[trades_df['asset'] == asset].copy()
-                                if not asset_trades.empty:
-                                    # Convert legacy trades to new format
-                                    processed_trades = []
-                                    
-                                    # Group by trade ID (if available) or create pairs
-                                    if 'trade_id' in asset_trades.columns:
-                                        # Already has trade IDs, just process
-                                        trades[asset] = asset_trades
-                                    else:
-                                        # Create trade pairs
-                                        buys = asset_trades[asset_trades['action'] == 'BUY'].copy()
-                                        sells = asset_trades[asset_trades['action'] == 'SELL'].copy()
-                                        
-                                        # Process each buy/sell pair
-                                        for i, (_, buy) in enumerate(buys.iterrows()):
-                                            if i < len(sells):
-                                                sell = sells.iloc[i]
-                                                
-                                                entry_date = buy['date']
-                                                exit_date = sell['date']
-                                                holding_days = (exit_date - entry_date).days
-                                                
-                                                trade_record = {
-                                                    'trade_id': i + 1,
-                                                    'entry_date': entry_date,
-                                                    'exit_date': exit_date,
-                                                    'holding_days': holding_days,
-                                                    'entry_price': buy.get('price', 0),
-                                                    'exit_price': sell.get('price', 0),
-                                                    'price_return': f"{((sell.get('price', 0) / buy.get('price', 1)) - 1) * 100:.2f}%",
-                                                    'entry_value': buy.get('value', buy.get('amount', 0)),
-                                                    'entry_cost': -buy.get('transaction_cost', 0),
-                                                    'exit_value': sell.get('value', sell.get('amount', 0)),
-                                                    'exit_cost': -sell.get('transaction_cost', 0),
-                                                    'trade_return': f"{((sell.get('value', 0) / buy.get('value', 1)) - 1) * 100:.2f}%",
-                                                    'is_open': False
-                                                }
-                                                
-                                                processed_trades.append(trade_record)
-                                        
-                                        # Process trades
-                                        if processed_trades:
-                                            trades[asset] = pd.DataFrame(processed_trades)
-                
-                # Extract metrics data
-                if 'metrics_df' in backtest_results:
-                    metrics_df = backtest_results['metrics_df']
-                    
-                    if isinstance(metrics_df, pd.DataFrame):
-                        # Single metrics dataframe for the portfolio
-                        for asset_id in asset_ids:
-                            # Get asset ticker
-                            ticker = self.data_loader.get_ticker_from_id(asset_id)
-                            if ticker is None:
-                                ticker = asset_id.upper()
-                            
-                            # Use the same metrics for all assets
-                            metrics[ticker] = metrics_df.copy()
-                    elif isinstance(metrics_df, dict):
-                        # Dict of metrics values
-                        metrics_dict = metrics_df
-                        
-                        # Create a DataFrame with these metrics
-                        metrics_df = pd.DataFrame([metrics_dict])
-                        
-                        for asset_id in asset_ids:
-                            # Get asset ticker
-                            ticker = self.data_loader.get_ticker_from_id(asset_id)
-                            if ticker is None:
-                                ticker = asset_id.upper()
-                            
-                            # Use the same metrics for all assets
-                            metrics[ticker] = metrics_df.copy()
-                
-                # Create basket selection dataframe
-                basket_selection = pd.DataFrame()
-                if 'holdings' in backtest_results:
-                    holdings = backtest_results['holdings']
-                    dates = results_df.reset_index()['date']
-                    
-                    basket_data = []
-                    for i, date in enumerate(dates):
-                        if i < len(holdings):
-                            holdings_dict = holdings[i]
-                            row = {'date': date}
-                            
-                            for asset_id in asset_ids:
-                                # Get asset ticker
-                                ticker = self.data_loader.get_ticker_from_id(asset_id)
-                                if ticker is None:
-                                    ticker = asset_id.upper()
-                                
-                                row[ticker] = 1 if asset_id in holdings_dict and holdings_dict[asset_id] > 0 else 0
-                            
-                            basket_data.append(row)
-                    
-                    if basket_data:
-                        basket_selection = pd.DataFrame(basket_data)
-                
-                # Return the reformatted results
-                return {
-                    'results': results,
-                    'signals': signals,
-                    'trades': trades,
-                    'metrics': metrics,
-                    'basket_selection': basket_selection
-                }
-            
+            self.logger.info(f"Successfully completed backtest for portfolio {portfolio_name}")
+            return backtest_results
         else:
-            self.logger.error("Backtest failed to produce results")
-            print("ERROR: Backtest failed to produce results")
-            
-        return None
+            self.logger.error(f"Backtest failed for portfolio {portfolio_name}")
+            return None
     
     def get_portfolio_signals_df(self, backtest_results):
         """
@@ -1333,6 +1073,97 @@ class TrendAnalyzer:
             data[asset] = [1 if asset in h and h[asset] > 0 else 0 for h in holdings]
         
         return pd.DataFrame(data)
+    
+    def predict_volatility_for_new_data(self, btc_price=None, log_return=None, prediction_date=None):
+        """
+        Predict volatility state for new BTC data point (latest close).
+        
+        This method is designed for daily updates and real-time signal generation,
+        making actual predictions for new data points not in the original training set.
+        
+        Args:
+            btc_price (float, optional): Latest BTC closing price. If provided, log return will be calculated
+                                        using the previous price from the model. Either btc_price or log_return is required.
+            log_return (float, optional): Pre-calculated log return value. If provided, btc_price is ignored.
+            prediction_date (str or datetime, optional): Date for the prediction. If None, current date is used.
+            
+        Returns:
+            dict: Dictionary containing predicted volatility information:
+                 - 'state': String volatility state ('high' or 'low')
+                 - 'signal': Numeric volatility signal (1 for low, -1 for high)
+                 - 'probability': Probability of high volatility regime (between 0 and 1)
+                 - 'date': The prediction date
+        """
+        # Check if MarkovVolModel is available
+        if not hasattr(self, 'markov_vol_model') or self.markov_vol_model is None:
+            self.logger.error("No MarkovVolModel available for prediction")
+            return {
+                'state': 'low',  # Default to low volatility
+                'signal': 1,
+                'probability': 0.0,
+                'date': prediction_date or pd.Timestamp.now().strftime('%Y-%m-%d')
+            }
+        
+        # Ensure we have either btc_price or log_return
+        if btc_price is None and log_return is None:
+            self.logger.error("Either btc_price or log_return must be provided")
+            return {
+                'state': 'low',  # Default to low volatility
+                'signal': 1,
+                'probability': 0.0,
+                'date': prediction_date or pd.Timestamp.now().strftime('%Y-%m-%d')
+            }
+            
+        # Make prediction using the MarkovVolModel
+        self.logger.info(f"Predicting volatility for new data: price={btc_price}, log_return={log_return}, date={prediction_date}")
+        state, signal, probability = self.markov_vol_model.predict_volatility_for_new_data(
+            price_data=btc_price,
+            log_return=log_return,
+            current_date=prediction_date
+        )
+        
+        prediction_date = prediction_date or pd.Timestamp.now()
+        if isinstance(prediction_date, str):
+            prediction_date = pd.to_datetime(prediction_date)
+            
+        # Return prediction as a dictionary
+        prediction = {
+            'state': state,
+            'signal': signal,
+            'probability': probability,
+            'date': prediction_date.strftime('%Y-%m-%d')
+        }
+        
+        self.logger.info(f"Volatility prediction: {prediction}")
+        return prediction
+    
+    def update_volatility_model_with_new_data(self, new_data, retrain=False):
+        """
+        Update the volatility model with new BTC price data.
+        
+        Args:
+            new_data (pd.DataFrame or str): New data as DataFrame or path to CSV file.
+                If DataFrame, must have 'date' and 'close' columns.
+            retrain (bool): Whether to retrain the model with the combined data.
+                If False, will only append data for lookup but not retrain the model.
+                
+        Returns:
+            bool: True if update was successful
+        """
+        # Check if MarkovVolModel is available
+        if not hasattr(self, 'markov_vol_model') or self.markov_vol_model is None:
+            self.logger.error("No MarkovVolModel available to update")
+            return False
+            
+        self.logger.info(f"Updating volatility model with new data (retrain={retrain})")
+        success = self.markov_vol_model.update_with_new_data(new_data, retrain=retrain)
+        
+        if success:
+            self.logger.info("Successfully updated volatility model")
+        else:
+            self.logger.error("Failed to update volatility model")
+            
+        return success
     
     def plot_portfolio_performance(self, backtest_results, show_plot=True):
         """

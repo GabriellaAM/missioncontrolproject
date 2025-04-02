@@ -633,3 +633,24 @@ class MetricsCalculator:
                 self.logger.warning(f"Column {term_col} not found in data for {asset_id} {trend_type} {storage_term}")
         
         return transition_dfs 
+
+    @staticmethod
+    def get_cumulative_returns_column(df):
+        """
+        Get the appropriate cumulative returns column name.
+        
+        Args:
+            df (pd.DataFrame): DataFrame to check for column names
+            
+        Returns:
+            str: The appropriate cumulative returns column name
+        """
+        if 'strategy_cum_returns' in df.columns:
+            return 'strategy_cum_returns'
+        elif 'cum_returns' in df.columns:
+            return 'cum_returns'
+        elif 'strategy_cum_return' in df.columns:
+            return 'strategy_cum_return'
+        elif 'cum_return' in df.columns:
+            return 'cum_return'
+        return None 

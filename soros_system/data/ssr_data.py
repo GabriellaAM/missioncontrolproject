@@ -47,10 +47,49 @@ class SSRDataHandler:
             date (datetime): Date to get the SSR signal for
             
         Returns:
-            int: SSR signal (-1 for bearish, 0 for neutral, 1 for bullish), or 0 if data is not available
+            int: SSR signal (-1 for bearish, 0 for neutral, 1 for bullish)
         """
         if self.ssr_data is None:
-            return 0
+            raise ValueError("SSR data is not available")
+        
+        try:
+            # Convert to pandas datetime if needed
+            if not isinstance(date, pd.Timestamp):
+                date = pd.Timestamp(date)
+            
+            # Find the closest date in the SSR data
+            closest_date = self.ssr_data.index[self.ssr_data.index <= date]
+            if len(closest_date) == 0:
+                raise ValueError(f"No SSR data available for or before {date}")
+            
+            closest_date = closest_date[-1]
+            
+            # Get the SSR signal
+            ssr_value = self.ssr_data.loc[closest_date, 'ssr_oscillator']
+            
+            # Classify the signal based on SSR value
+            if ssr_value > 0:
+                return 1  # Bullish
+            elif ssr_value < 0:
+                return -1  # Bearish
+            else:
+                return 0  # Neutral
+        except Exception as e:
+            self.logger.error(f"Error getting SSR signal for {date}: {e}")
+            raise
+
+    def get_ssr_value(self, date):
+        """
+        Get the raw SSR value for a specific date.
+        
+        Args:
+            date (datetime): Date to get the SSR value for
+            
+        Returns:
+            float: SSR value, or None if data is not available
+        """
+        if self.ssr_data is None:
+            return None
         
         try:
             # Convert to pandas datetime if needed
@@ -61,20 +100,14 @@ class SSRDataHandler:
             closest_date = self.ssr_data.index[self.ssr_data.index <= date]
             if len(closest_date) == 0:
                 self.logger.warning(f"No SSR data available for or before {date}")
-                return 0
+                return None
             
             closest_date = closest_date[-1]
             
-            # Get the SSR signal
-            ssr_value = self.ssr_data.loc[closest_date, 'ssr']
+            # Get the raw SSR value
+            ssr_value = self.ssr_data.loc[closest_date, 'ssr_oscillator']
             
-            # Classify the signal based on SSR value
-            if ssr_value >= 2.0:
-                return 1  # Bullish
-            elif ssr_value <= 0.5:
-                return -1  # Bearish
-            else:
-                return 0  # Neutral
+            return ssr_value
         except Exception as e:
-            self.logger.error(f"Error getting SSR signal for {date}: {e}")
-            return 0 
+            self.logger.error(f"Error getting SSR value for {date}: {e}")
+            return None 

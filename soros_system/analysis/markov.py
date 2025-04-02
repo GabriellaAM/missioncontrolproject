@@ -158,12 +158,8 @@ class MarkovAnalyzer:
             date (datetime): Date to get the volatility state for
             
         Returns:
-            int: Volatility state (0 for low, 1 for high), or None if not available
+            int: Volatility state (1 for low volatility, -1 for high volatility), or None if not available
         """
-        if self.markov_model is None:
-            self.logger.warning("No Markov model available for volatility state prediction.")
-            return None
-        
         # Check cache first
         if date in self.volatility_cache:
             return self.volatility_cache[date]
@@ -173,8 +169,27 @@ class MarkovAnalyzer:
             if not isinstance(date, pd.Timestamp):
                 date = pd.Timestamp(date)
             
-            # Get the volatility state from the model
-            vol_state = self.markov_model.predict_volatility(date)
+            # Convert to string format as expected by the markov model
+            date_str = date.strftime('%Y-%m-%d')
+            
+            if self.markov_model is None:
+                # No model available, use simple fallback calculation
+                self.logger.debug(f"No Markov model available for volatility prediction, using default state")
+                vol_state = 1  # Default to low volatility state
+            else:
+                # Try to get the volatility state from the model
+                # First try get_volatility_state method (as in trend_analisys_rsi_markov.py)
+                if hasattr(self.markov_model, 'get_volatility_state'):
+                    state = self.markov_model.get_volatility_state(date_str)
+                    # Convert string state to numeric: 'low' -> 1, 'high' -> -1
+                    vol_state = 1 if state == 'low' else -1
+                # Fallback to predict_volatility if get_volatility_state doesn't exist
+                elif hasattr(self.markov_model, 'predict_volatility'):
+                    state = self.markov_model.predict_volatility(date)
+                    vol_state = state  # Assume numeric state
+                else:
+                    self.logger.warning(f"Markov model has no volatility prediction method")
+                    vol_state = 1  # Default to low volatility
             
             # Cache the result
             self.volatility_cache[date] = vol_state
@@ -182,7 +197,10 @@ class MarkovAnalyzer:
             return vol_state
         except Exception as e:
             self.logger.error(f"Error getting volatility state for {date}: {e}")
-            return None
+            # Return default state in case of error
+            default_state = 1  # Default to low volatility state
+            self.volatility_cache[date] = default_state
+            return default_state
     
     def clear_cache(self):
         """Clear the volatility state cache."""

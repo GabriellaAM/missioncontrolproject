@@ -2,28 +2,32 @@
     "criteria": {
         "usd_conditions": {
             "Short Term": [
-                1,
-                2
-            ],
-            "Overall": [
-                1,
                 2
             ]
         },
         "btc_conditions": {
             "Short Term": [
-                1,
+                2
+            ],
+            "Overall": [
                 2
             ]
         },
         "rsi_conditions_usd": true,
+        "rsi_conditions_btc": true,
+        "follow_btc_trend": true,
         "use_volatility_filter": true,
+        "use_ssr_signal": false,
         "volatility_weight": 1,
-        "alt_cost": 0.005,
-        "btc_cost": 0.001,
-        "btc_only": false
+        "btc_only": false,
+        "signal_threshold": 50
     },
-    "created_at": "2025-03-31T20:14:58.795461",
-    "updated_at": "2025-03-31T20:14:58.795486",
-    "assets": []
+    "created_at": "2025-04-01T21:50:12.710132",
+    "updated_at": "2025-04-01T21:50:12.710141",
+    "assets": [
+        "ethereum",
+        "bitcoin",
+        "solana",
+        "ripple"
+    ]
 }
