@@ -52,7 +52,7 @@ class SSRDataHandler:
         if self.ssr_data is None:
             raise ValueError("SSR data is not available")
         
-        try:
+        try: 
             # Convert to pandas datetime if needed
             if not isinstance(date, pd.Timestamp):
                 date = pd.Timestamp(date)
@@ -60,7 +60,8 @@ class SSRDataHandler:
             # Find the closest date in the SSR data
             closest_date = self.ssr_data.index[self.ssr_data.index <= date]
             if len(closest_date) == 0:
-                raise ValueError(f"No SSR data available for or before {date}")
+                self.logger.debug(f"No SSR data available for or before {date}")
+                return 0  # Return neutral signal when no data available
             
             closest_date = closest_date[-1]
             
@@ -99,7 +100,7 @@ class SSRDataHandler:
             # Find the closest date in the SSR data
             closest_date = self.ssr_data.index[self.ssr_data.index <= date]
             if len(closest_date) == 0:
-                self.logger.warning(f"No SSR data available for or before {date}")
+                self.logger.debug(f"No SSR data available for or before {date}")
                 return None
             
             closest_date = closest_date[-1]

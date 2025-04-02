@@ -102,7 +102,7 @@ class PortfolioBacktester:
                 continue
             
             # Check for necessary columns
-            required_cols = ['open', 'close', 'final_decision_shifted']
+            required_cols = ['open', 'close', 'final_decision', 'final_decision_shifted']
             missing_cols = [col for col in required_cols if col not in signal_df.columns]
             
             if missing_cols:
@@ -121,6 +121,12 @@ class PortfolioBacktester:
                 if 'final_decision_shifted' in missing_cols:
                     self.logger.error(f"Missing critical signal column 'final_decision_shifted' for {asset_id}")
                     continue
+                
+                if 'final_decision' in missing_cols:
+                    self.logger.warning(f"Missing control signal column 'final_decision' for {asset_id}")
+                    # Create final_decision from final_decision_shifted for control purposes
+                    signal_df['final_decision'] = signal_df['final_decision_shifted'].shift(-1)
+                    missing_cols.remove('final_decision')
             
             # Fill missing prices with forward fill
             if signal_df[['open', 'close']].isnull().any().any():
@@ -258,10 +264,10 @@ class PortfolioBacktester:
                                 # Calculate net trade return (including costs)
                                 entry_value = trade['entry_value']
                                 entry_cost = trade['entry_cost']
-                                initial_investment = initial_capital  # Original cash before entry
                                 
-                                # Net return calculation including costs
-                                trade_return_pct = ((net_value - (initial_investment + entry_cost)) / (initial_investment + entry_cost)) * 100
+                                # Net return calculation including costs - FIXED
+                                # Use entry_value as the base for percentage calculation
+                                trade_return_pct = ((net_value - entry_value) / entry_value) * 100
                                 trade['trade_return'] = f"{trade_return_pct:.2f}%"
                                 trade['is_open'] = False
                                 break
@@ -320,9 +326,10 @@ class PortfolioBacktester:
                             # Calculate net trade return (including costs)
                             entry_value = trade['entry_value']
                             entry_cost = trade['entry_cost']
-                            initial_investment = initial_capital
                             
-                            trade_return_pct = ((net_value - (initial_investment + entry_cost)) / (initial_investment + entry_cost)) * 100
+                            # Net return calculation including costs - FIXED
+                            # Use entry_value as the base for percentage calculation
+                            trade_return_pct = ((net_value - entry_value) / entry_value) * 100
                             trade['trade_return'] = f"{trade_return_pct:.2f}%"
                             
                             # Mark trade as "still open at end of simulation"
@@ -352,8 +359,9 @@ class PortfolioBacktester:
             # Create basket selection series (1 if holding, 0 if not)
             asset_selection = (asset_results[f'{asset_id}_holdings_qty'] > 0).astype(int)
             
-            # Store results
-            results[asset_id] = asset_results.reset_index().rename(columns={
+            # Store results - only keep specified columns
+            results[asset_id] = asset_results[['portfolio_value', 'daily_returns', 'cumulative_returns', 
+                                             'buy_hold_value', 'buy_hold_daily_returns', 'buy_hold_cumulative_returns']].reset_index().rename(columns={
                 'portfolio_value': 'strategy_value',
                 'daily_returns': 'strategy_daily_returns',
                 'cumulative_returns': 'strategy_cumulative_returns'
@@ -361,7 +369,7 @@ class PortfolioBacktester:
             
             signals[asset_id] = signal_df.reset_index()
             trades[asset_id] = asset_trades_df
-            metrics[asset_id] = pd.DataFrame([asset_metrics])
+            metrics[asset_id] = asset_metrics  # Store the metrics DataFrame directly
             
             # Add this asset's selection to the basket_selection DataFrame
             if basket_selection.empty:
@@ -400,48 +408,48 @@ class PortfolioBacktester:
             initial_capital (float): Initial capital
             
         Returns:
-            dict: Dictionary with performance metrics
+            pd.DataFrame: DataFrame with Strategy and Buy & Hold metrics
         """
-        metrics = {}
+        metrics_dict = {}
         
         # Basic return metrics
         final_value = asset_results['portfolio_value'].iloc[-1]
-        metrics['total_return_pct'] = ((final_value / initial_capital) - 1) * 100
+        metrics_dict['Total Return (%)'] = ((final_value / initial_capital) - 1) * 100
         
         # Max drawdown
         # The max_drawdown method expects cumulative returns + 1 (i.e., growth factor)
         if 'cum_returns_plus_one' not in asset_results.columns:
             asset_results['cum_returns_plus_one'] = asset_results['cumulative_returns'] + 1
         
-        metrics['max_drawdown_pct'] = self.metrics_calculator.max_drawdown(asset_results['cum_returns_plus_one']) * 100
+        metrics_dict['Max Drawdown (%)'] = self.metrics_calculator.max_drawdown(asset_results['cum_returns_plus_one']) * 100
         
         # Sharpe & Sortino ratios
         if not asset_results['daily_returns'].empty:
             sharpe, sortino, avg_daily_return, _ = self.metrics_calculator.calculate_sharpe_sortino(
                 asset_results, 'daily_returns'
             )
-            metrics['sharpe_ratio'] = sharpe
-            metrics['sortino_ratio'] = sortino
+            metrics_dict['Sharpe Ratio'] = sharpe
+            metrics_dict['Sortino Ratio'] = sortino
             
             # Annualized metrics
-            trading_days_per_year = 252
+            trading_days_per_year = 365
             daily_std_dev = asset_results['daily_returns'].std()
             annualized_volatility = daily_std_dev * np.sqrt(trading_days_per_year)
-            metrics['annualized_volatility_pct'] = annualized_volatility * 100
+            metrics_dict['Annualized Volatility (%)'] = annualized_volatility * 100
             
             if pd.notna(avg_daily_return):
                 annualized_return = ((1 + avg_daily_return) ** trading_days_per_year) - 1
-                metrics['annualized_return_pct'] = annualized_return * 100
+                metrics_dict['Annualized Return (%)'] = annualized_return * 100
             else:
-                metrics['annualized_return_pct'] = 0.0
+                metrics_dict['Annualized Return (%)'] = 0.0
         else:
-            metrics['sharpe_ratio'] = 0.0
-            metrics['sortino_ratio'] = 0.0
-            metrics['annualized_volatility_pct'] = 0.0
-            metrics['annualized_return_pct'] = 0.0
+            metrics_dict['Sharpe Ratio'] = 0.0
+            metrics_dict['Sortino Ratio'] = 0.0
+            metrics_dict['Annualized Volatility (%)'] = 0.0
+            metrics_dict['Annualized Return (%)'] = 0.0
         
         # Trade metrics
-        metrics['total_trades'] = len([t for t in asset_trades_list if not t['is_open']])
+        metrics_dict['Total Trades'] = len([t for t in asset_trades_list if not t['is_open']])
         
         # Calculate win rate and avg win/loss only for closed trades
         closed_trades = [t for t in asset_trades_list if not t['is_open']]
@@ -451,19 +459,105 @@ class PortfolioBacktester:
             winning_trades = [r for r in trade_returns if r > 0]
             losing_trades = [r for r in trade_returns if r <= 0]
             
-            metrics['win_rate'] = (len(winning_trades) / len(trade_returns)) * 100 if trade_returns else 0
-            metrics['avg_win'] = np.mean(winning_trades) if winning_trades else 0
-            metrics['avg_loss'] = np.mean(losing_trades) if losing_trades else 0
-            metrics['profit_factor'] = abs(sum(winning_trades) / sum(losing_trades)) if sum(losing_trades) != 0 else 0
+            metrics_dict['Win Rate (%)'] = (len(winning_trades) / len(trade_returns)) * 100 if trade_returns else 0
+            metrics_dict['Avg Win (%)'] = np.mean(winning_trades) if winning_trades else 0
+            metrics_dict['Avg Loss (%)'] = np.mean(losing_trades) if losing_trades else 0
+            metrics_dict['Profit Factor'] = abs(sum(winning_trades) / sum(losing_trades)) if sum(losing_trades) != 0 else 0
         else:
-            metrics['win_rate'] = 0
-            metrics['avg_win'] = 0
-            metrics['avg_loss'] = 0
-            metrics['profit_factor'] = 0
+            metrics_dict['Win Rate (%)'] = 0
+            metrics_dict['Avg Win (%)'] = 0
+            metrics_dict['Avg Loss (%)'] = 0
+            metrics_dict['Profit Factor'] = 0
         
         # Transaction costs
         entry_costs = sum([t['entry_cost'] for t in asset_trades_list])
         exit_costs = sum([t['exit_cost'] for t in asset_trades_list if t['exit_cost'] is not None])
-        metrics['total_transaction_costs'] = abs(entry_costs) + abs(exit_costs)
+        metrics_dict['Total Transaction Costs'] = abs(entry_costs) + abs(exit_costs)
         
-        return metrics
+        # Buy & Hold metrics
+        if 'buy_hold_value' in asset_results.columns and not asset_results['buy_hold_value'].empty:
+            buy_hold_final_value = asset_results['buy_hold_value'].iloc[-1]
+            metrics_dict['Buy & Hold Return (%)'] = ((buy_hold_final_value / initial_capital) - 1) * 100
+            
+            # Calculate buy & hold max drawdown
+            if 'buy_hold_cumulative_returns' in asset_results.columns:
+                buy_hold_cum_returns_plus_one = asset_results['buy_hold_cumulative_returns'] + 1
+                metrics_dict['Buy & Hold Max Drawdown (%)'] = self.metrics_calculator.max_drawdown(buy_hold_cum_returns_plus_one) * 100
+            
+            # Calculate buy & hold Sharpe and Sortino ratios
+            if 'buy_hold_daily_returns' in asset_results.columns and not asset_results['buy_hold_daily_returns'].empty:
+                buy_hold_sharpe, buy_hold_sortino, buy_hold_avg_daily_return, _ = self.metrics_calculator.calculate_sharpe_sortino(
+                    asset_results, 'buy_hold_daily_returns'
+                )
+                metrics_dict['Buy & Hold Sharpe Ratio'] = buy_hold_sharpe
+                metrics_dict['Buy & Hold Sortino Ratio'] = buy_hold_sortino
+                
+                # Buy & Hold annualized metrics
+                buy_hold_daily_std_dev = asset_results['buy_hold_daily_returns'].std()
+                buy_hold_annualized_volatility = buy_hold_daily_std_dev * np.sqrt(trading_days_per_year)
+                metrics_dict['Buy & Hold Annualized Volatility (%)'] = buy_hold_annualized_volatility * 100
+                
+                if pd.notna(buy_hold_avg_daily_return):
+                    buy_hold_annualized_return = ((1 + buy_hold_avg_daily_return) ** trading_days_per_year) - 1
+                    metrics_dict['Buy & Hold Annualized Return (%)'] = buy_hold_annualized_return * 100
+                else:
+                    metrics_dict['Buy & Hold Annualized Return (%)'] = 0.0
+            else:
+                metrics_dict['Buy & Hold Sharpe Ratio'] = 0.0
+                metrics_dict['Buy & Hold Sortino Ratio'] = 0.0
+                metrics_dict['Buy & Hold Annualized Volatility (%)'] = 0.0
+                metrics_dict['Buy & Hold Annualized Return (%)'] = 0.0
+        else:
+            metrics_dict['Buy & Hold Return (%)'] = 0.0
+            metrics_dict['Buy & Hold Max Drawdown (%)'] = 0.0
+            metrics_dict['Buy & Hold Sharpe Ratio'] = 0.0
+            metrics_dict['Buy & Hold Sortino Ratio'] = 0.0
+            metrics_dict['Buy & Hold Annualized Volatility (%)'] = 0.0
+            metrics_dict['Buy & Hold Annualized Return (%)'] = 0.0
+        
+        # Create DataFrame with Strategy and Buy & Hold columns
+        metrics_df = pd.DataFrame({
+            'Strategy': [
+                metrics_dict['Total Return (%)'],
+                metrics_dict['Max Drawdown (%)'],
+                metrics_dict['Sharpe Ratio'],
+                metrics_dict['Sortino Ratio'],
+                metrics_dict['Annualized Volatility (%)'],
+                metrics_dict['Annualized Return (%)'],
+                metrics_dict['Total Trades'],
+                metrics_dict['Win Rate (%)'],
+                metrics_dict['Avg Win (%)'],
+                metrics_dict['Avg Loss (%)'],
+                metrics_dict['Profit Factor'],
+                metrics_dict['Total Transaction Costs']
+            ],
+            'Buy & Hold': [
+                metrics_dict['Buy & Hold Return (%)'],
+                metrics_dict['Buy & Hold Max Drawdown (%)'],
+                metrics_dict['Buy & Hold Sharpe Ratio'],
+                metrics_dict['Buy & Hold Sortino Ratio'],
+                metrics_dict['Buy & Hold Annualized Volatility (%)'],
+                metrics_dict['Buy & Hold Annualized Return (%)'],
+                '-',  # No trades for buy & hold
+                '-',  # No win rate for buy & hold
+                '-',  # No avg win for buy & hold
+                '-',  # No avg loss for buy & hold
+                '-',  # No profit factor for buy & hold
+                0.0   # No transaction costs for buy & hold
+            ]
+        }, index=[
+            'Total Return (%)',
+            'Max Drawdown (%)',
+            'Sharpe Ratio',
+            'Sortino Ratio',
+            'Annualized Volatility (%)',
+            'Annualized Return (%)',
+            'Total Trades',
+            'Win Rate (%)',
+            'Avg Win (%)',
+            'Avg Loss (%)',
+            'Profit Factor',
+            'Total Transaction Costs'
+        ])
+        
+        return metrics_df

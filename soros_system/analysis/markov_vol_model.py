@@ -392,10 +392,10 @@ class MarkovVolModel:
                 
                 # Guard against being out of range
                 if pd.to_datetime(date_str) < dates_array.min():
-                    self.logger.warning(f"Date {date_str} before model data range start {dates_array.min()}")
+                    self.logger.debug(f"Date {date_str} before model data range start {dates_array.min()}")
                     closest_date = dates_array.min()
                 elif pd.to_datetime(date_str) > dates_array.max():
-                    self.logger.warning(f"Date {date_str} after model data range end {dates_array.max()}")
+                    self.logger.debug(f"Date {date_str} after model data range end {dates_array.max()}")
                     closest_date = dates_array.max()
                 else:
                     # Find closest date

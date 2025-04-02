@@ -530,66 +530,6 @@ class TrendAnalyzer:
         
         return results
     
-    def get_latest_signals(self):
-        """
-        Get the latest trend classifications and technical signals for all assets.
-        
-        Returns:
-            pd.DataFrame: DataFrame with latest trend classifications and signals for all assets
-        """
-        if not self.classified_data:
-            self.analyze_multiple_assets()
-        
-        latest_signals = []
-        
-        for asset_id, data in self.classified_data.items():
-            if data.empty:
-                continue
-            
-            # Get latest date
-            latest_date = data['date'].max() if 'date' in data.columns else data.index.max()
-            
-            # Get latest row
-            latest_row = data[data['date'] == latest_date].iloc[0] if 'date' in data.columns else data.loc[latest_date]
-            
-            # Get ticker from asset ID
-            ticker = self.data_loader.get_ticker_from_id(asset_id)
-            if ticker is None:
-                # If no ticker mapping exists, use uppercase asset_id as fallback
-                ticker = asset_id.upper()
-            
-            # Extract basic identification data only
-            signal_data = {
-                'ticker': ticker,
-                'asset_id': asset_id,
-                'date': latest_date,
-            }
-            
-            # Add trend columns directly using the new naming convention
-            for term in ['short_term', 'medium_term', 'long_term', 'overall']:
-                for quote in ['USD', 'BTC']:
-                    col_name = f'{term}_trend_{quote}'
-                    if col_name in latest_row and not pd.isna(latest_row[col_name]):
-                        signal_data[col_name] = latest_row[col_name]
-            
-            # Add only RSI signal columns (not RSI values or RoC)
-            for quote in ['USD', 'BTC']:
-                # Skip BTC quote for Bitcoin itself
-                if asset_id == 'bitcoin' and quote == 'BTC':
-                    continue
-                    
-                # RSI Signal value (only the 28-day period as standard)
-                rsi_signal_col = f'RSI_Signal_28_{quote}'
-                if rsi_signal_col in latest_row and not pd.isna(latest_row[rsi_signal_col]):
-                    # Use the new naming pattern
-                    signal_data[f'rsi_signal_28_{quote}'] = latest_row[rsi_signal_col]
-            
-            latest_signals.append(signal_data)
-        
-        return pd.DataFrame(latest_signals)
-    
-    # Alias for backward compatibility
-    get_latest_trends = get_latest_signals
     
     def get_asset_raw_data(self, asset_id):
         """

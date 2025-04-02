@@ -1,0 +1,28 @@
+{
+    "criteria": {
+        "usd_conditions": {
+            "Short Term": [
+                -2,
+                -1,
+                0,
+                1,
+                2
+            ]
+        },
+        "rsi_conditions_usd": true,
+        "rsi_conditions_btc": false,
+        "use_volatility_filter": true,
+        "use_ssr_signal": true,
+        "volatility_weight": 1,
+        "btc_only": true,
+        "signal_threshold": 0
+    },
+    "created_at": "2025-04-02T11:23:54.940258",
+    "updated_at": "2025-04-02T11:23:54.940285",
+    "assets": [
+        "solana",
+        "ethereum",
+        "ripple",
+        "bitcoin"
+    ]
+}
