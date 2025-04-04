@@ -8,7 +8,7 @@ class DataLoader:
     """
     Handles loading and preprocessing of asset price data from CSV files.
     """
-    def __init__(self, data_path, btc_data_path, ssr_data_path=None, asset_ids=None):
+    def __init__(self, data_path, btc_data_path, ssr_data_path=None, asset_ids=None, market_data_path=None):
         """
         Initialize the DataLoader.
         
@@ -17,16 +17,19 @@ class DataLoader:
             btc_data_path (str): Path to the Bitcoin data file
             ssr_data_path (str, optional): Path to the SSR data file
             asset_ids (list, optional): List of asset IDs to use for ticker mapping
+            market_data_path (str, optional): Path to directory containing market data files
         """
         self.data_path = data_path
         self.btc_data_path = btc_data_path
         self.ssr_data_path = ssr_data_path
+        self.market_data_path = market_data_path or "/Users/valter.rebelo/MissionControl/data/micro/assetData/"
         self.logger = logging.getLogger(__name__)
         self.asset_ids = asset_ids or []
         
         # Cache for loaded data
         self.asset_data_cache = {}
         self.btc_data_cache = None
+        self.market_data_cache = {}
         
         # Initialize ticker mapping
         self.ticker_mapping = self._get_ticker_mapping()
@@ -59,6 +62,47 @@ class DataLoader:
                 mapping[ticker] = row['id']
         
         return mapping
+    
+    def load_market_data(self, asset_id):
+        """
+        Load market data (market cap, volume) for a specific asset.
+        
+        Args:
+            asset_id (str): ID of the asset to load market data for
+            
+        Returns:
+            pd.DataFrame: DataFrame containing the market data or empty DataFrame if not found
+        """
+        # Return cached data if available
+        if asset_id in self.market_data_cache:
+            self.logger.debug(f"Returning cached market data for {asset_id}")
+            return self.market_data_cache[asset_id]
+        
+        # Construct file path
+        data_path = os.path.join(self.market_data_path, f"{asset_id}.csv")
+        
+        if not os.path.exists(data_path):
+            self.logger.warning(f"Market data file not found for {asset_id}: {data_path}")
+            return pd.DataFrame()
+        
+        try:
+            self.logger.info(f"Loading market data from file: {data_path}")
+            data = pd.read_csv(data_path)
+            
+            # Ensure date column is properly formatted
+            if 'date' in data.columns:
+                data['date'] = pd.to_datetime(data['date'])
+            elif 'timestamp' in data.columns:
+                data['date'] = pd.to_datetime(data['timestamp'])
+                data = data.drop(columns=['timestamp'])
+            
+            # Cache the data
+            self.market_data_cache[asset_id] = data
+            
+            return data
+        except Exception as e:
+            self.logger.error(f"Failed to load market data for {asset_id}: {e}")
+            return pd.DataFrame()
         
     def load_asset_data(self, asset_id):
         """
@@ -121,6 +165,25 @@ class DataLoader:
                     self.logger.error(f"Error merging Bitcoin data for {asset_id}: {e}")
                     return pd.DataFrame()
             
+            # Try to add market data if available
+            try:
+                market_data = self.load_market_data(asset_id)
+                if not market_data.empty and 'date' in market_data.columns:
+                    # Only keep relevant columns to avoid duplicates
+                    market_data_subset = market_data[['date']].copy()
+                    
+                    # Add available market data columns
+                    market_columns = ['market_cap', 'total_volume']
+                    for col in market_columns:
+                        if col in market_data.columns:
+                            market_data_subset[col] = market_data[col]
+                        
+                    # Merge with asset data
+                    data = data.merge(market_data_subset, on='date', how='left')
+                    self.logger.info(f"Added market data for {asset_id}")
+            except Exception as e:
+                self.logger.warning(f"Could not add market data for {asset_id}: {e}")
+            
             self.logger.info(f"Successfully loaded data for {asset_id} with {len(data)} rows.")
             
             # Cache the data with asset_id as the key
@@ -171,4 +234,5 @@ class DataLoader:
     def clear_cache(self):
         """Clear all cached data."""
         self.asset_data_cache = {}
-        self.btc_data_cache = None 
+        self.btc_data_cache = None
+        self.market_data_cache = {} 

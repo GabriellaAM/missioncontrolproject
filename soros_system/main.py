@@ -62,7 +62,8 @@ class TrendAnalyzer:
     def __init__(self, asset_ids=None, data_path=None, btc_data_path=None, lookback_days=30, 
                  ssr_data_path=None, data_loader=None, logger=None, portfolio_manager=None, 
                  backtester=None, plotter=None, metrics_calculator=None, 
-                 trend_classifier=None, markov_analyzer=None, markov_vol_model_path=None):
+                 trend_classifier=None, markov_analyzer=None, markov_vol_model_path=None, 
+                 market_data_path=None):
         """
         Initialize the TrendAnalyzer with necessary components.
         
@@ -82,6 +83,7 @@ class TrendAnalyzer:
             trend_classifier (TrendClassifier, optional): Pre-initialized TrendClassifier instance.
             markov_analyzer (MarkovAnalyzer, optional): Pre-initialized MarkovAnalyzer instance for trend analysis.
             markov_vol_model_path (str, optional): Path to a pre-trained MarkovVolatility model.
+            market_data_path (str, optional): Path to the directory containing market data files (e.g., market cap, volume).
         """
         self.logger = logger or logging.getLogger(__name__)
         self.logger.info("Initializing TrendAnalyzer...")
@@ -99,7 +101,8 @@ class TrendAnalyzer:
             self.data_loader = data_loader
         else:
             from soros_system.data.data_loader import DataLoader
-            self.data_loader = DataLoader(data_path, btc_data_path, asset_ids=self.asset_ids)
+            self.data_loader = DataLoader(data_path, btc_data_path, ssr_data_path=ssr_data_path,
+                                         asset_ids=self.asset_ids, market_data_path=market_data_path)
         
         self.logger.info(f"Initialized DataLoader with {len(self.asset_ids)} assets")
         
