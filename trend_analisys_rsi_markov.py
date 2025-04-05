@@ -9,7 +9,7 @@ from scipy.stats import skew
 import plotly.graph_objects as go
 import warnings
 from tabulate import tabulate
-from soros_system.analysis.markov_volatility import MarkovVolatility  # Import the MarkovVolatility class
+from markov_volatility import MarkovVolatility  # Import the MarkovVolatility class
 from plotly.subplots import make_subplots
 
 warnings.filterwarnings(action='ignore')

@@ -6,11 +6,16 @@ import json
 from datetime import datetime
 from tqdm import tqdm
 
+# Import signal-related components
+from ..signals.signal_base import SignalBase
+from ..signals.signal_registry import get_signal, get_all_signals
+from .signal_selector import SignalSelector
+
 class PortfolioManager:
     """
     Class for managing different portfolios and their criteria.
     """
-    def __init__(self, portfolios_dir='portfolios', ssr_handler=None, markov_vol_model=None):
+    def __init__(self, portfolios_dir='portfolios', ssr_handler=None, markov_vol_model=None, signal_selector=None):
         """
         Initialize the PortfolioManager.
         
@@ -18,6 +23,7 @@ class PortfolioManager:
             portfolios_dir (str, optional): Directory for storing portfolio data
             ssr_handler: Handler for SSR data
             markov_vol_model: Model for volatility prediction
+            signal_selector: SignalSelector instance for asset-specific signal selection
         """
         self.logger = logging.getLogger(__name__)
         self.portfolios_dir = portfolios_dir
@@ -25,6 +31,7 @@ class PortfolioManager:
         self.basket_criteria = {}
         self.ssr_handler = ssr_handler
         self.markov_vol_model = markov_vol_model
+        self.signal_selector = signal_selector or SignalSelector()
         
         # Create portfolios directory if it doesn't exist
         if not os.path.exists(portfolios_dir):
@@ -96,6 +103,7 @@ class PortfolioManager:
                 volatility_weight (float): Weight for volatility
                 signal_threshold (float): Threshold for percentage of positive signals (default: 50)
                 max_assets (int): Maximum number of assets to include
+                use_signal_selector (bool): Whether to use the dynamic signal selector for asset-specific signals
                 
         Returns:
             bool: True if portfolio was created successfully, False otherwise
@@ -170,6 +178,9 @@ class PortfolioManager:
         follow_portfolio = criteria.get('follow_portfolio')  # Get the follow_portfolio name if specified
         btc_only = criteria.get('btc_only', False)  # Get btc_only parameter
         
+        # New parameter for using the dynamic signal selector
+        use_signal_selector = criteria.get('use_signal_selector', False)
+        
         # Filter assets based on btc_only parameter
         if btc_only:
             self.logger.info("BTC-only portfolio: filtering out non-Bitcoin assets")
@@ -211,343 +222,479 @@ class PortfolioManager:
                 continue
                 
             self.logger.info(f"Computing signals for {asset_id}")
-            signal_components = []  # Keep track of which signals are used
             
             # Ensure data_df has a date index for alignment
             if 'date' in data_df.columns and not isinstance(data_df.index, pd.DatetimeIndex):
                 data_df = data_df.set_index('date')
             
-            # 1. USD Trend Signal
-            if usd_conditions is not None:
-                if isinstance(usd_conditions, dict):
-                    for term, allowed_values in usd_conditions.items():
-                        col_name = f"{term.lower().replace(' ', '_')}_trend_USD"
+            # If using the dynamic signal selector
+            if use_signal_selector:
+                # Create signals based on criteria
+                available_signals = []
+                
+                # Create trend signals if conditions exist
+                if usd_conditions is not None:
+                    from ..signals.trend_signals import (
+                        ShortTermTrendSignal, 
+                        MediumTermTrendSignal,
+                        LongTermTrendSignal,
+                        OverallTrendSignal
+                    )
+                    
+                    # Add USD trend signals
+                    available_signals.extend([
+                        ShortTermTrendSignal(params={
+                            'quote_type': 'USD',
+                            'trend_values': usd_conditions if not isinstance(usd_conditions, dict) else [1, 2]
+                        }),
+                        MediumTermTrendSignal(params={
+                            'quote_type': 'USD',
+                            'trend_values': usd_conditions if not isinstance(usd_conditions, dict) else [1, 2]
+                        }),
+                        LongTermTrendSignal(params={
+                            'quote_type': 'USD',
+                            'trend_values': usd_conditions if not isinstance(usd_conditions, dict) else [1, 2]
+                        }),
+                        OverallTrendSignal(params={
+                            'quote_type': 'USD',
+                            'trend_values': usd_conditions if not isinstance(usd_conditions, dict) else [1, 2]
+                        })
+                    ])
+                
+                if btc_conditions is not None:
+                    from ..signals.trend_signals import (
+                        ShortTermTrendSignal, 
+                        MediumTermTrendSignal,
+                        LongTermTrendSignal,
+                        OverallTrendSignal
+                    )
+                    
+                    # Add BTC trend signals
+                    available_signals.extend([
+                        ShortTermTrendSignal(params={
+                            'quote_type': 'BTC',
+                            'trend_values': btc_conditions if not isinstance(btc_conditions, dict) else [1, 2]
+                        }),
+                        MediumTermTrendSignal(params={
+                            'quote_type': 'BTC',
+                            'trend_values': btc_conditions if not isinstance(btc_conditions, dict) else [1, 2]
+                        }),
+                        LongTermTrendSignal(params={
+                            'quote_type': 'BTC',
+                            'trend_values': btc_conditions if not isinstance(btc_conditions, dict) else [1, 2]
+                        }),
+                        OverallTrendSignal(params={
+                            'quote_type': 'BTC',
+                            'trend_values': btc_conditions if not isinstance(btc_conditions, dict) else [1, 2]
+                        })
+                    ])
+                
+                # Add RSI signals if conditions exist
+                if rsi_conditions_usd:
+                    from ..signals.rsi_signals import RSISignal, RSIWithRoCSignal
+                    
+                    # Add USD RSI signals
+                    available_signals.extend([
+                        RSISignal(params={
+                            'quote_type': 'USD',
+                            'rsi_length': 14,
+                            'signal_mode': 'simple'
+                        }),
+                        RSISignal(params={
+                            'quote_type': 'USD',
+                            'rsi_length': 28,
+                            'signal_mode': 'simple'
+                        }),
+                        RSIWithRoCSignal(params={
+                            'quote_type': 'USD',
+                            'rsi_length': 14,
+                            'roc_length': 14
+                        })
+                    ])
+                
+                if rsi_conditions_btc:
+                    from ..signals.rsi_signals import RSISignal, RSIWithRoCSignal
+                    
+                    # Add BTC RSI signals
+                    available_signals.extend([
+                        RSISignal(params={
+                            'quote_type': 'BTC',
+                            'rsi_length': 14,
+                            'signal_mode': 'simple'
+                        }),
+                        RSISignal(params={
+                            'quote_type': 'BTC',
+                            'rsi_length': 28,
+                            'signal_mode': 'simple'
+                        }),
+                        RSIWithRoCSignal(params={
+                            'quote_type': 'BTC',
+                            'rsi_length': 14,
+                            'roc_length': 14
+                        })
+                    ])
+                
+                # Add volatility signals if specified
+                if use_volatility_filter:
+                    from ..signals.volatility_signals import (
+                        VolatilityTrendSignal,
+                        MarkovVolatilitySignal
+                    )
+                    
+                    available_signals.append(
+                        VolatilityTrendSignal(params={
+                            'window': 14,
+                            'threshold': 0.1
+                        })
+                    )
+                    
+                    if self.markov_vol_model:
+                        available_signals.append(
+                            MarkovVolatilitySignal(params={
+                                'model': self.markov_vol_model
+                            })
+                        )
+                
+                # Process the asset with the SignalSelector
+                threshold = (signal_threshold / 100.0) if signal_threshold else 0.0
+                processed_df = self.signal_selector.process_asset(
+                    asset_id=asset_id,
+                    data=data_df,
+                    available_signals=available_signals,
+                    threshold=threshold
+                )
+                
+                # Store the processed DataFrame back in the portfolio
+                portfolio['classified_data'][asset_id] = processed_df
+                
+            else:
+                # Use the original signal computation logic for backward compatibility
+                signal_components = []  # Keep track of which signals are used
+            
+                # 1. USD Trend Signal
+                if usd_conditions is not None:
+                    if isinstance(usd_conditions, dict):
+                        for term, allowed_values in usd_conditions.items():
+                            col_name = f"{term.lower().replace(' ', '_')}_trend_USD"
+                            if col_name in data_df.columns:
+                                if not isinstance(allowed_values, (list, set)):
+                                    allowed_values = [allowed_values]
+                                allowed_values_set = set(allowed_values)
+                                
+                                # Ensure numeric data
+                                data_df[col_name] = pd.to_numeric(data_df[col_name], errors='coerce')
+                                
+                                # Generate signal directly
+                                data_df['usd_trend_signal'] = data_df[col_name].apply(
+                                    lambda x: 1 if pd.notna(x) and x in allowed_values_set else -1
+                                )
+                                signal_components.append('usd_trend_signal')
+                                break  # Only one term needed since we overwrite usd_trend_signal
+                            else:
+                                self.logger.warning(f"Column '{col_name}' not found for {asset_id}.")
+                                data_df['usd_trend_signal'] = -1
+                    else:
+                        col_name = 'overall_trend_USD'
                         if col_name in data_df.columns:
-                            if not isinstance(allowed_values, (list, set)):
-                                allowed_values = [allowed_values]
-                            allowed_values_set = set(allowed_values)
+                            if not isinstance(usd_conditions, (list, set)):
+                                usd_conditions = [usd_conditions]
+                            allowed_values_set = set(usd_conditions)
                             
-                            # Ensure numeric data
                             data_df[col_name] = pd.to_numeric(data_df[col_name], errors='coerce')
-                            
-                            # Generate signal directly
                             data_df['usd_trend_signal'] = data_df[col_name].apply(
                                 lambda x: 1 if pd.notna(x) and x in allowed_values_set else -1
                             )
                             signal_components.append('usd_trend_signal')
-                            break  # Only one term needed since we overwrite usd_trend_signal
                         else:
                             self.logger.warning(f"Column '{col_name}' not found for {asset_id}.")
                             data_df['usd_trend_signal'] = -1
-                else:
-                    col_name = 'overall_trend_USD'
-                    if col_name in data_df.columns:
-                        if not isinstance(usd_conditions, (list, set)):
-                            usd_conditions = [usd_conditions]
-                        allowed_values_set = set(usd_conditions)
-                        
-                        data_df[col_name] = pd.to_numeric(data_df[col_name], errors='coerce')
-                        data_df['usd_trend_signal'] = data_df[col_name].apply(
-                            lambda x: 1 if pd.notna(x) and x in allowed_values_set else -1
-                        )
-                        signal_components.append('usd_trend_signal')
+                
+                # 2. BTC Trend Signal (for altcoins)
+                if btc_conditions is not None and asset_id != 'bitcoin':
+                    if isinstance(btc_conditions, dict):
+                        for term, allowed_values in btc_conditions.items():
+                            col_name = f"{term.lower().replace(' ', '_')}_trend_BTC"
+                            if col_name in data_df.columns:
+                                if not isinstance(allowed_values, (list, set)):
+                                    allowed_values = [allowed_values]
+                                allowed_values_set = set(allowed_values)
+                                
+                                # Ensure numeric data
+                                data_df[col_name] = pd.to_numeric(data_df[col_name], errors='coerce')
+                                
+                                # Generate signal directly
+                                data_df['btc_trend_signal'] = data_df[col_name].apply(
+                                    lambda x: 1 if pd.notna(x) and x in allowed_values_set else -1
+                                )
+                                signal_components.append('btc_trend_signal')
+                                break  # Only one term needed since we overwrite btc_trend_signal
+                            else:
+                                self.logger.warning(f"Column '{col_name}' not found for {asset_id}.")
+                                data_df['btc_trend_signal'] = -1
                     else:
-                        data_df['usd_trend_signal'] = -1
-            else:
-                data_df['usd_trend_signal'] = -1
-
-            # 2. BTC Trend Signal (for altcoins)
-            if btc_conditions is not None and asset_id != 'bitcoin':
-                if isinstance(btc_conditions, dict):
-                    for term, allowed_values in btc_conditions.items():
-                        col_name = f"{term.lower().replace(' ', '_')}_trend_BTC"
+                        col_name = 'overall_trend_BTC'
                         if col_name in data_df.columns:
-                            if not isinstance(allowed_values, (list, set)):
-                                allowed_values = [allowed_values]
-                            allowed_values_set = set(allowed_values)
+                            if not isinstance(btc_conditions, (list, set)):
+                                btc_conditions = [btc_conditions]
+                            allowed_values_set = set(btc_conditions)
                             
-                            # Ensure numeric data
                             data_df[col_name] = pd.to_numeric(data_df[col_name], errors='coerce')
-                            
-                            # Generate signal directly
                             data_df['btc_trend_signal'] = data_df[col_name].apply(
                                 lambda x: 1 if pd.notna(x) and x in allowed_values_set else -1
                             )
                             signal_components.append('btc_trend_signal')
-                            break  # Only one term needed since we overwrite btc_trend_signal
                         else:
-                            self.logger.warning(f"Column '{col_name}' not found for {asset_id}.")
                             data_df['btc_trend_signal'] = -1
-                else:
-                    col_name = 'overall_trend_BTC'
-                    if col_name in data_df.columns:
-                        if not isinstance(btc_conditions, (list, set)):
-                            btc_conditions = [btc_conditions]
-                        allowed_values_set = set(btc_conditions)
-                        
-                        data_df[col_name] = pd.to_numeric(data_df[col_name], errors='coerce')
-                        data_df['btc_trend_signal'] = data_df[col_name].apply(
-                            lambda x: 1 if pd.notna(x) and x in allowed_values_set else -1
+                
+                # 3. RSI Signal (USD)
+                if rsi_conditions_usd:
+                    rsi_col = 'RSI_Signal_28_USD'
+                    if rsi_col in data_df.columns:
+                        # Ensure RSI signal is numeric before comparison
+                        data_df[rsi_col] = pd.to_numeric(data_df[rsi_col], errors='coerce')
+                        # Signal is 1 if RSI > 0, -1 otherwise (or if NaN)
+                        data_df['rsi_usd_signal'] = data_df[rsi_col].apply(
+                            lambda x: 1 if pd.notna(x) and x > 0 else -1
                         )
-                        signal_components.append('btc_trend_signal')
+                        signal_components.append('rsi_usd_signal')
+                        self.logger.debug(f"Generated 'rsi_usd_signal' from '{rsi_col}' for {asset_id}")
                     else:
-                        data_df['btc_trend_signal'] = -1
-            else:
-                data_df['btc_trend_signal'] = -1
-            
-            # 3. RSI Signal (USD)
-            if rsi_conditions_usd:
-                rsi_col = 'RSI_Signal_28_USD'
-                if rsi_col in data_df.columns:
-                    # Ensure RSI signal is numeric before comparison
-                    data_df[rsi_col] = pd.to_numeric(data_df[rsi_col], errors='coerce')
-                    # Signal is 1 if RSI > 0, -1 otherwise (or if NaN)
-                    data_df['rsi_usd_signal'] = data_df[rsi_col].apply(
-                        lambda x: 1 if pd.notna(x) and x > 0 else -1
-                    )
-                    signal_components.append('rsi_usd_signal')
-                    self.logger.debug(f"Generated 'rsi_usd_signal' from '{rsi_col}' for {asset_id}")
-                else:
-                    self.logger.warning(f"'{rsi_col}' column not found for {asset_id}. Defaulting signal to -1.")
-                    data_df['rsi_usd_signal'] = -1
-            else:
-                data_df['rsi_usd_signal'] = -1  # Default to -1 if not used
-            
-            # 4. RSI Signal (BTC) - for altcoins
-            if rsi_conditions_btc and asset_id != 'bitcoin':
-                rsi_col = 'RSI_Signal_28_BTC'
-                if rsi_col in data_df.columns:
-                    # Ensure RSI signal is numeric before comparison
-                    data_df[rsi_col] = pd.to_numeric(data_df[rsi_col], errors='coerce')
-                    # Signal is 1 if RSI > 0, -1 otherwise (or if NaN)
-                    data_df['rsi_btc_signal'] = data_df[rsi_col].apply(
-                        lambda x: 1 if pd.notna(x) and x > 0 else -1
-                    )
-                    signal_components.append('rsi_btc_signal')
-                    self.logger.debug(f"Generated 'rsi_btc_signal' from '{rsi_col}' for {asset_id}")
-                else:
-                    self.logger.warning(f"'{rsi_col}' column not found for {asset_id}. Defaulting signal to -1.")
-                    data_df['rsi_btc_signal'] = -1
-            else:
-                data_df['rsi_btc_signal'] = -1  # Default to -1 if not used
-            
-            # 5. Volatility Signal
-            if use_volatility_filter and self.markov_vol_model:
-                self.logger.debug(f"Calculating volatility signals for {asset_id}...")
-                vol_signals = {}
-                dates_to_analyze = data_df.index if isinstance(data_df.index, pd.DatetimeIndex) else pd.to_datetime(data_df['date'])
+                        self.logger.warning(f"'{rsi_col}' column not found for {asset_id}. Defaulting signal to -1.")
+                        data_df['rsi_usd_signal'] = -1
                 
-                for date in tqdm(dates_to_analyze, desc=f"Volatility Signal ({asset_id})", leave=False):
-                    try:
-                        signal_value = 1  # Default to low vol (1)
-                        if hasattr(self.markov_vol_model, 'get_volatility_state'):
-                            state = self.markov_vol_model.get_volatility_state(date)
-                            signal_value = 1 if state == 'low' else -1  # 1 for low vol, -1 for high vol
-                        elif hasattr(self.markov_vol_model, 'predict_volatility'):
-                            state = self.markov_vol_model.predict_volatility(date)
-                            signal_value = 1 if state == 1 else -1  # 1 for state 1 (low vol), -1 for high vol
+                # 4. RSI Signal (BTC) - for altcoins
+                if rsi_conditions_btc and asset_id != 'bitcoin':
+                    rsi_col = 'RSI_Signal_28_BTC'
+                    if rsi_col in data_df.columns:
+                        # Ensure RSI signal is numeric before comparison
+                        data_df[rsi_col] = pd.to_numeric(data_df[rsi_col], errors='coerce')
+                        # Signal is 1 if RSI > 0, -1 otherwise (or if NaN)
+                        data_df['rsi_btc_signal'] = data_df[rsi_col].apply(
+                            lambda x: 1 if pd.notna(x) and x > 0 else -1
+                        )
+                        signal_components.append('rsi_btc_signal')
+                        self.logger.debug(f"Generated 'rsi_btc_signal' from '{rsi_col}' for {asset_id}")
+                    else:
+                        self.logger.warning(f"'{rsi_col}' column not found for {asset_id}. Defaulting signal to -1.")
+                        data_df['rsi_btc_signal'] = -1
+                
+                # 5. Volatility Signal
+                if use_volatility_filter and self.markov_vol_model:
+                    self.logger.debug(f"Calculating volatility signals for {asset_id}...")
+                    vol_signals = {}
+                    dates_to_analyze = data_df.index if isinstance(data_df.index, pd.DatetimeIndex) else pd.to_datetime(data_df['date'])
+                    
+                    for date in tqdm(dates_to_analyze, desc=f"Volatility Signal ({asset_id})", leave=False):
+                        try:
+                            signal_value = 1  # Default to low vol (1)
+                            if hasattr(self.markov_vol_model, 'get_volatility_state'):
+                                state = self.markov_vol_model.get_volatility_state(date)
+                                signal_value = 1 if state == 'low' else -1  # 1 for low vol, -1 for high vol
+                            elif hasattr(self.markov_vol_model, 'predict_volatility'):
+                                state = self.markov_vol_model.predict_volatility(date)
+                                signal_value = 1 if state == 1 else -1  # 1 for state 1 (low vol), -1 for high vol
+                            else:
+                                self.logger.warning("Markov analyzer provided but has no recognized volatility methods. Defaulting to low vol.")
+                            vol_signals[date] = signal_value
+                        except Exception as e:
+                            self.logger.warning(f"Error getting volatility for {date}: {e}. Defaulting to low vol (1).")
+                            vol_signals[date] = 1
+                    
+                    # Add volatility signals to data
+                    if isinstance(data_df.index, pd.DatetimeIndex):
+                        data_df['volatility_signal'] = data_df.index.map(vol_signals).fillna(1)
+                    else:
+                        # Convert date column to datetime if needed
+                        if 'date' in data_df.columns:
+                            if not pd.api.types.is_datetime64_any_dtype(data_df['date']):
+                                data_df['date'] = pd.to_datetime(data_df['date'])
+                            # Use date column to map volatility signals
+                            data_df['volatility_signal'] = data_df['date'].map(vol_signals).fillna(1)
                         else:
-                            self.logger.warning("Markov analyzer provided but has no recognized volatility methods. Defaulting to low vol.")
-                        vol_signals[date] = signal_value
-                    except Exception as e:
-                        self.logger.warning(f"Error getting volatility for {date}: {e}. Defaulting to low vol (1).")
-                        vol_signals[date] = 1
-                
-                # Add volatility signals to data
-                if isinstance(data_df.index, pd.DatetimeIndex):
-                    data_df['volatility_signal'] = data_df.index.map(vol_signals).fillna(1)
+                            self.logger.warning(f"No date column or index found for {asset_id}. Using default low vol (1).")
+                            data_df['volatility_signal'] = 1
+                    
+                    signal_components.append('volatility_signal')
+                    self.logger.debug(f"Generated 'volatility_signal' for {asset_id}")
                 else:
-                    # Convert date column to datetime if needed
-                    if 'date' in data_df.columns:
-                        if not pd.api.types.is_datetime64_any_dtype(data_df['date']):
-                            data_df['date'] = pd.to_datetime(data_df['date'])
-                        # Use date column to map volatility signals
-                        data_df['volatility_signal'] = data_df['date'].map(vol_signals).fillna(1)
+                    data_df['volatility_signal'] = 1  # Default to 1 (low vol) if filter not used or no model
+                
+                # 6. SSR Signal
+                if use_ssr_signal and self.ssr_handler:
+                    self.logger.debug(f"Calculating SSR signals for {asset_id}...")
+                    ssr_signals = {}
+                    dates_to_analyze = data_df.index if isinstance(data_df.index, pd.DatetimeIndex) else pd.to_datetime(data_df['date'])
+                    
+                    for date in tqdm(dates_to_analyze, desc=f"SSR Signal ({asset_id})", leave=False):
+                        try:
+                            ssr_signal = self.ssr_handler.get_ssr_signal(date)
+                            ssr_signals[date] = ssr_signal
+                        except Exception as e:
+                            self.logger.warning(f"Error getting SSR signal for {date}: {e}. Defaulting to 0.")
+                            ssr_signals[date] = 0  # Changed default from -1 to 0
+                    
+                    # Add SSR signals to data
+                    if isinstance(data_df.index, pd.DatetimeIndex):
+                        data_df['ssr_signal'] = data_df.index.map(ssr_signals).fillna(0)  # Changed default from -1 to 0
                     else:
-                        self.logger.warning(f"No date column or index found for {asset_id}. Using default low vol (1).")
-                        data_df['volatility_signal'] = 1
-                
-                signal_components.append('volatility_signal')
-                self.logger.debug(f"Generated 'volatility_signal' for {asset_id}")
-            else:
-                data_df['volatility_signal'] = 1  # Default to 1 (low vol) if filter not used or no model
-            
-            # 6. SSR Signal
-            if use_ssr_signal and self.ssr_handler:
-                self.logger.debug(f"Calculating SSR signals for {asset_id}...")
-                ssr_signals = {}
-                dates_to_analyze = data_df.index if isinstance(data_df.index, pd.DatetimeIndex) else pd.to_datetime(data_df['date'])
-                
-                for date in tqdm(dates_to_analyze, desc=f"SSR Signal ({asset_id})", leave=False):
-                    try:
-                        ssr_signal = self.ssr_handler.get_ssr_signal(date)
-                        ssr_signals[date] = ssr_signal
-                    except Exception as e:
-                        self.logger.warning(f"Error getting SSR signal for {date}: {e}. Defaulting to 0.")
-                        ssr_signals[date] = 0  # Changed default from -1 to 0
-                
-                # Add SSR signals to data
-                if isinstance(data_df.index, pd.DatetimeIndex):
-                    data_df['ssr_signal'] = data_df.index.map(ssr_signals).fillna(0)  # Changed default from -1 to 0
+                        # Convert date column to datetime if needed
+                        if 'date' in data_df.columns:
+                            if not pd.api.types.is_datetime64_any_dtype(data_df['date']):
+                                data_df['date'] = pd.to_datetime(data_df['date'])
+                            # Use date column to map SSR signals
+                            data_df['ssr_signal'] = data_df['date'].map(ssr_signals).fillna(0)  # Changed default from -1 to 0
+                        else:
+                            self.logger.warning(f"No date column or index found for {asset_id}. Using default SSR signal (0).")
+                            data_df['ssr_signal'] = 0  # Changed default from -1 to 0
+                    
+                    signal_components.append('ssr_signal')
+                    self.logger.debug(f"Generated 'ssr_signal' for {asset_id}")
                 else:
-                    # Convert date column to datetime if needed
-                    if 'date' in data_df.columns:
-                        if not pd.api.types.is_datetime64_any_dtype(data_df['date']):
-                            data_df['date'] = pd.to_datetime(data_df['date'])
-                        # Use date column to map SSR signals
-                        data_df['ssr_signal'] = data_df['date'].map(ssr_signals).fillna(0)  # Changed default from -1 to 0
+                    # Check if SSR column exists in data
+                    ssr_col = 'SSR'
+                    if use_ssr_signal and ssr_col in data_df.columns:
+                        # Use SSR from data if available
+                        ssr_threshold = criteria.get('ssr_threshold', 0.5)
+                        data_df[ssr_col] = pd.to_numeric(data_df[ssr_col], errors='coerce')
+                        data_df['ssr_signal'] = data_df[ssr_col].apply(
+                            lambda x: 1 if pd.notna(x) and x >= ssr_threshold else 0  # Changed default from -1 to 0
+                        )
+                        signal_components.append('ssr_signal')
+                        self.logger.debug(f"Generated 'ssr_signal' from '{ssr_col}' column for {asset_id}")
                     else:
-                        self.logger.warning(f"No date column or index found for {asset_id}. Using default SSR signal (0).")
                         data_df['ssr_signal'] = 0  # Changed default from -1 to 0
                 
-                signal_components.append('ssr_signal')
-                self.logger.debug(f"Generated 'ssr_signal' for {asset_id}")
-            else:
-                # Check if SSR column exists in data
-                ssr_col = 'SSR'
-                if use_ssr_signal and ssr_col in data_df.columns:
-                    # Use SSR from data if available
-                    ssr_threshold = criteria.get('ssr_threshold', 0.5)
-                    data_df[ssr_col] = pd.to_numeric(data_df[ssr_col], errors='coerce')
-                    data_df['ssr_signal'] = data_df[ssr_col].apply(
-                        lambda x: 1 if pd.notna(x) and x >= ssr_threshold else 0  # Changed default from -1 to 0
-                    )
-                    signal_components.append('ssr_signal')
-                    self.logger.debug(f"Generated 'ssr_signal' from '{ssr_col}' column for {asset_id}")
-                else:
-                    data_df['ssr_signal'] = 0  # Changed default from -1 to 0
-            
-            # 7. Add follow portfolio signal if specified
-            if follow_portfolio and follow_portfolio_data:
-                # Get Bitcoin's final decision from follow portfolio
-                btc_follow_data = follow_portfolio_data.get('bitcoin')
-                if btc_follow_data is not None and 'final_decision' in btc_follow_data.columns:
-                    self.logger.info(f"Using Bitcoin signals from follow portfolio '{follow_portfolio}' as gate for all assets")
-                    
-                    # Ensure the follow portfolio data has date index for alignment
-                    if not isinstance(btc_follow_data.index, pd.DatetimeIndex) and 'date' in btc_follow_data.columns:
-                        btc_follow_data = btc_follow_data.set_index('date')
-                    
-                    # Create a Series with Bitcoin's signal to allow for easy alignment
-                    btc_follow_signal = btc_follow_data['final_decision']
-                    
-                    # Align the follow signal with the current data
-                    if isinstance(data_df.index, pd.DatetimeIndex):
-                        # Reindex to match current data's index
-                        aligned_follow_signal = btc_follow_signal.reindex(data_df.index, method='ffill').fillna(0)
-                        data_df['follow_portfolio_signal'] = aligned_follow_signal
-                    else:
-                        # If current data doesn't have DatetimeIndex, use date column
-                        if 'date' in data_df.columns:
-                            # Convert to Series with date as index for easy mapping
-                            signal_dict = btc_follow_signal.to_dict()
-                            data_df['follow_portfolio_signal'] = data_df['date'].map(signal_dict).fillna(0)
+                # 7. Add follow portfolio signal if specified
+                if follow_portfolio and follow_portfolio_data:
+                    # Get Bitcoin's final decision from follow portfolio
+                    btc_follow_data = follow_portfolio_data.get('bitcoin')
+                    if btc_follow_data is not None and 'final_decision' in btc_follow_data.columns:
+                        self.logger.info(f"Using Bitcoin signals from follow portfolio '{follow_portfolio}' as gate for all assets")
+                        
+                        # Ensure the follow portfolio data has date index for alignment
+                        if not isinstance(btc_follow_data.index, pd.DatetimeIndex) and 'date' in btc_follow_data.columns:
+                            btc_follow_data = btc_follow_data.set_index('date')
+                        
+                        # Create a Series with Bitcoin's signal to allow for easy alignment
+                        btc_follow_signal = btc_follow_data['final_decision']
+                        
+                        # Align the follow signal with the current data
+                        if isinstance(data_df.index, pd.DatetimeIndex):
+                            # Reindex to match current data's index
+                            aligned_follow_signal = btc_follow_signal.reindex(data_df.index, method='ffill').fillna(0)
+                            data_df['follow_portfolio_signal'] = aligned_follow_signal
                         else:
-                            self.logger.warning(f"No date column found for {asset_id}. Cannot align follow portfolio signal.")
-                            data_df['follow_portfolio_signal'] = 0
-                    
-                    signal_components.append('follow_portfolio_signal')
-                    self.logger.debug(f"Generated 'follow_portfolio_signal' for {asset_id} using Bitcoin signals")
-                else:
-                    self.logger.warning(f"No Bitcoin signals found in follow portfolio '{follow_portfolio}'")
-                    data_df['follow_portfolio_signal'] = 0
-            else:
-                data_df['follow_portfolio_signal'] = 0  # Default to 0 if not used
-            
-            # 8. Combine Signals
-            if not signal_components:
-                self.logger.warning(f"No signal components configured for {asset_id}. Defaulting combined signal to 100.")
-                data_df['combined_signal_sum'] = 100.0
-                data_df['positive_signals_count'] = 1
-                data_df['positive_signals_pct'] = 100.0
-            else:
-                self.logger.info(f"Combining signals for {asset_id}: {signal_components}")
-                # Calculate sum of signals (now 1 or -1)
-                data_df['combined_signal_sum'] = data_df[signal_components].sum(axis=1)
-                # Calculate number of positive signals (== 1)
-                data_df['positive_signals_count'] = (data_df[signal_components] == 1).sum(axis=1)
-                # Calculate percentage of positive signals for threshold check
-                data_df['positive_signals_pct'] = (data_df['positive_signals_count'] / len(signal_components)) * 100.0
-            
-            # 9. Apply BTC Trend Gating
-            if btc_trend_gating is not None and btc_data is not None:
-                self.logger.info(f"Applying BTC trend gating for {asset_id}")
-                if isinstance(data_df.index, pd.DatetimeIndex) and isinstance(btc_data.index, pd.DatetimeIndex):
-                    # Get the BTC trend gate series with matching index
-                    gate_col = 'overall_trend_USD'  # Use USD trend for BTC
-                    if gate_col in btc_data.columns:
-                        # Prepare allowed gate values
-                        allowed_gate_values = btc_trend_gating
-                        if not isinstance(allowed_gate_values, (list, set)):
-                            allowed_gate_values = [allowed_gate_values]
-                        allowed_gate_values_str = {str(v) for v in allowed_gate_values}
+                            # If current data doesn't have DatetimeIndex, use date column
+                            if 'date' in data_df.columns:
+                                # Convert to Series with date as index for easy mapping
+                                signal_dict = btc_follow_signal.to_dict()
+                                data_df['follow_portfolio_signal'] = data_df['date'].map(signal_dict).fillna(0)
+                            else:
+                                self.logger.warning(f"No date column found for {asset_id}. Cannot align follow portfolio signal.")
+                                data_df['follow_portfolio_signal'] = 0
                         
-                        # Create gate condition series from BTC data
-                        gate_condition = btc_data[gate_col].apply(
-                            lambda x: str(x) in allowed_gate_values_str
-                        )
-                        
-                        # Create a date-aligned Series for the gate_condition
-                        gate_series = pd.Series(gate_condition)
-                        
-                        # Apply gate to asset data - reindex gate_condition to match data_df's index
-                        aligned_gate = gate_series.reindex(data_df.index, method='ffill').fillna(False)
-                        
-                        # Where gate condition is False, force signals to negative
-                        data_df['combined_signal_sum'] = data_df['combined_signal_sum'].where(
-                            aligned_gate, -len(signal_components) - 1
-                        )
-                        data_df['positive_signals_pct'] = data_df['positive_signals_pct'].where(
-                            aligned_gate, 0
-                        )
-                        
-                        self.logger.debug(f"Applied BTC trend gate for {asset_id}")
+                        signal_components.append('follow_portfolio_signal')
+                        self.logger.debug(f"Generated 'follow_portfolio_signal' for {asset_id} using Bitcoin signals")
                     else:
-                        self.logger.warning(f"'{gate_col}' column not found in BTC data. Gate not applied for {asset_id}.")
+                        self.logger.warning(f"No Bitcoin signals found in follow portfolio '{follow_portfolio}'")
+                        data_df['follow_portfolio_signal'] = 0
                 else:
-                    self.logger.warning(f"Index mismatch between {asset_id} and BTC data. BTC gating not applied.")
-            
-            # 10. Apply Follow Portfolio Gating
-            if follow_portfolio and 'follow_portfolio_signal' in data_df.columns:
-                self.logger.info(f"Applying follow portfolio gating for {asset_id}")
-                # Gate only allows trades when follow portfolio signal is 1
-                gate_condition = data_df['follow_portfolio_signal'] == 1
+                    data_df['follow_portfolio_signal'] = 0  # Default to 0 if not used
                 
-                # Where gate condition is False, force signals to negative
+                # 8. Combine Signals
                 if not signal_components:
-                    signal_components = ['follow_portfolio_signal']  # Fallback if no other signals
-                    
-                # Apply gating
-                data_df['combined_signal_sum'] = data_df['combined_signal_sum'].where(
-                    gate_condition, -len(signal_components) - 1
-                )
-                data_df['positive_signals_pct'] = data_df['positive_signals_pct'].where(
-                    gate_condition, 0
-                )
-                
-                self.logger.debug(f"Applied follow portfolio gate for {asset_id}")
-            
-            # 11. Calculate Final Decision
-            def calculate_final_decision(row):
-                # 1. Check if percentage of positive signals meets threshold
-                if pd.notna(row['positive_signals_pct']) and row['positive_signals_pct'] >= signal_threshold:
-                    # 2. If threshold met, check sign of combined signal sum
-                    if pd.notna(row['combined_signal_sum']) and row['combined_signal_sum'] > 0:
-                        return 1  # Buy/Hold
-                    else:
-                        return 0  # Sell/Cash (sum is zero or negative)
+                    self.logger.warning(f"No signal components configured for {asset_id}. Defaulting combined signal to 100.")
+                    data_df['combined_signal_sum'] = 100.0
+                    data_df['positive_signals_count'] = 1
+                    data_df['positive_signals_pct'] = 100.0
                 else:
-                    # If threshold not met, stay in cash / sell
-                    return 0
-            
-            data_df['final_decision'] = data_df.apply(calculate_final_decision, axis=1)
-            
-            # 12. Shift Final Decision
-            # Shift signals by 1 day to avoid lookahead bias
-            data_df['final_decision_shifted'] = data_df['final_decision'].shift(1)
-            
-            # Store the updated DataFrame back in the portfolio
-            portfolio['classified_data'][asset_id] = data_df
+                    self.logger.info(f"Combining signals for {asset_id}: {signal_components}")
+                    # Calculate sum of signals (now 1 or -1)
+                    data_df['combined_signal_sum'] = data_df[signal_components].sum(axis=1)
+                    # Calculate number of positive signals (== 1)
+                    data_df['positive_signals_count'] = (data_df[signal_components] == 1).sum(axis=1)
+                    # Calculate percentage of positive signals for threshold check
+                    data_df['positive_signals_pct'] = (data_df['positive_signals_count'] / len(signal_components)) * 100.0
+                
+                # 9. Apply BTC Trend Gating
+                if btc_trend_gating is not None and btc_data is not None:
+                    self.logger.info(f"Applying BTC trend gating for {asset_id}")
+                    if isinstance(data_df.index, pd.DatetimeIndex) and isinstance(btc_data.index, pd.DatetimeIndex):
+                        # Get the BTC trend gate series with matching index
+                        gate_col = 'overall_trend_USD'  # Use USD trend for BTC
+                        if gate_col in btc_data.columns:
+                            # Prepare allowed gate values
+                            allowed_gate_values = btc_trend_gating
+                            if not isinstance(allowed_gate_values, (list, set)):
+                                allowed_gate_values = [allowed_gate_values]
+                            allowed_gate_values_str = {str(v) for v in allowed_gate_values}
+                            
+                            # Create gate condition series from BTC data
+                            gate_condition = btc_data[gate_col].apply(
+                                lambda x: str(x) in allowed_gate_values_str
+                            )
+                            
+                            # Create a date-aligned Series for the gate_condition
+                            gate_series = pd.Series(gate_condition)
+                            
+                            # Apply gate to asset data - reindex gate_condition to match data_df's index
+                            aligned_gate = gate_series.reindex(data_df.index, method='ffill').fillna(False)
+                            
+                            # Where gate condition is False, force signals to negative
+                            data_df['combined_signal_sum'] = data_df['combined_signal_sum'].where(
+                                aligned_gate, -len(signal_components) - 1
+                            )
+                            data_df['positive_signals_pct'] = data_df['positive_signals_pct'].where(
+                                aligned_gate, 0
+                            )
+                            
+                            self.logger.debug(f"Applied BTC trend gate for {asset_id}")
+                        else:
+                            self.logger.warning(f"'{gate_col}' column not found in BTC data. Gate not applied for {asset_id}.")
+                    else:
+                        self.logger.warning(f"Index mismatch between {asset_id} and BTC data. BTC gating not applied.")
+                
+                # 10. Apply Follow Portfolio Gating
+                if follow_portfolio and 'follow_portfolio_signal' in data_df.columns:
+                    self.logger.info(f"Applying follow portfolio gating for {asset_id}")
+                    # Gate only allows trades when follow portfolio signal is 1
+                    gate_condition = data_df['follow_portfolio_signal'] == 1
+                    
+                    # Where gate condition is False, force signals to negative
+                    if not signal_components:
+                        signal_components = ['follow_portfolio_signal']  # Fallback if no other signals
+                        
+                    # Apply gating
+                    data_df['combined_signal_sum'] = data_df['combined_signal_sum'].where(
+                        gate_condition, -len(signal_components) - 1
+                    )
+                    data_df['positive_signals_pct'] = data_df['positive_signals_pct'].where(
+                        gate_condition, 0
+                    )
+                    
+                    self.logger.debug(f"Applied follow portfolio gate for {asset_id}")
+                
+                # 11. Calculate Final Decision
+                def calculate_final_decision(row):
+                    # 1. Check if percentage of positive signals meets threshold
+                    if pd.notna(row['positive_signals_pct']) and row['positive_signals_pct'] >= signal_threshold:
+                        # 2. If threshold met, check sign of combined signal sum
+                        if pd.notna(row['combined_signal_sum']) and row['combined_signal_sum'] > 0:
+                            return 1  # Buy/Hold
+                        else:
+                            return 0  # Sell/Cash (sum is zero or negative)
+                    else:
+                        # If threshold not met, stay in cash / sell
+                        return 0
+                
+                data_df['final_decision'] = data_df.apply(calculate_final_decision, axis=1)
+                
+                # 12. Shift Final Decision
+                # Shift signals by 1 day to avoid lookahead bias
+                data_df['final_decision_shifted'] = data_df['final_decision'].shift(1)
+                
+                # Store the updated DataFrame back in the portfolio
+                portfolio['classified_data'][asset_id] = data_df
             
             self.logger.info(f"Signal computation completed for {asset_id}")
     

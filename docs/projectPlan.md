@@ -151,7 +151,28 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 
 **Outcome**: A flexible and transparent backtesting system that allows complete customization of trading parameters without hardcoded assumptions, increasing reliability and avoiding misleading signals.
 
-### **Step 3.4: Attribution & Reporting**
+### **Step 3.4: Asset-Specific Signal Optimization Framework** ✅
+- Designed and implemented a data-driven signal evaluation framework:
+  - **Forward Returns Analysis**: Created tools to analyze how signals shift return distributions
+  - **Statistical Testing**: Implemented rigorous statistical tests to validate signal effectiveness
+  - **Effect Size Calculation**: Measured the magnitude of signal impact using Cohen's d and other metrics
+  - **Signal Weighting**: Developed a formula combining effect size (50%), confidence (30%), and mean difference (20%)
+- Developed signal selection and combination infrastructure:
+  - **SignalBase Interface**: Created a common interface for all trading signals
+  - **Signal Registry**: Implemented a central registry for discovering available signals
+  - **SignalEvaluator**: Built component to analyze signal effectiveness on asset-specific data
+  - **SignalCombiner**: Created module to combine multiple signals using calculated weights
+  - **SignalSelector**: Developed bridge component between Portfolio Manager and signal framework
+- Integrated the framework with portfolio management:
+  - Updated PortfolioManager to leverage asset-specific signal selection
+  - Maintained backward compatibility with existing portfolio configuration
+  - Added a toggle to enable/disable dynamic signal selection
+- Created example scripts demonstrating the new framework in action
+- Added placeholder for future meta-labeling implementation
+
+**Outcome**: A sophisticated, data-driven framework that dynamically selects and weighs the most effective signals for each asset based on empirical evidence, improving trading performance through asset-specific signal optimization.
+
+### **Step 3.5: Attribution & Reporting**
 - Implement multi-period attribution analysis (monthly or as needed).
 - Develop routines to compile daily metrics into comprehensive, user-friendly reports.
 
