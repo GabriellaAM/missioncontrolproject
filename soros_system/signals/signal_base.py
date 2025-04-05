@@ -16,7 +16,7 @@ class SignalBase(ABC):
     
     All signal implementations should inherit from this class and implement
     the required methods. Signals generate binary values: +1 (bullish/buy)
-    or -1 (bearish/sell).
+    or 0 (bearish/sell).
     """
     
     def __init__(self, params: Optional[Dict[str, Any]] = None):
@@ -38,7 +38,7 @@ class SignalBase(ABC):
             asset_id (str): ID of the asset.
             
         Returns:
-            pd.Series: Series with signal values (+1 or -1) indexed by date.
+            pd.Series: Series with signal values (+1 or 0) indexed by date.
         """
         pass
     

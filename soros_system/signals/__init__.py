@@ -12,10 +12,50 @@ from .signal_registry import (
     get_signal_info,
 )
 
+# Import signal implementations
+from . import trend_signals
+from . import rsi_signals
+from . import ssr_signals
+from . import volatility_signals
+
+# Import specific signals for easy access
+from .trend_signals import (
+    ShortTermTrendSignal, MediumTermTrendSignal, LongTermTrendSignal
+)
+from .rsi_signals import (
+    RSI_Oversold_USD, RSI_Overbought_USD, RSI_Bullish_USD, RSI_Bearish_USD,
+    RSI_Oversold_BTC, RSI_Overbought_BTC, RSI_Bullish_BTC, RSI_Bearish_BTC
+)
+from .ssr_signals import SSR_RiskOn, SSR_RiskOff
+from .volatility_signals import MarkovLowVolatilitySignal, MarkovHighVolatilitySignal
+
 __all__ = [
     'SignalBase',
     'register_signal',
     'get_signal',
     'get_all_signals',
     'get_signal_info',
+    
+    # Trend signals
+    'ShortTermTrendSignal',
+    'MediumTermTrendSignal',
+    'LongTermTrendSignal',
+    
+    # RSI signals
+    'RSI_Oversold_USD',
+    'RSI_Overbought_USD',
+    'RSI_Bullish_USD',
+    'RSI_Bearish_USD',
+    'RSI_Oversold_BTC',
+    'RSI_Overbought_BTC',
+    'RSI_Bullish_BTC',
+    'RSI_Bearish_BTC',
+    
+    # SSR signals
+    'SSR_RiskOn',
+    'SSR_RiskOff',
+    
+    # Volatility signals
+    'MarkovLowVolatilitySignal',
+    'MarkovHighVolatilitySignal',
 ] 
