@@ -1,258 +1,200 @@
 """
-SSR-based signals for the Soros System.
+SSR (Stablecoin Supply Ratio) signals for the Soros System.
 
-These signals are based on the Stablecoin Supply Ratio (SSR) indicator which measures Bitcoin's scarcity.
-Each signal returns 1 if the specified condition is detected, 0 otherwise.
+These signals are based on the relationship between stablecoin supply and Bitcoin market cap,
+which can indicate market sentiment and capital flow dynamics.
 """
 
 import pandas as pd
 import numpy as np
 import logging
-from typing import Optional, Dict, Any, List
+import os
+from typing import Optional, Dict, Any, Union, List
 
 from .signal_base import SignalBase
 from .signal_registry import register_signal
-from ..data.ssr_data import SSRDataHandler
 
 
 class SSRSignalBase(SignalBase):
-    """Base class for all SSR signals."""
+    """Base class for SSR signals."""
     
     def __init__(self, params: Optional[Dict[str, Any]] = None):
-        """Initialize the signal."""
+        """Initialize the signal with parameters."""
         super().__init__(params)
-        self.ssr_handler = None
-        
-        # Set up the SSR data handler
-        ssr_data_path = params.get('data_path', 'data/onchainData/BTC_SSR.csv')
-        self._setup_ssr_handler(ssr_data_path)
+        self.logger = logging.getLogger(__name__)
+        self.ssr_data = None
+        self.ssr_data_loaded = False
+        self._load_ssr_data()
     
-    def _setup_ssr_handler(self, data_path):
-        """Set up the SSR data handler."""
+    def _load_ssr_data(self) -> bool:
+        """Load SSR data from file.
+        
+        Returns:
+            bool: True if data was loaded successfully, False otherwise
+        """
+        # Try to get path from params
+        ssr_path = self.params.get('ssr_data_path')
+        
+        # If no path in params, try environment variable
+        if not ssr_path:
+            ssr_path = os.environ.get('SSR_DATA_PATH')
+            
+        # If still no path, use default location
+        if not ssr_path:
+            ssr_path = 'data/onchainData/BTC_SSR.csv'
+            
+        # Check if file exists
+        if not os.path.exists(ssr_path):
+            self.logger.warning(f"SSR data file not found at {ssr_path}")
+            self.ssr_data_loaded = False
+            return False
+            
         try:
-            self.ssr_handler = SSRDataHandler(data_path)
-            if self.ssr_handler.ssr_data is not None:
-                self.logger.info(f"Successfully set up SSR data handler with {len(self.ssr_handler.ssr_data)} rows")
-                # Log the date range of available data
-                min_date = self.ssr_handler.ssr_data.index.min()
-                max_date = self.ssr_handler.ssr_data.index.max()
-                self.logger.info(f"SSR data available from {min_date} to {max_date}")
-            else:
-                self.logger.error("Failed to set up SSR data handler")
+            # Load data
+            self.ssr_data = pd.read_csv(ssr_path)
+            
+            # Ensure date column is properly formatted
+            if 'date' in self.ssr_data.columns:
+                self.ssr_data['date'] = pd.to_datetime(self.ssr_data['date'])
+                self.ssr_data.set_index('date', inplace=True)
+            elif 'timestamp' in self.ssr_data.columns:
+                self.ssr_data['timestamp'] = pd.to_datetime(self.ssr_data['timestamp'])
+                self.ssr_data.set_index('timestamp', inplace=True)
+                
+            # Set flag to indicate data was loaded
+            self.ssr_data_loaded = True
+            return True
+            
         except Exception as e:
-            self.logger.error(f"Error setting up SSR data handler: {str(e)}")
-            self.ssr_handler = None
+            self.logger.error(f"Error loading SSR data: {e}")
+            self.ssr_data_loaded = False
+            return False
     
     def get_required_columns(self) -> List[str]:
-        """Get required columns for the signal calculation."""
-        # SSR signals don't rely on price columns in the DataFrame itself
-        return []
+        """Get the required columns for this signal."""
+        return ['close']
     
     def get_min_required_samples(self) -> int:
-        """Get minimum required samples for the signal calculation."""
-        # We need at least one date to map to the SSR data
-        return 1
+        """Get the minimum required samples for this signal."""
+        return 30
     
     def validate(self, data: pd.DataFrame, asset_id: str) -> bool:
-        """Validate the data for signal calculation."""
-        if data is None or data.empty:
-            self.logger.warning(f"Empty data provided for {asset_id}")
+        """Validate that the data contains the required columns."""
+        # Check if price data has required columns
+        if not super().validate(data, asset_id):
             return False
-        
-        # Check if we have SSR data handler
-        if self.ssr_handler is None or self.ssr_handler.ssr_data is None:
-            self.logger.warning("SSR data handler not properly initialized, cannot calculate signal.")
+            
+        # Only apply SSR signals to Bitcoin
+        if asset_id.lower() != 'bitcoin':
+            self.logger.debug(f"SSR signals only apply to Bitcoin, not {asset_id}")
             return False
-        
-        # Check for minimum required samples
-        if len(data) < self.get_min_required_samples():
-            self.logger.warning(
-                f"Insufficient data for {asset_id}: {len(data)} samples, "
-                f"need at least {self.get_min_required_samples()}"
-            )
-            return False
-        
+            
+        # Check if SSR data is loaded
+        if not self.ssr_data_loaded or self.ssr_data is None or self.ssr_data.empty:
+            # Try loading again if not already loaded
+            if not self.ssr_data_loaded:
+                if not self._load_ssr_data():
+                    self.logger.warning("SSR data not available, signal cannot be calculated")
+                    return False
+            else:
+                self.logger.warning("SSR data not available, signal cannot be calculated")
+                return False
+                
         return True
     
-    def get_ssr_value_for_date(self, date):
-        """Get SSR value for a specific date using closest previous date if needed."""
-        if self.ssr_handler is None or self.ssr_handler.ssr_data is None:
-            return None
-            
-        # Convert to pandas datetime if needed
-        if not isinstance(date, pd.Timestamp):
-            date = pd.Timestamp(date)
-            
-        # Find the closest date in the SSR data (same or earlier)
-        closest_dates = self.ssr_handler.ssr_data.index[self.ssr_handler.ssr_data.index <= date]
-        if len(closest_dates) == 0:
-            return None
+    def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
+        """Calculate the signal values.
         
-        closest_date = closest_dates[-1]  # Get the most recent date
-        return self.ssr_handler.ssr_data.loc[closest_date, 'ssr_oscillator']
+        Args:
+            data: DataFrame with price data
+            asset_id: ID of the asset
+            
+        Returns:
+            Series with signal values
+        """
+        # Validate data
+        if not self.validate(data, asset_id):
+            return pd.Series(index=data.index)
+            
+        # Merge price data with SSR data
+        merged_data = pd.merge(
+            data, self.ssr_data, left_index=True, right_index=True, how='left'
+        )
+        
+        # Fill missing values using forward fill
+        if 'ssr' in merged_data.columns:
+            merged_data['ssr'] = merged_data['ssr'].ffill()
+        else:
+            self.logger.warning("SSR column not found in data")
+            return pd.Series(index=data.index)
+            
+        # Create signal series (to be implemented by subclasses)
+        return self._create_signal(merged_data)
+    
+    def _create_signal(self, data: pd.DataFrame) -> pd.Series:
+        """Create the signal based on SSR values.
+        
+        Args:
+            data: DataFrame with price and SSR data
+            
+        Returns:
+            Series with signal values
+        """
+        # This method should be implemented by subclasses
+        raise NotImplementedError("Subclasses must implement _create_signal")
 
 
 @register_signal
 class SSR_RiskOn(SSRSignalBase):
-    """Signal that indicates positive SSR (risk-on market conditions).
+    """Signal indicating risk-on sentiment based on SSR decreasing."""
     
-    Returns:
-        1: When SSR is positive (> 0)
-        0: When SSR is negative or not available
-    """
-    
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        """Initialize the signal.
+    def _create_signal(self, data: pd.DataFrame) -> pd.Series:
+        """Create risk-on signal based on SSR values.
+        
+        Risk-on is indicated by decreasing SSR (stablecoins being deployed into crypto).
         
         Args:
-            params (dict, optional): Parameters for the signal.
-                data_path (str): Path to the SSR CSV file
-                handle_missing (str): How to handle missing data points: 'zero' or 'nan' (default: 'zero')
-        """
-        super().__init__(params)
-        self.handle_missing = params.get('handle_missing', 'zero')
-    
-    def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
-        """Calculate the signal values.
-        
-        Args:
-            data (pd.DataFrame): DataFrame with price data (used for dates).
-            asset_id (str): ID of the asset.
+            data: DataFrame with price and SSR data
             
         Returns:
-            pd.Series: Series with signal values (1 or 0) indexed by date.
-                       1 when SSR is positive (risk-on)
-                       0 when SSR is negative or not available
+            Series with signal values
         """
-        if not self.validate(data, asset_id):
-            # Return empty series with same index as data
+        if 'ssr' not in data.columns:
             return pd.Series(index=data.index)
+            
+        # Calculate SSR change
+        data['ssr_change'] = data['ssr'].pct_change(periods=7)
         
-        try:
-            # Calculate SSR signal for each date in the DataFrame
-            signals = pd.Series(index=data.index)
-            
-            # Get the range of dates in SSR data
-            min_ssr_date = self.ssr_handler.ssr_data.index.min()
-            max_ssr_date = self.ssr_handler.ssr_data.index.max()
-            self.logger.info(f"Date range in SSR data: {min_ssr_date} to {max_ssr_date}")
-            
-            # Make sure we're working with datetime index or date column
-            if not isinstance(data.index, pd.DatetimeIndex) and 'date' in data.columns:
-                dates = pd.to_datetime(data['date'])
-            else:
-                dates = data.index
-            
-            for i, date in enumerate(dates):
-                # Make sure date is a timestamp
-                if not isinstance(date, pd.Timestamp):
-                    date = pd.Timestamp(date)
-                
-                # Handle dates before SSR data starts
-                if date < min_ssr_date:
-                    signals.iloc[i] = np.nan if self.handle_missing == 'nan' else 0
-                    continue
-                
-                # Get SSR value for this date
-                ssr_value = self.get_ssr_value_for_date(date)
-                
-                # Set signal based on SSR value
-                if ssr_value is None:
-                    signals.iloc[i] = np.nan if self.handle_missing == 'nan' else 0
-                else:
-                    # 1 when SSR is positive, 0 otherwise
-                    signals.iloc[i] = 1 if ssr_value > 0 else 0
-            
-            # Fill any remaining NaN values with 0
-            if self.handle_missing == 'zero':
-                signals = signals.fillna(0)
-                
-            return signals
-            
-        except Exception as e:
-            self.logger.error(f"Error calculating SSR RiskOn signal for {asset_id}: {str(e)}")
-            return pd.Series(index=data.index)
+        # Generate signal - risk-on when SSR is decreasing
+        signal = ((data['ssr_change'] < -0.05) & (data['ssr'] < data['ssr'].rolling(30).mean())).astype(int)
+        
+        return signal
 
 
 @register_signal
 class SSR_RiskOff(SSRSignalBase):
-    """Signal that indicates negative SSR (risk-off market conditions).
+    """Signal indicating risk-off sentiment based on SSR increasing."""
     
-    Returns:
-        1: When SSR is negative (< 0)
-        0: When SSR is positive or not available
-    """
-    
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
-        """Initialize the signal.
+    def _create_signal(self, data: pd.DataFrame) -> pd.Series:
+        """Create risk-off signal based on SSR values.
+        
+        Risk-off is indicated by increasing SSR (stablecoins accumulating).
         
         Args:
-            params (dict, optional): Parameters for the signal.
-                data_path (str): Path to the SSR CSV file
-                handle_missing (str): How to handle missing data points: 'zero' or 'nan' (default: 'zero')
-        """
-        super().__init__(params)
-        self.handle_missing = params.get('handle_missing', 'zero')
-    
-    def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
-        """Calculate the signal values.
-        
-        Args:
-            data (pd.DataFrame): DataFrame with price data (used for dates).
-            asset_id (str): ID of the asset.
+            data: DataFrame with price and SSR data
             
         Returns:
-            pd.Series: Series with signal values (1 or 0) indexed by date.
-                       1 when SSR is negative (risk-off)
-                       0 when SSR is positive or not available
+            Series with signal values
         """
-        if not self.validate(data, asset_id):
-            # Return empty series with same index as data
+        if 'ssr' not in data.columns:
             return pd.Series(index=data.index)
+            
+        # Calculate SSR change
+        data['ssr_change'] = data['ssr'].pct_change(periods=7)
         
-        try:
-            # Calculate SSR signal for each date in the DataFrame
-            signals = pd.Series(index=data.index)
-            
-            # Get the range of dates in SSR data
-            min_ssr_date = self.ssr_handler.ssr_data.index.min()
-            max_ssr_date = self.ssr_handler.ssr_data.index.max()
-            self.logger.info(f"Date range in SSR data: {min_ssr_date} to {max_ssr_date}")
-            
-            # Make sure we're working with datetime index or date column
-            if not isinstance(data.index, pd.DatetimeIndex) and 'date' in data.columns:
-                dates = pd.to_datetime(data['date'])
-            else:
-                dates = data.index
-            
-            for i, date in enumerate(dates):
-                # Make sure date is a timestamp
-                if not isinstance(date, pd.Timestamp):
-                    date = pd.Timestamp(date)
-                
-                # Handle dates before SSR data starts
-                if date < min_ssr_date:
-                    signals.iloc[i] = np.nan if self.handle_missing == 'nan' else 0
-                    continue
-                
-                # Get SSR value for this date
-                ssr_value = self.get_ssr_value_for_date(date)
-                
-                # Set signal based on SSR value
-                if ssr_value is None:
-                    signals.iloc[i] = np.nan if self.handle_missing == 'nan' else 0
-                else:
-                    # 1 when SSR is negative, 0 otherwise
-                    signals.iloc[i] = 1 if ssr_value < 0 else 0
-            
-            # Fill any remaining NaN values with 0
-            if self.handle_missing == 'zero':
-                signals = signals.fillna(0)
-                
-            return signals
-            
-        except Exception as e:
-            self.logger.error(f"Error calculating SSR RiskOff signal for {asset_id}: {str(e)}")
-            return pd.Series(index=data.index)
+        # Generate signal - risk-off when SSR is increasing
+        signal = ((data['ssr_change'] > 0.05) & (data['ssr'] > data['ssr'].rolling(30).mean())).astype(int)
+        
+        return signal
 
 

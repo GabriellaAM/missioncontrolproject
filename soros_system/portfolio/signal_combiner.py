@@ -92,8 +92,9 @@ class SignalCombiner:
             signal_values = {}
             for signal in signals:
                 try:
-                    # Calculate signal if it has a positive weight
-                    if signal.name in weights and weights[signal.name] > 0:
+                    # Calculate signal for all weights, regardless of sign
+                    # We need negative weights for signals that predict negative returns
+                    if signal.name in weights and weights[signal.name] != 0:
                         signal_series = signal.calculate(data, asset_id)
                         signal_values[signal.name] = signal_series
                 except Exception as e:
@@ -111,25 +112,38 @@ class SignalCombiner:
             # Calculate combined signal for each date
             combined_signal = pd.Series(index=signal_df.index)
             
+            # Separate positive and negative weights
+            pos_weights = {k: v for k, v in weights.items() if v > 0}
+            neg_weights = {k: v for k, v in weights.items() if v < 0}
+            
             for date in signal_df.index:
                 row = signal_df.loc[date]
                 
                 # Get valid signals for this date
                 valid_signals = {}
                 for name, value in row.items():
-                    if pd.notna(value) and name in weights and weights[name] > 0:
-                        valid_signals[name] = value
+                    if pd.notna(value) and name in weights and weights[name] != 0:
+                        # For signals with negative weights, invert the signal value
+                        # If signal is 1 and weight is negative, we want it to reduce combined score
+                        if weights[name] < 0:
+                            # Use 1-value to invert binary signal (1->0, 0->1)
+                            # Then multiply by the negative weight to make it positive
+                            valid_signals[name] = (1-value) * abs(weights[name])
+                        else:
+                            valid_signals[name] = value * weights[name]
                 
                 # If no valid signals for this date, set to NaN
                 if not valid_signals:
                     combined_signal.loc[date] = np.nan
                     continue
                 
-                # Calculate weighted sum of signals
-                total_weight = sum(weights[name] for name in valid_signals.keys())
-                weighted_sum = sum(valid_signals[name] * weights[name] for name in valid_signals.keys())
+                # Calculate weighted sum
+                weighted_sum = sum(valid_signals.values())
                 
-                # Normalize by total weight
+                # Calculate total weight used (absolute values)
+                total_weight = sum(abs(weights[name]) for name in valid_signals.keys())
+                
+                # Normalize by total weight used
                 if total_weight > 0:
                     combined_signal.loc[date] = weighted_sum / total_weight
                 else:

@@ -151,6 +151,11 @@ class SignalEvaluator:
                 effectiveness_by_period, distribution_stats
             )
             
+            # Determine optimal holding period
+            optimal_period, optimal_sortino = self.determine_optimal_holding_period(
+                effectiveness_by_period, distribution_stats
+            )
+            
             # Create evaluation result
             evaluation = {
                 'signal_name': signal.name,
@@ -161,6 +166,8 @@ class SignalEvaluator:
                 'overall_effectiveness': overall_effectiveness,
                 'metrics': metrics,
                 'weight': weight,
+                'optimal_holding_period': optimal_period,
+                'optimal_sortino': optimal_sortino,
                 'valid': True,
                 'timestamp': datetime.now().isoformat()
             }
@@ -177,7 +184,8 @@ class SignalEvaluator:
                 'asset_id': asset_id,
                 'valid': False,
                 'error': str(e),
-                'weight': 0.0
+                'weight': 0.0,
+                'optimal_holding_period': 0
             }
     
     def evaluate_multiple_signals(
@@ -207,7 +215,8 @@ class SignalEvaluator:
                     'asset_id': asset_id,
                     'valid': False,
                     'error': str(e),
-                    'weight': 0.0
+                    'weight': 0.0,
+                    'optimal_holding_period': 0
                 }
         
         return results
@@ -258,6 +267,96 @@ class SignalEvaluator:
         
         return normalized_weights
     
+    def determine_optimal_holding_period(
+        self, 
+        effectiveness_by_period: Dict[int, Dict[str, Any]], 
+        distribution_stats: Dict[int, Dict[str, Dict[str, float]]],
+        candidate_periods: List[int] = None
+    ) -> Tuple[int, float]:
+        """Determine the optimal holding period for a signal.
+        
+        Args:
+            effectiveness_by_period: Effectiveness evaluations for different periods
+            distribution_stats: Distribution statistics for returns
+            candidate_periods: List of periods to consider (default: [7, 14, 30])
+            
+        Returns:
+            tuple: (optimal_period, sortino_ratio)
+        """
+        # Default candidate periods if none provided
+        candidate_periods = candidate_periods or [7, 14, 21, 28]
+        
+        # Filter to only include candidate periods that exist in effectiveness_by_period
+        valid_periods = [p for p in candidate_periods if p in effectiveness_by_period]
+        
+        if not valid_periods:
+            self.logger.warning("No valid periods found in evaluations")
+            # Find the highest available period as a fallback
+            available_periods = list(effectiveness_by_period.keys())
+            if available_periods:
+                default_period = max(available_periods)
+                self.logger.info(f"Using highest available period ({default_period}) as fallback")
+                return default_period, 0.0
+            return 14, 0.0  # Default fallback if no periods available
+        
+        # Calculate Sortino ratio for each period
+        sortino_ratios = {}
+        for period in valid_periods:
+            # Check if this period is effective
+            period_data = effectiveness_by_period.get(period, {})
+            effectiveness = period_data.get('effectiveness', {})
+            is_effective = effectiveness.get('overall_effective', False)
+            
+            # Skip ineffective periods
+            if not is_effective:
+                continue
+            
+            # Get return statistics for positive signal
+            if period not in distribution_stats or 'positive' not in distribution_stats[period]:
+                continue
+                
+            pos_stats = distribution_stats[period]['positive']
+            
+            # Calculate Sortino ratio using mean and downside deviation
+            mean_return = pos_stats.get('mean', 0.0)
+            
+            # Extract negative returns for downside deviation calculation
+            neg_returns = []
+            for val in pos_stats.values():
+                if isinstance(val, (int, float)) and val < 0:
+                    neg_returns.append(val)
+            
+            # If we have negative returns, calculate downside deviation
+            if neg_returns:
+                downside_std = np.std(neg_returns)
+            else:
+                # If no negative returns, use percentiles to estimate
+                pct_10 = pos_stats.get('pct_10', 0.0)
+                if pct_10 < 0:
+                    # Approximate downside deviation using lowest percentile
+                    downside_std = abs(pct_10)
+                else:
+                    # If even the 10th percentile is positive, use a small value
+                    downside_std = 0.01
+            
+            # Calculate Sortino ratio (avoid division by zero)
+            sortino = mean_return / downside_std if downside_std > 0 else 0.0
+            
+            sortino_ratios[period] = sortino
+        
+        # If no effective periods with valid Sortino ratios, use the longest candidate period
+        if not sortino_ratios:
+            self.logger.warning("No periods with significant effectiveness and valid Sortino ratios found")
+            return max(valid_periods), 0.0
+        
+        # Find period with highest Sortino ratio
+        optimal_period = max(sortino_ratios.items(), key=lambda x: x[1])[0]
+        optimal_sortino = sortino_ratios[optimal_period]
+        
+        self.logger.info(f"Optimal holding period: {optimal_period} days (Sortino: {optimal_sortino:.4f})")
+        
+        return optimal_period, optimal_sortino
+    
     def _normalize_weights(self, weights: Dict[str, float]) -> Dict[str, float]:
         """Normalize weights to sum to 1.0.
         
@@ -301,6 +400,7 @@ class SignalEvaluator:
         effect_sizes = []
         confidences = []
         mean_diffs = []
+        directions = []  # Track direction of each period
         
         for period, period_data in effectiveness_by_period.items():
             effectiveness = period_data.get('effectiveness', {})
@@ -312,6 +412,7 @@ class SignalEvaluator:
                 # Collect metrics
                 effect_sizes.append(abs(effectiveness.get('effect_size', 0.0)))
                 confidences.append(effectiveness.get('confidence', 0.0))
+                directions.append(effectiveness.get('direction', 0))
                 
                 # Get mean difference from stats
                 if (period in distribution_stats and 
@@ -321,37 +422,46 @@ class SignalEvaluator:
                     neg_mean = distribution_stats[period]['negative'].get('mean', 0.0)
                     mean_diffs.append(pos_mean - neg_mean)
         
-        # Calculate average metrics
-        avg_effect_size = np.mean(effect_sizes) if effect_sizes else 0.0
-        avg_confidence = np.mean(confidences) if confidences else 0.0
-        avg_mean_diff = np.mean(mean_diffs) if mean_diffs else 0.0
+        # Determine overall effectiveness (at least 25% of periods must be effective)
+        ratio_effective = effective_periods / total_periods if total_periods > 0 else 0
+        overall_effective = ratio_effective >= 0.25 and effective_periods > 0
         
-        # Calculate effectiveness ratio
-        effectiveness_ratio = effective_periods / total_periods if total_periods > 0 else 0.0
-        
-        # Determine overall effectiveness
-        overall_effective = effectiveness_ratio >= 0.5 and avg_effect_size > 0.2
-        
-        # Calculate weight based on metrics
-        if overall_effective:
-            # Weight is based on effect size, confidence, and mean difference
-            weight = (avg_effect_size * 0.5) + (avg_confidence * 0.3) + (avg_mean_diff * 100 * 0.2)
+        # Calculate weight using weighted combination of metrics
+        if overall_effective and effect_sizes:
+            # Calculate mean metrics
+            avg_effect_size = np.mean(effect_sizes)
+            avg_confidence = np.mean(confidences)
+            
+            # Determine majority direction
+            mean_direction = np.mean(directions)
+            direction = 1 if mean_direction >= 0 else -1
+            
+            # Calculate mean difference magnitude
+            if mean_diffs:
+                avg_mean_diff = np.mean(mean_diffs)
+                avg_mean_diff_magnitude = abs(avg_mean_diff)
+            else:
+                avg_mean_diff_magnitude = 0.0
+            
+            # Calculate weighted sum (weighted by importance)
+            # Formula: weight = effect_size × confidence × direction
+            weight = avg_effect_size * avg_confidence * direction
+            
+            metrics = {
+                'avg_effect_size': avg_effect_size,
+                'avg_confidence': avg_confidence,
+                'direction': direction,
+                'avg_mean_diff': avg_mean_diff_magnitude,
+                'ratio_effective': ratio_effective
+            }
         else:
             weight = 0.0
-        
-        # Collect metrics for analysis
-        metrics = {
-            'effective_periods': effective_periods,
-            'total_periods': total_periods,
-            'effectiveness_ratio': effectiveness_ratio,
-            'avg_effect_size': avg_effect_size,
-            'avg_confidence': avg_confidence,
-            'avg_mean_diff': avg_mean_diff
-        }
+            metrics = {
+                'ratio_effective': ratio_effective
+            }
         
         return overall_effective, weight, metrics
     
-    def clear_cache(self) -> None:
+    def clear_cache(self):
         """Clear the evaluations cache."""
-        self.evaluations_cache = {}
-        self.logger.info("Cleared evaluations cache") 
+        self.evaluations_cache = {} 

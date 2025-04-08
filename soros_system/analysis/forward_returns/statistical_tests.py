@@ -269,8 +269,9 @@ class StatisticalTester:
             # Calculate skewness and kurtosis
             pos_skew = stats.skew(positive_returns)
             neg_skew = stats.skew(negative_returns)
-            pos_kurt = stats.kurtosis(positive_returns)
-            neg_kurt = stats.kurtosis(negative_returns)
+            # Use fisher=False to get true kurtosis rather than excess kurtosis (kurtosis - 3)
+            pos_kurt = stats.kurtosis(positive_returns, fisher=False)
+            neg_kurt = stats.kurtosis(negative_returns, fisher=False)
             
             # Store results
             results['test'] = 'Skew and Kurtosis'
@@ -285,7 +286,7 @@ class StatisticalTester:
             # Compare with all returns if provided
             if all_returns is not None and len(all_returns) > 20:
                 all_skew = stats.skew(all_returns)
-                all_kurt = stats.kurtosis(all_returns)
+                all_kurt = stats.kurtosis(all_returns, fisher=False)
                 
                 results['all_skew'] = all_skew
                 results['all_kurtosis'] = all_kurt
@@ -353,13 +354,14 @@ class StatisticalTester:
         evaluation = {
             'valid_tests': 0,
             'significant_tests': 0,
-            'mean_superiority': False,
-            'median_superiority': False,
+            'mean_difference_significant': False,
+            'median_difference_significant': False,
             'distribution_difference': False,
             'favorable_skew': False,
             'overall_effective': False,
             'confidence': 0.0,
-            'effect_size': 0.0
+            'effect_size': 0.0,
+            'direction': 0  # 1 for positive, -1 for negative
         }
         
         # Count valid and significant tests
@@ -368,21 +370,27 @@ class StatisticalTester:
             if test_results['t_test'].get('significant', False):
                 evaluation['significant_tests'] += 1
                 
-                # Check if positive returns have higher mean
+                # Check direction of mean difference (significant in either direction)
                 mean_diff = test_results['t_test'].get('mean_difference', 0)
-                if mean_diff > 0:
-                    evaluation['mean_superiority'] = True
-                    evaluation['effect_size'] = test_results['t_test'].get('effect_size', 0)
+                evaluation['mean_difference_significant'] = True
+                
+                # Store effect size (magnitude) and direction
+                effect_size = test_results['t_test'].get('effect_size', 0)
+                evaluation['effect_size'] = abs(effect_size)  # Use absolute value for magnitude
+                evaluation['direction'] = 1 if mean_diff > 0 else -1
         
         if 'mann_whitney' in test_results and test_results['mann_whitney'].get('valid', False):
             evaluation['valid_tests'] += 1
             if test_results['mann_whitney'].get('significant', False):
                 evaluation['significant_tests'] += 1
                 
-                # Check if positive returns have higher median
+                # Check for significant median difference (either direction)
                 median_diff = test_results['mann_whitney'].get('median_difference', 0)
-                if median_diff > 0:
-                    evaluation['median_superiority'] = True
+                evaluation['median_difference_significant'] = True
+                
+                # Set direction if not already set by t-test
+                if evaluation['direction'] == 0:
+                    evaluation['direction'] = 1 if median_diff > 0 else -1
         
         if 'ks_test' in test_results and test_results['ks_test'].get('valid', False):
             evaluation['valid_tests'] += 1
@@ -403,8 +411,8 @@ class StatisticalTester:
         if evaluation['valid_tests'] > 0:
             evaluation['confidence'] = evaluation['significant_tests'] / evaluation['valid_tests']
         
-        # Overall effectiveness criteria
-        if (evaluation['mean_superiority'] or evaluation['median_superiority']) and evaluation['confidence'] >= 0.5:
+        # Overall effectiveness criteria - modified to consider significance in either direction
+        if (evaluation['mean_difference_significant'] or evaluation['median_difference_significant']) and evaluation['confidence'] >= 0.5:
             evaluation['overall_effective'] = True
         
         return evaluation

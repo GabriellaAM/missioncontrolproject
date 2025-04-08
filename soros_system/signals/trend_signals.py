@@ -32,6 +32,9 @@ class TrendSignalBase(SignalBase):
         
         # Store a reference to data to help with asset_id lookup
         self.data = None
+        
+        # Track if we've already warned about missing BTC column
+        self._warned_missing_btc = False
     
     def get_required_columns(self) -> List[str]:
         """Get required columns for the signal calculation."""
@@ -98,9 +101,11 @@ class TrendSignalBase(SignalBase):
                 self.params['_btc_column'] = btc_cols[0]
                 return True
                 
-            # If no suitable column found, log and return False
-            self.logger.warning(f"Missing required BTC column for {asset_id}")
-            self.logger.debug(f"Available columns: {data.columns.tolist()}")
+            # If no suitable column found, log and return False - but only once per instance
+            if not self._warned_missing_btc:
+                self.logger.warning(f"Missing required BTC column for {asset_id}")
+                self.logger.debug(f"Available columns: {data.columns.tolist()}")
+                self._warned_missing_btc = True
             return False
         
         # For USD quote type, require 'close' column

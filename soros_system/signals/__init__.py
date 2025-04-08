@@ -20,7 +20,9 @@ from . import volatility_signals
 
 # Import specific signals for easy access
 from .trend_signals import (
-    ShortTermTrendSignal, MediumTermTrendSignal, LongTermTrendSignal
+    ShortTermNeutralUSD, MediumTermNeutralUSD, LongTermNeutralUSD,
+    ShortTermStrongBullUSD, MediumTermStrongBullUSD, LongTermStrongBullUSD,
+    ShortTermStrongBearUSD, MediumTermStrongBearUSD, LongTermStrongBearUSD
 )
 from .rsi_signals import (
     RSI_Oversold_USD, RSI_Overbought_USD, RSI_Bullish_USD, RSI_Bearish_USD,
@@ -36,10 +38,16 @@ __all__ = [
     'get_all_signals',
     'get_signal_info',
     
-    # Trend signals
-    'ShortTermTrendSignal',
-    'MediumTermTrendSignal',
-    'LongTermTrendSignal',
+    # Trend signals - use existing specific classes instead
+    'ShortTermNeutralUSD',
+    'MediumTermNeutralUSD',
+    'LongTermNeutralUSD',
+    'ShortTermStrongBullUSD',
+    'MediumTermStrongBullUSD',
+    'LongTermStrongBullUSD',
+    'ShortTermStrongBearUSD',
+    'MediumTermStrongBearUSD',
+    'LongTermStrongBearUSD',
     
     # RSI signals
     'RSI_Oversold_USD',

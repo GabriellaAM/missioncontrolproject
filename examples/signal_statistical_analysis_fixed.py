@@ -286,6 +286,7 @@ class BinarySignalEvaluator:
         effect_sizes = []
         confidences = []
         mean_diffs = []
+        directions = []  # Track direction of each period
         
         for period, period_data in effectiveness_by_period.items():
             effectiveness = period_data.get('effectiveness', {})
@@ -297,6 +298,7 @@ class BinarySignalEvaluator:
                 # Collect metrics
                 effect_sizes.append(abs(effectiveness.get('effect_size', 0.0)))
                 confidences.append(effectiveness.get('confidence', 0.0))
+                directions.append(effectiveness.get('direction', 0))
                 
                 # Get mean difference from stats
                 if (period in distribution_stats and 
@@ -311,6 +313,11 @@ class BinarySignalEvaluator:
         avg_confidence = np.mean(confidences) if confidences else 0.0
         avg_mean_diff = np.mean(mean_diffs) if mean_diffs else 0.0
         
+        # Determine dominant direction (positive or negative signal)
+        # If there are more periods with positive direction, the signal is bullish
+        # Otherwise, it's bearish
+        direction = 1 if sum(1 for d in directions if d > 0) >= sum(1 for d in directions if d < 0) else -1
+        
         # Calculate effectiveness ratio
         effectiveness_ratio = effective_periods / total_periods if total_periods > 0 else 0.0
         
@@ -318,10 +325,11 @@ class BinarySignalEvaluator:
         metrics = {
             'effective_periods': effective_periods,
             'total_periods': total_periods,
-            'effectiveness_ratio': effectiveness_ratio,
+            'effectiveness_ratio': effectiveness_ratio, 
             'avg_effect_size': avg_effect_size,
             'avg_confidence': avg_confidence, 
-            'avg_mean_diff': avg_mean_diff
+            'avg_mean_diff': avg_mean_diff,
+            'direction': direction
         }
         
         # FIXED: Determine overall effectiveness with a lower effect size threshold
@@ -331,10 +339,14 @@ class BinarySignalEvaluator:
         # Calculate weight based on metrics
         if overall_effective:
             # Weight is based on effect size, confidence, and mean difference
-            weight = (avg_effect_size * 0.5) + (avg_confidence * 0.3) + (abs(avg_mean_diff) * 100 * 0.2)
+            weight_magnitude = (avg_effect_size * 0.5) + (avg_confidence * 0.3) + (abs(avg_mean_diff) * 100 * 0.2)
+            # Apply direction to weight
+            weight = weight_magnitude * direction
         else:
             # FIXED: Still assign a small weight even if not "overall effective"
-            weight = (avg_effect_size * 0.25) + (avg_confidence * 0.15) + (abs(avg_mean_diff) * 100 * 0.1)
+            weight_magnitude = (avg_effect_size * 0.25) + (avg_confidence * 0.15) + (abs(avg_mean_diff) * 100 * 0.1)
+            # Apply direction to weight
+            weight = weight_magnitude * direction
             if effectiveness_ratio < 0.3 or avg_effect_size < 0.1:
                 weight = 0.0
         
@@ -374,6 +386,8 @@ def plot_binary_return_distributions(positive_returns, negative_returns, signal_
     Signal=0 Std: {negative_returns.std():.4f}
     Signal=1 Skew: {stats.skew(positive_returns):.4f}
     Signal=0 Skew: {stats.skew(negative_returns):.4f}
+    Signal=1 Kurt: {stats.kurtosis(positive_returns):.4f}
+    Signal=0 Kurt: {stats.kurtosis(negative_returns):.4f}
     Signal=1 Count: {len(positive_returns)}
     Signal=0 Count: {len(negative_returns)}
     """
@@ -417,6 +431,7 @@ def analyze_binary_signal(evaluator, signal, data, asset_id='ethereum'):
         print(f"Average effect size: {metrics['avg_effect_size']:.4f}")
         print(f"Average confidence: {metrics['avg_confidence']:.4f}")
         print(f"Average mean difference: {metrics['avg_mean_diff']:.4f}")
+        print(f"Direction: {'Bullish (positive)' if metrics.get('direction', 0) > 0 else 'Bearish (negative)'}")
     
     # Analyze each period
     for period, period_data in evaluation.get('effectiveness_by_period', {}).items():
@@ -443,18 +458,56 @@ def analyze_binary_signal(evaluator, signal, data, asset_id='ethereum'):
                     
                     # Print test results
                     print(f"\nPeriod {period} test results:")
-                    for test_name, test_result in test_results.items():
-                        if test_result.get('valid', False):
-                            print(f"\n{test_name}:")
-                            print(f"Significant: {test_result.get('significant', False)}")
-                            print(f"P-value: {test_result.get('p_value', 'N/A')}")
-                            
-                            if 'effect_size' in test_result:
-                                print(f"Effect size: {test_result['effect_size']:.4f}")
-                            if 'mean_difference' in test_result:
-                                print(f"Mean difference: {test_result['mean_difference']:.4f}")
-                            if 'median_difference' in test_result:
-                                print(f"Median difference: {test_result['median_difference']:.4f}")
+                    
+                    if 't_test' in test_results:
+                        t_test = test_results['t_test']
+                        print(f"T-test (mean comparison):")
+                        print(f"  Significant: {t_test.get('significant', False)}")
+                        print(f"  P-value: {t_test.get('p_value', 'N/A'):.4f}")
+                        print(f"  Mean difference: {t_test.get('mean_difference', 'N/A'):.4f}")
+                        print(f"  Effect size: {t_test.get('effect_size', 'N/A'):.4f}")
+                        print(f"  Direction: {'Positive' if t_test.get('mean_difference', 0) > 0 else 'Negative'}")
+                    
+                    if 'mann_whitney' in test_results:
+                        mw_test = test_results['mann_whitney']
+                        print(f"Mann-Whitney (distribution comparison):")
+                        print(f"  Significant: {mw_test.get('significant', False)}")
+                        print(f"  P-value: {mw_test.get('p_value', 'N/A'):.4f}")
+                        print(f"  Median difference: {mw_test.get('median_difference', 'N/A'):.4f}")
+                    
+                    if 'ks_test' in test_results:
+                        ks_test = test_results['ks_test']
+                        print(f"Kolmogorov-Smirnov (distribution shape):")
+                        print(f"  Significant: {ks_test.get('significant', False)}")
+                        print(f"  P-value: {ks_test.get('p_value', 'N/A'):.4f}")
+                        print(f"  Statistic: {ks_test.get('statistic', 'N/A'):.4f}")
+                    
+                    if 'skew_kurt' in test_results:
+                        sk_test = test_results['skew_kurt']
+                        print(f"Skewness & Kurtosis:")
+                        print(f"  Signal=1 skew: {sk_test.get('positive_skew', 'N/A'):.4f}")
+                        print(f"  Signal=0 skew: {sk_test.get('negative_skew', 'N/A'):.4f}")
+                        
+                        # Get and print raw kurtosis values for debugging
+                        pos_kurt_raw = stats.kurtosis(positive_returns)
+                        neg_kurt_raw = stats.kurtosis(negative_returns)
+                        pos_kurt_fisher_false = stats.kurtosis(positive_returns, fisher=False)
+                        neg_kurt_fisher_false = stats.kurtosis(negative_returns, fisher=False)
+                        
+                        print(f"  Signal=1 kurt: {sk_test.get('positive_kurtosis', 'N/A'):.4f}")
+                        print(f"  Signal=0 kurt: {sk_test.get('negative_kurtosis', 'N/A'):.4f}")
+                        print(f"  Raw calculation (Signal=1 kurt): {pos_kurt_raw}")
+                        print(f"  Raw calculation (Signal=0 kurt): {neg_kurt_raw}")
+                        print(f"  Raw with fisher=False (Signal=1 kurt): {pos_kurt_fisher_false}")
+                        print(f"  Raw with fisher=False (Signal=0 kurt): {neg_kurt_fisher_false}")
+                    
+                    # Get effectiveness for this period
+                    effectiveness = period_data.get('effectiveness', {})
+                    print(f"\nEffectiveness Summary for {period}-day period:")
+                    print(f"Overall effective: {effectiveness.get('overall_effective', False)}")
+                    print(f"Confidence: {effectiveness.get('confidence', 0.0):.4f}")
+                    print(f"Effect size: {effectiveness.get('effect_size', 0.0):.4f}")
+                    print(f"Direction: {'Bullish' if effectiveness.get('direction', 0) > 0 else 'Bearish'}")
     
     return evaluation
 
