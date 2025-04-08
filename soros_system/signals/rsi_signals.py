@@ -8,7 +8,7 @@ Each signal returns 1 if the specified condition is detected, 0 otherwise.
 import pandas as pd
 import numpy as np
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 from .signal_base import SignalBase
 from .signal_registry import register_signal
@@ -25,10 +25,20 @@ class RSISignalBase(SignalBase):
         self.quote_type = 'USD'  # Will be overridden by subclasses
         self.rsi_length = self.params.get('rsi_length', 14)
         self.rsi_calculator = RSICalculator()
+        # Store a reference to data to help with asset_id lookup
+        self.data = None
     
     def get_required_columns(self) -> List[str]:
         """Get required columns for the signal calculation."""
-        return ['close'] if self.quote_type == 'USD' else [f'{self._get_asset_id()}_btc']
+        if self.quote_type == 'USD':
+            return ['close']
+        else:
+            # Store asset_id in params when available to ensure this works correctly
+            asset_id = self._get_asset_id()
+            # If we don't have an asset_id yet, return a generic column
+            if not asset_id:
+                return ['_btc']
+            return [f'{asset_id}_btc']
     
     def get_min_required_samples(self) -> int:
         """Get minimum required samples for the signal calculation."""
@@ -40,6 +50,13 @@ class RSISignalBase(SignalBase):
     
     def validate(self, data: pd.DataFrame, asset_id: str) -> bool:
         """Validate the data for signal calculation."""
+        # Store data reference for possible asset_id lookup
+        self.data = data
+        
+        # Store asset_id in params if not already there
+        if not self.params.get('asset_id'):
+            self.params['asset_id'] = asset_id
+            
         if data is None or data.empty:
             self.logger.warning(f"Empty data provided for {asset_id}")
             return False
@@ -52,13 +69,32 @@ class RSISignalBase(SignalBase):
             )
             return False
         
-        # Check for required columns
-        required_cols = self.get_required_columns()
-        if not all(col in data.columns for col in required_cols):
-            missing_cols = [col for col in required_cols if col not in data.columns]
-            self.logger.warning(f"Missing required columns for {asset_id}: {missing_cols}")
+        # For BTC quote type, check if the expected column exists
+        if self.quote_type == 'BTC':
+            # Try with asset_id prefix
+            btc_col = f'{asset_id}_btc'
+            if btc_col in data.columns:
+                return True
+                
+            # Try finding any column ending with _btc (for flexibility)
+            btc_cols = [col for col in data.columns if col.endswith('_btc') and col not in 
+                        [c for c in data.columns if c.endswith(('_btc_open', '_btc_high', '_btc_low'))]]
+            
+            if btc_cols:
+                # Update our internal reference to use this column
+                self.params['_btc_column'] = btc_cols[0]
+                return True
+                
+            # If no suitable column found, log and return False
+            self.logger.warning(f"Missing required BTC column for {asset_id}")
+            self.logger.debug(f"Available columns: {data.columns.tolist()}")
             return False
         
+        # For USD quote type, require 'close' column
+        elif 'close' not in data.columns:
+            self.logger.warning(f"Missing 'close' column for {asset_id}")
+            return False
+            
         return True
 
 
@@ -70,6 +106,7 @@ class RSIOversoldBase(RSISignalBase):
         """Initialize the signal."""
         super().__init__(params)
         self.oversold = self.params.get('oversold', 30)
+        self.window = self.params.get('rsi_length', 14)
     
     def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
         """Calculate the signal values.
@@ -94,24 +131,20 @@ class RSIOversoldBase(RSISignalBase):
         price_col = 'close' if self.quote_type == 'USD' else f'{asset_id}_btc'
         
         try:
-            # Calculate RSI using the RSI calculator
-            rsi_data = self.rsi_calculator.calculate_smooth_rsi(
-                data, price_col, rsi_length=self.rsi_length, roc_length=self.rsi_length
-            )
-            
-            # Get the RSI column name
-            rsi_col = f'RSI_{price_col}'
-            
-            if rsi_col not in rsi_data.columns:
-                self.logger.warning(f"RSI column {rsi_col} not found for {asset_id}")
+            # Use the simpler RSI calculation directly on the price column
+            if price_col not in data.columns:
+                self.logger.warning(f"Price column {price_col} not found for {asset_id}")
                 return pd.Series(index=data.index)
+                
+            # Ensure data is numeric
+            prices = pd.to_numeric(data[price_col], errors='coerce')
             
-            # Create signal based on oversold threshold
-            # 1 when RSI is below the oversold threshold (buy signal)
-            # 0 otherwise (no signal)
-            signal = rsi_data[rsi_col].apply(
-                lambda x: 1 if pd.notna(x) and x < self.oversold else 0
-            )
+            # Calculate RSI directly
+            rsi_values = self.rsi_calculator.calculate_rsi(prices, window=self.window)
+            
+            # Create signal based on oversold threshold (RSI < 30)
+            signal = pd.Series(0, index=data.index)
+            signal.loc[rsi_values < self.oversold] = 1
             
             return signal
             
@@ -128,6 +161,7 @@ class RSIOverboughtBase(RSISignalBase):
         """Initialize the signal."""
         super().__init__(params)
         self.overbought = self.params.get('overbought', 70)
+        self.window = self.params.get('rsi_length', 14)
     
     def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
         """Calculate the signal values.
@@ -152,24 +186,20 @@ class RSIOverboughtBase(RSISignalBase):
         price_col = 'close' if self.quote_type == 'USD' else f'{asset_id}_btc'
         
         try:
-            # Calculate RSI using the RSI calculator
-            rsi_data = self.rsi_calculator.calculate_smooth_rsi(
-                data, price_col, rsi_length=self.rsi_length, roc_length=self.rsi_length
-            )
-            
-            # Get the RSI column name
-            rsi_col = f'RSI_{price_col}'
-            
-            if rsi_col not in rsi_data.columns:
-                self.logger.warning(f"RSI column {rsi_col} not found for {asset_id}")
+            # Use the simpler RSI calculation directly on the price column
+            if price_col not in data.columns:
+                self.logger.warning(f"Price column {price_col} not found for {asset_id}")
                 return pd.Series(index=data.index)
+                
+            # Ensure data is numeric
+            prices = pd.to_numeric(data[price_col], errors='coerce')
             
-            # Create signal based on overbought threshold
-            # 1 when RSI is above the overbought threshold (sell signal)
-            # 0 otherwise (no signal)
-            signal = rsi_data[rsi_col].apply(
-                lambda x: 1 if pd.notna(x) and x > self.overbought else 0
-            )
+            # Calculate RSI directly
+            rsi_values = self.rsi_calculator.calculate_rsi(prices, window=self.window)
+            
+            # Create signal based on overbought threshold (RSI > 70)
+            signal = pd.Series(0, index=data.index)
+            signal.loc[rsi_values > self.overbought] = 1
             
             return signal
             

@@ -82,7 +82,7 @@ class ForwardReturnsCalculator:
         
         Args:
             data (pd.DataFrame): DataFrame with forward returns
-            signal_series (pd.Series): Series with signal values (+1, -1, or None)
+            signal_series (pd.Series): Series with signal values (1 or 0)
             min_samples (int): Minimum samples required for each condition
             
         Returns:
@@ -121,8 +121,8 @@ class ForwardReturnsCalculator:
         conditional_returns = {}
         
         # Filter returns based on signal value
-        positive_signal = df[df['signal'] == 1]
-        negative_signal = df[df['signal'] == -1]
+        positive_signal = df[df['signal'] == 1]  # Signal is active
+        negative_signal = df[df['signal'] == 0]  # Signal is inactive
         all_signal = df  # All data, regardless of signal
         
         # Calculate sample counts
@@ -133,8 +133,8 @@ class ForwardReturnsCalculator:
         }
         
         # Log sample counts
-        self.logger.info(f"Signal distribution: {sample_counts['positive']} positive, "
-                        f"{sample_counts['negative']} negative, {sample_counts['all']} total")
+        self.logger.info(f"Signal distribution: {sample_counts['positive']} positive (1), "
+                        f"{sample_counts['negative']} negative (0), {sample_counts['all']} total")
         
         # Check if we have sufficient samples
         has_positive = sample_counts['positive'] >= min_samples

@@ -29,10 +29,21 @@ class TrendSignalBase(SignalBase):
         # Each subclass should define these:
         self.term = "short_term"  # short_term, medium_term, long_term, overall
         self.trend_value = None  # -2, -1, 0, 1, 2
+        
+        # Store a reference to data to help with asset_id lookup
+        self.data = None
     
     def get_required_columns(self) -> List[str]:
         """Get required columns for the signal calculation."""
-        return ['close'] if self.quote_type == 'USD' else [f'{self._get_asset_id()}_btc']
+        if self.quote_type == 'USD':
+            return ['close']
+        else:
+            # Store asset_id in params when available to ensure this works correctly
+            asset_id = self._get_asset_id()
+            # If we don't have an asset_id yet, return a generic column
+            if not asset_id:
+                return ['_btc']
+            return [f'{asset_id}_btc']
     
     def get_min_required_samples(self) -> int:
         """Get minimum required samples for the signal calculation."""
@@ -52,6 +63,13 @@ class TrendSignalBase(SignalBase):
     
     def validate(self, data: pd.DataFrame, asset_id: str) -> bool:
         """Validate the data for signal calculation."""
+        # Store data reference for possible asset_id lookup
+        self.data = data
+        
+        # Store asset_id in params if not already there
+        if not self.params.get('asset_id'):
+            self.params['asset_id'] = asset_id
+            
         if data is None or data.empty:
             self.logger.warning(f"Empty data provided for {asset_id}")
             return False
@@ -64,13 +82,32 @@ class TrendSignalBase(SignalBase):
             )
             return False
         
-        # Check for required columns
-        required_cols = self.get_required_columns()
-        if not all(col in data.columns for col in required_cols):
-            missing_cols = [col for col in required_cols if col not in data.columns]
-            self.logger.warning(f"Missing required columns for {asset_id}: {missing_cols}")
+        # For BTC quote type, check if the expected column exists
+        if self.quote_type == 'BTC':
+            # Try with asset_id prefix
+            btc_col = f'{asset_id}_btc'
+            if btc_col in data.columns:
+                return True
+                
+            # Try finding any column ending with _btc (for flexibility)
+            btc_cols = [col for col in data.columns if col.endswith('_btc') and col not in 
+                        [c for c in data.columns if c.endswith(('_btc_open', '_btc_high', '_btc_low'))]]
+            
+            if btc_cols:
+                # Update our internal reference to use this column
+                self.params['_btc_column'] = btc_cols[0]
+                return True
+                
+            # If no suitable column found, log and return False
+            self.logger.warning(f"Missing required BTC column for {asset_id}")
+            self.logger.debug(f"Available columns: {data.columns.tolist()}")
             return False
         
+        # For USD quote type, require 'close' column
+        elif 'close' not in data.columns:
+            self.logger.warning(f"Missing 'close' column for {asset_id}")
+            return False
+            
         return True
     
     def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
@@ -81,7 +118,7 @@ class TrendSignalBase(SignalBase):
             asset_id (str): ID of the asset.
             
         Returns:
-            pd.Series: Series with signal values (+1 or -1) indexed by date.
+            pd.Series: Series with signal values (1 or 0) indexed by date.
         """
         if not self.validate(data, asset_id):
             # Return empty series with same index as data
@@ -102,7 +139,7 @@ class TrendSignalBase(SignalBase):
         
         # Create signal based on exact trend value match
         signal = classified_data[trend_col].apply(
-            lambda x: 1 if pd.notna(x) and x == self.trend_value else -1
+            lambda x: 1 if pd.notna(x) and x == self.trend_value else 0
         )
         
         return signal

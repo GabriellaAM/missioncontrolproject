@@ -13,7 +13,7 @@ class RSICalculator:
     @staticmethod
     def calculate_rsi(prices, window=14):
         """
-        Calculate RSI for a series of prices.
+        Calculate RSI for a series of prices using the same method as TradingView (RMA).
         
         Args:
             prices (pd.Series or numpy.ndarray): Series of prices
@@ -44,25 +44,34 @@ class RSICalculator:
         # Calculate price changes
         price_diff = prices.diff(1)
         
-        # Create positive and negative gain/loss Series
-        gains = price_diff.where(price_diff > 0, 0)
-        losses = -price_diff.where(price_diff < 0, 0)
+        # Create gains and losses series
+        gains = price_diff.where(price_diff > 0, 0.0)
+        losses = -price_diff.where(price_diff < 0, 0.0)
         
-        # Traditional RSI calculation (using SMA for first window, EMA after)
-        avg_gain = gains.rolling(window=window, min_periods=1).mean()
-        avg_loss = losses.rolling(window=window, min_periods=1).mean()
+        # Calculate RMA (Relative Moving Average) - this is what TradingView uses
+        # RMA is equivalent to EMA with alpha=1/length
+        # First value is a simple average for the first window periods
+        avg_gain = np.nan_to_num(gains.iloc[:window].mean())
+        avg_loss = np.nan_to_num(losses.iloc[:window].mean())
         
-        # Calculate RS
-        rs = avg_gain / avg_loss
+        # Calculate RMA for each point after the initial window
+        rsi_values = []
+        for i in range(window, len(prices)):
+            avg_gain = (avg_gain * (window - 1) + gains.iloc[i]) / window
+            avg_loss = (avg_loss * (window - 1) + losses.iloc[i]) / window
+            
+            if avg_loss == 0:
+                rsi = 100.0
+            elif avg_gain == 0:
+                rsi = 0.0
+            else:
+                rs = avg_gain / avg_loss
+                rsi = 100.0 - (100.0 / (1.0 + rs))
+                
+            rsi_values.append(rsi)
         
-        # Handle zero division
-        rs = rs.replace([np.inf, -np.inf], np.nan)
-        
-        # Calculate RSI
-        rsi_series = 100 - (100 / (1 + rs))
-        
-        # For the window before we have full data, set to NaN
-        rsi_series[:window] = np.nan
+        # Set RSI values for data after the initial window
+        rsi_series.iloc[window:] = rsi_values
         
         return rsi_series
     

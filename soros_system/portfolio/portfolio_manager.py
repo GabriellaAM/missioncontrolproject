@@ -386,13 +386,13 @@ class PortfolioManager:
                                 
                                 # Generate signal directly
                                 data_df['usd_trend_signal'] = data_df[col_name].apply(
-                                    lambda x: 1 if pd.notna(x) and x in allowed_values_set else -1
+                                    lambda x: 1 if pd.notna(x) and x in allowed_values_set else 0
                                 )
                                 signal_components.append('usd_trend_signal')
                                 break  # Only one term needed since we overwrite usd_trend_signal
                             else:
                                 self.logger.warning(f"Column '{col_name}' not found for {asset_id}.")
-                                data_df['usd_trend_signal'] = -1
+                                data_df['usd_trend_signal'] = 0
                     else:
                         col_name = 'overall_trend_USD'
                         if col_name in data_df.columns:
@@ -402,12 +402,12 @@ class PortfolioManager:
                             
                             data_df[col_name] = pd.to_numeric(data_df[col_name], errors='coerce')
                             data_df['usd_trend_signal'] = data_df[col_name].apply(
-                                lambda x: 1 if pd.notna(x) and x in allowed_values_set else -1
+                                lambda x: 1 if pd.notna(x) and x in allowed_values_set else 0
                             )
                             signal_components.append('usd_trend_signal')
                         else:
                             self.logger.warning(f"Column '{col_name}' not found for {asset_id}.")
-                            data_df['usd_trend_signal'] = -1
+                            data_df['usd_trend_signal'] = 0
                 
                 # 2. BTC Trend Signal (for altcoins)
                 if btc_conditions is not None and asset_id != 'bitcoin':
@@ -424,13 +424,13 @@ class PortfolioManager:
                                 
                                 # Generate signal directly
                                 data_df['btc_trend_signal'] = data_df[col_name].apply(
-                                    lambda x: 1 if pd.notna(x) and x in allowed_values_set else -1
+                                    lambda x: 1 if pd.notna(x) and x in allowed_values_set else 0
                                 )
                                 signal_components.append('btc_trend_signal')
                                 break  # Only one term needed since we overwrite btc_trend_signal
                             else:
                                 self.logger.warning(f"Column '{col_name}' not found for {asset_id}.")
-                                data_df['btc_trend_signal'] = -1
+                                data_df['btc_trend_signal'] = 0
                     else:
                         col_name = 'overall_trend_BTC'
                         if col_name in data_df.columns:
@@ -440,11 +440,11 @@ class PortfolioManager:
                             
                             data_df[col_name] = pd.to_numeric(data_df[col_name], errors='coerce')
                             data_df['btc_trend_signal'] = data_df[col_name].apply(
-                                lambda x: 1 if pd.notna(x) and x in allowed_values_set else -1
+                                lambda x: 1 if pd.notna(x) and x in allowed_values_set else 0
                             )
                             signal_components.append('btc_trend_signal')
                         else:
-                            data_df['btc_trend_signal'] = -1
+                            data_df['btc_trend_signal'] = 0
                 
                 # 3. RSI Signal (USD)
                 if rsi_conditions_usd:
@@ -452,15 +452,15 @@ class PortfolioManager:
                     if rsi_col in data_df.columns:
                         # Ensure RSI signal is numeric before comparison
                         data_df[rsi_col] = pd.to_numeric(data_df[rsi_col], errors='coerce')
-                        # Signal is 1 if RSI > 0, -1 otherwise (or if NaN)
+                        # Signal is 1 if RSI > 0, 0 otherwise (or if NaN)
                         data_df['rsi_usd_signal'] = data_df[rsi_col].apply(
-                            lambda x: 1 if pd.notna(x) and x > 0 else -1
+                            lambda x: 1 if pd.notna(x) and x > 0 else 0
                         )
                         signal_components.append('rsi_usd_signal')
                         self.logger.debug(f"Generated 'rsi_usd_signal' from '{rsi_col}' for {asset_id}")
                     else:
-                        self.logger.warning(f"'{rsi_col}' column not found for {asset_id}. Defaulting signal to -1.")
-                        data_df['rsi_usd_signal'] = -1
+                        self.logger.warning(f"'{rsi_col}' column not found for {asset_id}. Defaulting signal to 0.")
+                        data_df['rsi_usd_signal'] = 0
                 
                 # 4. RSI Signal (BTC) - for altcoins
                 if rsi_conditions_btc and asset_id != 'bitcoin':
@@ -468,15 +468,15 @@ class PortfolioManager:
                     if rsi_col in data_df.columns:
                         # Ensure RSI signal is numeric before comparison
                         data_df[rsi_col] = pd.to_numeric(data_df[rsi_col], errors='coerce')
-                        # Signal is 1 if RSI > 0, -1 otherwise (or if NaN)
+                        # Signal is 1 if RSI > 0, 0 otherwise (or if NaN)
                         data_df['rsi_btc_signal'] = data_df[rsi_col].apply(
-                            lambda x: 1 if pd.notna(x) and x > 0 else -1
+                            lambda x: 1 if pd.notna(x) and x > 0 else 0
                         )
                         signal_components.append('rsi_btc_signal')
                         self.logger.debug(f"Generated 'rsi_btc_signal' from '{rsi_col}' for {asset_id}")
                     else:
-                        self.logger.warning(f"'{rsi_col}' column not found for {asset_id}. Defaulting signal to -1.")
-                        data_df['rsi_btc_signal'] = -1
+                        self.logger.warning(f"'{rsi_col}' column not found for {asset_id}. Defaulting signal to 0.")
+                        data_df['rsi_btc_signal'] = 0
                 
                 # 5. Volatility Signal
                 if use_volatility_filter and self.markov_vol_model:
@@ -489,10 +489,10 @@ class PortfolioManager:
                             signal_value = 1  # Default to low vol (1)
                             if hasattr(self.markov_vol_model, 'get_volatility_state'):
                                 state = self.markov_vol_model.get_volatility_state(date)
-                                signal_value = 1 if state == 'low' else -1  # 1 for low vol, -1 for high vol
+                                signal_value = 1 if state == 'low' else 0  # 1 for low vol, 0 for high vol
                             elif hasattr(self.markov_vol_model, 'predict_volatility'):
                                 state = self.markov_vol_model.predict_volatility(date)
-                                signal_value = 1 if state == 1 else -1  # 1 for state 1 (low vol), -1 for high vol
+                                signal_value = 1 if state == 1 else 0  # 1 for state 1 (low vol), 0 for high vol
                             else:
                                 self.logger.warning("Markov analyzer provided but has no recognized volatility methods. Defaulting to low vol.")
                             vol_signals[date] = signal_value
@@ -609,7 +609,7 @@ class PortfolioManager:
                     data_df['positive_signals_pct'] = 100.0
                 else:
                     self.logger.info(f"Combining signals for {asset_id}: {signal_components}")
-                    # Calculate sum of signals (now 1 or -1)
+                    # Calculate sum of signals (now 1 or 0)
                     data_df['combined_signal_sum'] = data_df[signal_components].sum(axis=1)
                     # Calculate number of positive signals (== 1)
                     data_df['positive_signals_count'] = (data_df[signal_components] == 1).sum(axis=1)
@@ -642,7 +642,7 @@ class PortfolioManager:
                             
                             # Where gate condition is False, force signals to negative
                             data_df['combined_signal_sum'] = data_df['combined_signal_sum'].where(
-                                aligned_gate, -len(signal_components) - 1
+                                aligned_gate, 0 * len(signal_components)  # All signals are 0 when gate is False
                             )
                             data_df['positive_signals_pct'] = data_df['positive_signals_pct'].where(
                                 aligned_gate, 0
@@ -666,7 +666,7 @@ class PortfolioManager:
                         
                     # Apply gating
                     data_df['combined_signal_sum'] = data_df['combined_signal_sum'].where(
-                        gate_condition, -len(signal_components) - 1
+                        gate_condition, 0 * len(signal_components)  # All signals are 0 when gate is False
                     )
                     data_df['positive_signals_pct'] = data_df['positive_signals_pct'].where(
                         gate_condition, 0
