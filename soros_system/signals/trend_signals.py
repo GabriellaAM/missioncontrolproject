@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import logging 
 from typing import Optional, Dict, Any, List, Tuple 
+from functools import lru_cache
 
 from .signal_base import SignalBase # base class for all signals
 from .signal_registry import register_signal # register signals in the system
@@ -15,16 +16,22 @@ from ..indicators.moving_averages import MovingAverageCalculator # calculate all
 from ..indicators.trend_classifier import TrendClassifier # classify trends based on MAs and RoC
 
 
+# Global trend classification cache to avoid redundant calculations
+_TREND_CACHE = {}
+
+
 # Base class for all trend signals to reduce code duplication
 class TrendSignalBase(SignalBase):
     """Base class for all trend signals."""
+    
+    # Class-level MA calculator and trend classifier to avoid creating new instances for each signal
+    _ma_calculator = MovingAverageCalculator()
+    _trend_classifier = TrendClassifier(_ma_calculator)
     
     def __init__(self, params: Optional[Dict[str, Any]] = None):
         """Initialize the signal."""
         super().__init__(params)
         self.quote_type = self.params.get('quote_type', 'USD')
-        self.ma_calculator = MovingAverageCalculator()
-        self.trend_classifier = TrendClassifier(self.ma_calculator)
         
         # Each subclass should define these:
         self.term = "short_term"  # short_term, medium_term, long_term, overall
@@ -112,6 +119,52 @@ class TrendSignalBase(SignalBase):
             
         return True
     
+    @staticmethod
+    def get_trend_data(data: pd.DataFrame, asset_id: str, trend_classifier=None) -> pd.DataFrame:
+        """Get the classified trend data for an asset, using cache if available.
+        
+        Args:
+            data (pd.DataFrame): Price data
+            asset_id (str): Asset ID
+            trend_classifier: Optional trend classifier instance
+            
+        Returns:
+            pd.DataFrame: Classified trend data
+        """
+        # Create a cache key based on asset_id and data shape/hash
+        # This ensures we don't reuse stale data
+        data_hash = hash(str(data.shape) + str(data.index[0]) + str(data.index[-1]))
+        cache_key = f"{asset_id}_{data_hash}"
+        
+        # Check if we have cached results
+        if cache_key in _TREND_CACHE:
+            return _TREND_CACHE[cache_key]
+        
+        # No cache hit, calculate the trend data
+        if trend_classifier is None:
+            trend_classifier = TrendSignalBase._trend_classifier
+            
+        # Calculate trend classifications
+        classified_data = trend_classifier._create_classified_data(data, asset_id)
+        
+        # Cache the result
+        _TREND_CACHE[cache_key] = classified_data
+        
+        # Log cache status
+        logger = logging.getLogger(__name__)
+        logger.info(f"Calculated and cached trend data for {asset_id}, cache size: {len(_TREND_CACHE)}")
+        
+        return classified_data
+    
+    @staticmethod
+    def clear_trend_cache():
+        """Clear the trend data cache."""
+        global _TREND_CACHE
+        cache_size = len(_TREND_CACHE)
+        _TREND_CACHE = {}
+        logger = logging.getLogger(__name__)
+        logger.info(f"Cleared trend cache, removed {cache_size} entries")
+    
     def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
         """Calculate the signal values.
         
@@ -129,8 +182,8 @@ class TrendSignalBase(SignalBase):
         # Store the asset_id in params for later use
         self.params['asset_id'] = asset_id
         
-        # Calculate trend classifications
-        classified_data = self.trend_classifier._create_classified_data(data, asset_id)
+        # Get the classified data from cache or calculate it
+        classified_data = self.get_trend_data(data, asset_id)
         
         # Get the trend column
         trend_col = f'{self.term}_trend_{self.quote_type}'

@@ -153,6 +153,17 @@ def get_all_signals() -> List[str]:
     return registry.get_all_signals()
 
 
+def get_signal_names() -> List[str]:
+    """Get names of all registered signals.
+    
+    This is an alias for get_all_signals() for better code readability.
+    
+    Returns:
+        list: List of signal names.
+    """
+    return registry.get_all_signals()
+
+
 def get_signal_info() -> Dict:
     """Get information about all registered signals.
     

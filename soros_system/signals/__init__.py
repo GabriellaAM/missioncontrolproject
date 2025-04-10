@@ -10,6 +10,7 @@ from .signal_registry import (
     get_signal,
     get_all_signals,
     get_signal_info,
+    get_signal_names,
 )
 
 # Import signal implementations
@@ -37,6 +38,7 @@ __all__ = [
     'get_signal',
     'get_all_signals',
     'get_signal_info',
+    'get_signal_names',
     
     # Trend signals - use existing specific classes instead
     'ShortTermNeutralUSD',

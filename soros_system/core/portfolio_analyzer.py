@@ -6,23 +6,24 @@ Soros System components for daily operations, acting as a facade over
 the existing signal, analysis, and portfolio modules.
 """
 
+import os
+import sys
 import pandas as pd
 import numpy as np
 import logging
-import os
-import sys
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Union, Tuple, Any
-import json
+from typing import Dict, List, Any, Optional, Union, Tuple, Set
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
+import json
 
 # Import core data structures
 from .asset_data import AssetData
 from .signal_data import SignalData
 
 # Import existing components
-from ..signals.signal_registry import get_signal, get_all_signals, registry
+from ..signals.signal_registry import get_signal, get_all_signals, registry, get_signal_names
 from ..signals.signal_event_tracker import SignalEventTracker
 from ..analysis.forward_returns.signal_evaluator import SignalEvaluator
 from ..portfolio.signal_combiner import SignalCombiner
@@ -51,7 +52,8 @@ class PortfolioAnalyzer:
         lookback_days: Union[int, str] = 365,
         parallelize: bool = True,
         asset_ids: Optional[List[str]] = None,
-        verbose: bool = False
+        verbose: bool = False,
+        num_workers: Optional[int] = None
     ):
         """Initialize the portfolio analyzer.
         
@@ -68,6 +70,8 @@ class PortfolioAnalyzer:
             parallelize: Whether to use parallel processing (default: True)
             asset_ids: List of asset IDs to initially load
             verbose: Whether to show detailed log messages
+            num_workers: Number of worker processes to use for parallel processing.
+                         If None, defaults to number of CPU cores minus 1 (minimum 1).
         """
         # Set up logging first
         self.setup_logging(verbose)
@@ -94,6 +98,13 @@ class PortfolioAnalyzer:
         self.lookback_days = lookback_days
         self.parallelize = parallelize
         self.verbose = verbose
+        
+        # Set number of workers for parallel processing
+        if num_workers is None:
+            self.num_workers = max(1, multiprocessing.cpu_count() - 1)
+        else:
+            self.num_workers = max(1, num_workers)
+        self.logger.info(f"Using {self.num_workers} workers for parallel processing")
         
         # Storage for asset data
         self.assets = {}  # {asset_id: AssetData}
@@ -403,66 +414,22 @@ class PortfolioAnalyzer:
         if 'asset_id' not in price_data.columns:
             price_data['asset_id'] = asset_id
             
-        # Calculate trend features for USD and BTC price if not already present
-        if 'short_term_trend_USD' not in price_data.columns:
-            self.logger.info(f"Creating classified data for {asset_id} with {len(price_data)} rows")
-            try:
-                from ..indicators.trend_classifier import TrendClassifier
-                from ..indicators.moving_averages import MovingAverageCalculator
-                
-                ma_calculator = MovingAverageCalculator()
-                trend_classifier = TrendClassifier(ma_calculator)
-                
-                # Create trend classification data
-                classified_data = trend_classifier.create_classified_data(price_data, asset_id)
-                
-                # Merge back with price data
-                trend_cols = [col for col in classified_data.columns if col not in price_data.columns]
-                for col in trend_cols:
-                    price_data[col] = classified_data[col]
-                    
-                # Add RSI indicators for both USD and BTC
-                from ..indicators.rsi import RSICalculator
-                rsi_calculator = RSICalculator()
-                
-                # Calculate RSI for USD price
-                rsi_data = rsi_calculator.calculate_smooth_rsi(
-                    price_data, 'close', rsi_length=28, roc_length=28
-                )
-                
-                # Add RSI columns to price data
-                rsi_cols = [col for col in rsi_data.columns if col not in price_data.columns]
-                for col in rsi_cols:
-                    price_data[col] = rsi_data[col]
-                
-                # For non-bitcoin assets, also calculate BTC RSI
-                if asset_id != 'bitcoin':
-                    btc_price_col = f"{asset_id}_btc"
-                    if btc_price_col in price_data.columns:
-                        btc_rsi_data = rsi_calculator.calculate_smooth_rsi(
-                            price_data, btc_price_col, rsi_length=28, roc_length=28
-                        )
-                        
-                        # Rename columns to use _28_BTC suffix
-                        for col in btc_rsi_data.columns:
-                            if col.startswith('RSI_Signal_'):
-                                new_col = col.replace('_Signal_', '_Signal_28_').replace(f'_{btc_price_col}', '_BTC')
-                                price_data[new_col] = btc_rsi_data[col]
-                
-                # Update asset data with enriched price data
-                asset_data.price_data = price_data
-                
-            except Exception as e:
-                self.logger.error(f"Error creating classified data for {asset_id}: {e}")
-            
-        # If no signal names specified, use all available signals
+        # Get signal names to register
         if signal_names is None:
-            signal_names = get_all_signals()  # This already returns a list of signal names
+            # Use all available signals
+            signal_names = get_signal_names()
             self.logger.info(f"Using all {len(signal_names)} available signals")
+        else:
+            self.logger.info(f"Using {len(signal_names)} specified signals")
             
-        # Register each signal
+        if not signal_names:
+            self.logger.warning("No signals to register")
+            return {}
+            
+        # Initialize result dictionary for registered signals
         registered_signals = {}
         
+        # Register signals
         for signal_name in signal_names:
             try:
                 # Get the signal class
@@ -491,52 +458,18 @@ class PortfolioAnalyzer:
                 # Calculate signal values if requested
                 if calculate_values:
                     try:
+                        # Calculate signal values
                         values = signal.calculate(price_data, asset_id)
                         
-                        # Special handling for SSR signals with numeric indices
-                        if signal_name.startswith('SSR_') and isinstance(price_data.index, pd.RangeIndex):
-                            # If this is an SSR signal and we have a numeric index, 
-                            # make sure the signal values are properly created
-                            self.logger.info(f"Special handling for SSR signal {signal_name} with numeric index")
-                            
-                            # Get the last SSR value
-                            if isinstance(values, pd.Series) and len(values) > 0:
-                                # We already have values, just check they're all the same
-                                unique_values = values.unique()
-                                if len(unique_values) == 1:
-                                    self.logger.info(f"{signal_name} has consistent values of {unique_values[0]}")
-                                else:
-                                    self.logger.info(f"{signal_name} has {len(unique_values)} unique values")
-                            else:
-                                # Get the most recent value from SSR data
-                                recent_value = None
+                        # Special handling for SSR signals with numeric index
+                        # (optimization: detect if the signal is an SSR signal and has consistent values)
+                        if signal_name.startswith('SSR_') and isinstance(values, pd.Series):
+                            unique_values = values.unique()
+                            if len(unique_values) == 1:
+                                self.logger.info(f"Special handling for SSR signal {signal_name} with numeric index")
+                                self.logger.info(f"{signal_name} has consistent values of {unique_values[0]}")
                                 
-                                if signal_name == 'SSR_RiskOn':
-                                    # The correct SSR_RiskOn signal is 1 when SSR is positive
-                                    if self.ssr_data_path:
-                                        try:
-                                            if os.path.exists(self.ssr_data_path):
-                                                ssr_data = pd.read_csv(self.ssr_data_path)
-                                                if 'ssr_oscillator' in ssr_data.columns:
-                                                    most_recent_value = ssr_data['ssr_oscillator'].iloc[-1]
-                                                    signal_value = 1 if most_recent_value > 0 else 0
-                                                    self.logger.info(f"Setting {signal_name} to {signal_value} based on SSR value {most_recent_value}")
-                                                    values = pd.Series(signal_value, index=price_data.index)
-                                        except Exception as e:
-                                            self.logger.error(f"Error setting SSR_RiskOn signal: {e}")
-                                elif signal_name == 'SSR_RiskOff':
-                                    # The correct SSR_RiskOff signal is 1 when SSR is negative
-                                    if self.ssr_data_path:
-                                        try:
-                                            if os.path.exists(self.ssr_data_path):
-                                                ssr_data = pd.read_csv(self.ssr_data_path)
-                                                if 'ssr_oscillator' in ssr_data.columns:
-                                                    most_recent_value = ssr_data['ssr_oscillator'].iloc[-1]
-                                                    signal_value = 1 if most_recent_value < 0 else 0
-                                                    self.logger.info(f"Setting {signal_name} to {signal_value} based on SSR value {most_recent_value}")
-                                                    values = pd.Series(signal_value, index=price_data.index)
-                                        except Exception as e:
-                                            self.logger.error(f"Error setting SSR_RiskOff signal: {e}")
+                                # No need to set anything, values are already correct
                         
                         signal_data.set_values(values)
                         self.logger.info(f"Set values for {signal_name} with {values.sum() if isinstance(values, pd.Series) else 'unknown'} active signals")
@@ -555,6 +488,56 @@ class PortfolioAnalyzer:
         self.logger.info(f"Registered {len(registered_signals)} signals for {asset_id}")
         
         return registered_signals
+    
+    def register_signals_parallel(
+        self,
+        asset_ids: List[str],
+        signal_names: Optional[List[str]] = None,
+        calculate_values: bool = True
+    ) -> Dict[str, Dict[str, SignalData]]:
+        """Register signals for multiple assets in parallel.
+        
+        Args:
+            asset_ids: List of asset IDs to register signals for
+            signal_names: List of signal names to register. If None, register all available signals.
+            calculate_values: Whether to calculate signal values
+            
+        Returns:
+            dict: Dictionary mapping asset IDs to dictionaries mapping signal names to SignalData objects
+        """
+        self.logger.info(f"Registering signals in parallel for {len(asset_ids)} assets...")
+        
+        # Clear trend cache before starting
+        try:
+            from ..signals.trend_signals import TrendSignalBase
+            TrendSignalBase.clear_trend_cache()
+            self.logger.info("Cleared trend signal cache")
+        except Exception as e:
+            self.logger.warning(f"Could not clear trend signal cache: {e}")
+        
+        results = {}
+        
+        # Function to register signals for a single asset and handle exceptions
+        def _register_for_asset(asset_id):
+            try:
+                return asset_id, self.register_signals(asset_id, signal_names, calculate_values)
+            except Exception as e:
+                self.logger.error(f"Error registering signals for {asset_id}: {e}")
+                return asset_id, {}
+        
+        # Use thread pool for I/O-bound operations
+        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+            future_to_asset = {executor.submit(_register_for_asset, asset_id): asset_id for asset_id in asset_ids}
+            
+            for future in tqdm(as_completed(future_to_asset), total=len(asset_ids), desc="Registering signals"):
+                asset_id, asset_signals = future.result()
+                results[asset_id] = asset_signals
+        
+        # Log summary
+        total_signals = sum(len(signals) for signals in results.values())
+        self.logger.info(f"Registered a total of {total_signals} signals across {len(results)} assets")
+        
+        return results
         
     def evaluate_signals(
         self,
