@@ -40,6 +40,7 @@ class EventDrivenBacktester:
         self.analyzer = analyzer
         self.metrics_calculator = MetricsCalculator()
         self.signal_evaluator = SignalEvaluator()
+        self.debug = False  # Add debug flag
         
         # If analyzer is provided, use it for data loading
         if analyzer is not None:

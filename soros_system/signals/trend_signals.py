@@ -35,18 +35,33 @@ class TrendSignalBase(SignalBase):
         
         # Track if we've already warned about missing BTC column
         self._warned_missing_btc = False
+        
+        # Whether to include 'period' column in required columns
+        self.use_period = self.params.get('use_period', False)
     
     def get_required_columns(self) -> List[str]:
         """Get required columns for the signal calculation."""
+        # Get asset_id first to avoid duplicating logic
+        asset_id = self._get_asset_id()
+        
         if self.quote_type == 'USD':
-            return ['close']
+            if asset_id == 'bitcoin':
+                # For bitcoin itself, we only need the close column
+                return ['close']
+            else:
+                # For non-bitcoin assets in USD, we need both close and optionally period
+                return ['close', 'period'] if self.use_period else ['close']
         else:
-            # Store asset_id in params when available to ensure this works correctly
-            asset_id = self._get_asset_id()
-            # If we don't have an asset_id yet, return a generic column
-            if not asset_id:
-                return ['_btc']
-            return [f'{asset_id}_btc']
+            # For BTC quote type
+            if asset_id == 'bitcoin':
+                # For bitcoin itself in BTC quote, just close (though this is not a common use case)
+                return ['close']
+            elif asset_id:
+                # For other assets in BTC quote with a valid asset_id, we need the BTC price column
+                return [f'{asset_id}_btc']
+            else:
+                # Default to close if we don't have a valid asset_id
+                return ['close']
     
     def get_min_required_samples(self) -> int:
         """Get minimum required samples for the signal calculation."""
@@ -66,44 +81,26 @@ class TrendSignalBase(SignalBase):
     
     def validate(self, data: pd.DataFrame, asset_id: str) -> bool:
         """Validate the data for signal calculation."""
-        # Store data reference for possible asset_id lookup
-        self.data = data
-        
-        # Store asset_id in params if not already there
-        if not self.params.get('asset_id'):
-            self.params['asset_id'] = asset_id
+        if not super().validate(data, asset_id):
+            return False
             
-        if data is None or data.empty:
-            self.logger.warning(f"Empty data provided for {asset_id}")
+        # Skip BTC signals for bitcoin itself
+        if self.quote_type == 'BTC' and asset_id == 'bitcoin':
             return False
         
-        # Check for minimum required samples
-        if len(data) < self.get_min_required_samples():
-            self.logger.warning(
-                f"Insufficient data for {asset_id}: {len(data)} samples, "
-                f"need at least {self.get_min_required_samples()}"
-            )
-            return False
-        
-        # For BTC quote type, check if the expected column exists
+        # For BTC quote type, check if the expected BTC column exists
         if self.quote_type == 'BTC':
-            # Try with asset_id prefix
+            # Get the BTC price column name
             btc_col = f'{asset_id}_btc'
-            if btc_col in data.columns:
-                return True
-                
-            # Try finding any column ending with _btc (for flexibility)
-            btc_cols = [col for col in data.columns if col.endswith('_btc') and col not in 
-                        [c for c in data.columns if c.endswith(('_btc_open', '_btc_high', '_btc_low'))]]
             
-            if btc_cols:
-                # Update our internal reference to use this column
-                self.params['_btc_column'] = btc_cols[0]
+            if btc_col in data.columns:
+                # Store the BTC column name for use in calculate method
+                self.params['_btc_column'] = btc_col
                 return True
                 
             # If no suitable column found, log and return False - but only once per instance
             if not self._warned_missing_btc:
-                self.logger.warning(f"Missing required BTC column for {asset_id}")
+                self.logger.warning(f"Missing required BTC column '{btc_col}' for {asset_id}")
                 self.logger.debug(f"Available columns: {data.columns.tolist()}")
                 self._warned_missing_btc = True
             return False

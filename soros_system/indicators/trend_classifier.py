@@ -34,15 +34,18 @@ class TrendClassifier:
             self.logger.warning(f"Column '{price_column}' not found for {asset_id} or data is empty.")
             return data, {}, {}
         
+        # Create a copy of the data to avoid SettingWithCopyWarning
+        df = data.copy()
+        
         # Ensure price column is numeric and convert to Series if needed
-        if isinstance(data[price_column], np.ndarray):
-            data[price_column] = pd.Series(data[price_column], index=data.index)
-        data[price_column] = pd.to_numeric(data[price_column], errors='coerce')
+        if isinstance(df[price_column], np.ndarray):
+            df[price_column] = pd.Series(df[price_column], index=df.index)
+        df[price_column] = pd.to_numeric(df[price_column], errors='coerce')
         
         # Calculate moving averages
-        data, ma_columns, roc_columns = self.ma_calculator.calculate_all_mas(data, price_column)
+        df, ma_columns, roc_columns = self.ma_calculator.calculate_all_mas(df, price_column)
         
-        return data, ma_columns, roc_columns
+        return df, ma_columns, roc_columns
     
     def classify_trend(self, mas, rocs, data, suffix):
         """

@@ -308,4 +308,30 @@ class SignalEventTracker:
         """Clear event history."""
         self.event_history = []
         self.rejected_events = []
-        self.logger.info("Cleared event history and rejected events") 
+        self.logger.info("Cleared event history and rejected events")
+    
+    def get_events(self, asset_id: str) -> pd.DataFrame:
+        """Get all events for an asset as a DataFrame.
+        
+        Args:
+            asset_id: ID of the asset
+            
+        Returns:
+            pd.DataFrame: DataFrame with event data
+        """
+        # Filter event history for this asset
+        events = [event for event in self.event_history if event['asset_id'] == asset_id]
+        
+        if not events:
+            return pd.DataFrame()
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(events)
+        
+        # Convert date columns to datetime
+        date_columns = ['date', 'expiration', 'new_expiration']
+        for col in date_columns:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col])
+            
+        return df 

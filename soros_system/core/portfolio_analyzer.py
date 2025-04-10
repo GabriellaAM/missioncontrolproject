@@ -82,6 +82,9 @@ class PortfolioAnalyzer:
         self.market_data_path = market_data_path
         self.markov_analyzer = markov_analyzer
         
+        # Store the asset_ids parameter
+        self.asset_ids = asset_ids or []
+        
         # Configure SSR paths for signals
         if ssr_data_path:
             os.environ['SSR_DATA_PATH'] = ssr_data_path
@@ -293,52 +296,46 @@ class PortfolioAnalyzer:
             self.logger.debug(f"Using cached data for {cache_key}")
             return self.data_cache[cache_key]
         
-        price_data = pd.DataFrame()
+        # Initialize DataLoader to properly handle BTC price calculations
+        from ..data.data_loader import DataLoader
         
-        # Special case for bitcoin if btc_data_path is provided
-        if asset_id == 'bitcoin' and self.btc_data_path and os.path.exists(self.btc_data_path):
-            price_data_path = self.btc_data_path
-        # Use data_path if provided
-        elif self.data_path:
-            # Try with _candles.csv suffix first (new format)
-            price_data_path = os.path.join(self.data_path, f"{asset_id}_candles.csv")
-            # If not found, try with _price.csv suffix (old format)
-            if not os.path.exists(price_data_path):
-                price_data_path = os.path.join(self.data_path, f"{asset_id}_price.csv")
-        else:
-            # Fallback to default data directory
-            price_data_path = os.path.join(self.data_dir, f"{asset_id}_price.csv")
+        data_loader = DataLoader(
+            data_path=self.data_path,
+            btc_data_path=self.btc_data_path,
+            ssr_data_path=self.ssr_data_path,
+            market_data_path=self.market_data_path,
+            asset_ids=self.asset_ids
+        )
         
-        # Load price data if it exists
-        if os.path.exists(price_data_path):
-            try:
-                price_data = pd.read_csv(price_data_path)
+        # Use DataLoader to load data with BTC columns
+        try:
+            price_data = data_loader.load_asset_data(asset_id)
+            
+            # Set the date as index if it's not already
+            if 'date' in price_data.columns:
+                price_data['date'] = pd.to_datetime(price_data['date'])
+                price_data.set_index('date', inplace=True)
+            
+            # Apply date filtering
+            if start_date is not None:
+                price_data = price_data[price_data.index >= start_date]
+            if end_date is not None:
+                price_data = price_data[price_data.index <= end_date]
                 
-                # Convert date column to datetime
-                if 'date' in price_data.columns:
-                    price_data['date'] = pd.to_datetime(price_data['date'])
-                    price_data.set_index('date', inplace=True)
-                elif 'Date' in price_data.columns:
-                    price_data['Date'] = pd.to_datetime(price_data['Date'])
-                    price_data.set_index('Date', inplace=True)
-                elif 'timestamp' in price_data.columns:
-                    price_data['timestamp'] = pd.to_datetime(price_data['timestamp'])
-                    price_data.set_index('timestamp', inplace=True)
-                    
-                # Apply date filtering
-                if start_date is not None:
-                    price_data = price_data[price_data.index >= start_date]
-                if end_date is not None:
-                    price_data = price_data[price_data.index <= end_date]
-                    
-                self.logger.debug(
-                    f"Loaded price data for {asset_id}: {len(price_data)} rows"
-                )
-            except Exception as e:
-                self.logger.error(f"Error loading price data for {asset_id}: {e}")
-                price_data = pd.DataFrame()
-        else:
-            self.logger.warning(f"No price data found for {asset_id} at {price_data_path}")
+            self.logger.info(
+                f"Loaded data for {asset_id} with {len(price_data)} rows"
+            )
+            
+            # Check if BTC columns were created for non-bitcoin assets
+            if asset_id != 'bitcoin':
+                btc_col = f"{asset_id}_btc"
+                if btc_col in price_data.columns:
+                    self.logger.debug(f"BTC column {btc_col} found for {asset_id}")
+                else:
+                    self.logger.warning(f"BTC column {btc_col} not found for {asset_id}")
+                
+        except Exception as e:
+            self.logger.error(f"Error loading data for {asset_id}: {e}")
             price_data = pd.DataFrame()
             
         # Create AssetData object
@@ -397,6 +394,66 @@ class PortfolioAnalyzer:
         if price_data.empty:
             self.logger.error(f"Price data is empty for {asset_id}")
             return {}
+        
+        # Reset index to have date as a column if it's the index
+        if isinstance(price_data.index, pd.DatetimeIndex):
+            price_data = price_data.reset_index()
+            
+        # Make sure asset_id is available in the data for signal calculations
+        if 'asset_id' not in price_data.columns:
+            price_data['asset_id'] = asset_id
+            
+        # Calculate trend features for USD and BTC price if not already present
+        if 'short_term_trend_USD' not in price_data.columns:
+            self.logger.info(f"Creating classified data for {asset_id} with {len(price_data)} rows")
+            try:
+                from ..indicators.trend_classifier import TrendClassifier
+                from ..indicators.moving_averages import MovingAverageCalculator
+                
+                ma_calculator = MovingAverageCalculator()
+                trend_classifier = TrendClassifier(ma_calculator)
+                
+                # Create trend classification data
+                classified_data = trend_classifier.create_classified_data(price_data, asset_id)
+                
+                # Merge back with price data
+                trend_cols = [col for col in classified_data.columns if col not in price_data.columns]
+                for col in trend_cols:
+                    price_data[col] = classified_data[col]
+                    
+                # Add RSI indicators for both USD and BTC
+                from ..indicators.rsi import RSICalculator
+                rsi_calculator = RSICalculator()
+                
+                # Calculate RSI for USD price
+                rsi_data = rsi_calculator.calculate_smooth_rsi(
+                    price_data, 'close', rsi_length=28, roc_length=28
+                )
+                
+                # Add RSI columns to price data
+                rsi_cols = [col for col in rsi_data.columns if col not in price_data.columns]
+                for col in rsi_cols:
+                    price_data[col] = rsi_data[col]
+                
+                # For non-bitcoin assets, also calculate BTC RSI
+                if asset_id != 'bitcoin':
+                    btc_price_col = f"{asset_id}_btc"
+                    if btc_price_col in price_data.columns:
+                        btc_rsi_data = rsi_calculator.calculate_smooth_rsi(
+                            price_data, btc_price_col, rsi_length=28, roc_length=28
+                        )
+                        
+                        # Rename columns to use _28_BTC suffix
+                        for col in btc_rsi_data.columns:
+                            if col.startswith('RSI_Signal_'):
+                                new_col = col.replace('_Signal_', '_Signal_28_').replace(f'_{btc_price_col}', '_BTC')
+                                price_data[new_col] = btc_rsi_data[col]
+                
+                # Update asset data with enriched price data
+                asset_data.price_data = price_data
+                
+            except Exception as e:
+                self.logger.error(f"Error creating classified data for {asset_id}: {e}")
             
         # If no signal names specified, use all available signals
         if signal_names is None:
@@ -407,26 +464,93 @@ class PortfolioAnalyzer:
         registered_signals = {}
         
         for signal_name in signal_names:
-            signal = get_signal(signal_name)
-            if signal is None:
-                self.logger.warning(f"Signal {signal_name} not found in registry")
-                continue
-                
-            # Create SignalData object
-            signal_data = SignalData(signal_name=signal_name, asset_id=asset_id)
-            
-            # Calculate signal values if requested
-            if calculate_values:
-                try:
-                    values = signal.calculate(price_data, asset_id)
-                    signal_data.set_values(values)
-                except Exception as e:
-                    self.logger.error(f"Error calculating values for {signal_name} on {asset_id}: {e}")
+            try:
+                # Get the signal class
+                signal = get_signal(signal_name)
+                if signal is None:
+                    self.logger.warning(f"Signal {signal_name} not found in registry")
                     continue
-                    
-            # Register signal with asset
-            asset_data.add_signal(signal_name, signal_data)
-            registered_signals[signal_name] = signal_data
+                
+                # Set up signal parameters based on type
+                signal_params = {'asset_id': asset_id}
+                
+                # Add SSR data path for SSR signals
+                if signal_name.startswith('SSR_') and self.ssr_data_path:
+                    signal_params['ssr_data_path'] = self.ssr_data_path
+                    self.logger.info(f"Using SSR data path for {signal_name}: {self.ssr_data_path}")
+                    # Also set the environment variable for better compatibility
+                    os.environ['SSR_DATA_PATH'] = self.ssr_data_path
+                
+                # Add these parameters to the signal
+                if hasattr(signal, 'params'):
+                    signal.params.update(signal_params)
+                
+                # Create SignalData object
+                signal_data = SignalData(signal_name=signal_name, asset_id=asset_id)
+                
+                # Calculate signal values if requested
+                if calculate_values:
+                    try:
+                        values = signal.calculate(price_data, asset_id)
+                        
+                        # Special handling for SSR signals with numeric indices
+                        if signal_name.startswith('SSR_') and isinstance(price_data.index, pd.RangeIndex):
+                            # If this is an SSR signal and we have a numeric index, 
+                            # make sure the signal values are properly created
+                            self.logger.info(f"Special handling for SSR signal {signal_name} with numeric index")
+                            
+                            # Get the last SSR value
+                            if isinstance(values, pd.Series) and len(values) > 0:
+                                # We already have values, just check they're all the same
+                                unique_values = values.unique()
+                                if len(unique_values) == 1:
+                                    self.logger.info(f"{signal_name} has consistent values of {unique_values[0]}")
+                                else:
+                                    self.logger.info(f"{signal_name} has {len(unique_values)} unique values")
+                            else:
+                                # Get the most recent value from SSR data
+                                recent_value = None
+                                
+                                if signal_name == 'SSR_RiskOn':
+                                    # The correct SSR_RiskOn signal is 1 when SSR is positive
+                                    if self.ssr_data_path:
+                                        try:
+                                            if os.path.exists(self.ssr_data_path):
+                                                ssr_data = pd.read_csv(self.ssr_data_path)
+                                                if 'ssr_oscillator' in ssr_data.columns:
+                                                    most_recent_value = ssr_data['ssr_oscillator'].iloc[-1]
+                                                    signal_value = 1 if most_recent_value > 0 else 0
+                                                    self.logger.info(f"Setting {signal_name} to {signal_value} based on SSR value {most_recent_value}")
+                                                    values = pd.Series(signal_value, index=price_data.index)
+                                        except Exception as e:
+                                            self.logger.error(f"Error setting SSR_RiskOn signal: {e}")
+                                elif signal_name == 'SSR_RiskOff':
+                                    # The correct SSR_RiskOff signal is 1 when SSR is negative
+                                    if self.ssr_data_path:
+                                        try:
+                                            if os.path.exists(self.ssr_data_path):
+                                                ssr_data = pd.read_csv(self.ssr_data_path)
+                                                if 'ssr_oscillator' in ssr_data.columns:
+                                                    most_recent_value = ssr_data['ssr_oscillator'].iloc[-1]
+                                                    signal_value = 1 if most_recent_value < 0 else 0
+                                                    self.logger.info(f"Setting {signal_name} to {signal_value} based on SSR value {most_recent_value}")
+                                                    values = pd.Series(signal_value, index=price_data.index)
+                                        except Exception as e:
+                                            self.logger.error(f"Error setting SSR_RiskOff signal: {e}")
+                        
+                        signal_data.set_values(values)
+                        self.logger.info(f"Set values for {signal_name} with {values.sum() if isinstance(values, pd.Series) else 'unknown'} active signals")
+                    except Exception as e:
+                        self.logger.error(f"Error calculating values for {signal_name} on {asset_id}: {e}")
+                        continue
+                        
+                # Register signal with asset
+                asset_data.add_signal(signal_name, signal_data)
+                registered_signals[signal_name] = signal_data
+                
+            except Exception as e:
+                self.logger.error(f"Error registering signal {signal_name} for {asset_id}: {e}")
+                continue
             
         self.logger.info(f"Registered {len(registered_signals)} signals for {asset_id}")
         

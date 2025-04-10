@@ -320,29 +320,27 @@ class SignalEvaluator:
             # Calculate Sortino ratio using mean and downside deviation
             mean_return = pos_stats.get('mean', 0.0)
             
-            # Extract negative returns for downside deviation calculation
-            neg_returns = []
-            for val in pos_stats.values():
-                if isinstance(val, (int, float)) and val < 0:
-                    neg_returns.append(val)
+            # Get all returns for this period
+            returns = pos_stats.get('returns', [])
+            if not returns:
+                continue
+            
+            # Calculate downside deviation using only negative returns
+            neg_returns = [r for r in returns if r < 0]
             
             # If we have negative returns, calculate downside deviation
             if neg_returns:
                 downside_std = np.std(neg_returns)
             else:
-                # If no negative returns, use percentiles to estimate
-                pct_10 = pos_stats.get('pct_10', 0.0)
-                if pct_10 < 0:
-                    # Approximate downside deviation using lowest percentile
-                    downside_std = abs(pct_10)
-                else:
-                    # If even the 10th percentile is positive, use a small value
-                    downside_std = 0.01
+                # If no negative returns, use a small value to avoid division by zero
+                downside_std = 0.0001
             
-            # Calculate Sortino ratio (avoid division by zero)
+            # Calculate Sortino ratio
             sortino = mean_return / downside_std if downside_std > 0 else 0.0
             
-            sortino_ratios[period] = sortino
+            # Only include periods with valid Sortino ratios
+            if not np.isnan(sortino) and np.isfinite(sortino):
+                sortino_ratios[period] = sortino
         
         # If no effective periods with valid Sortino ratios, use the longest candidate period
         if not sortino_ratios:
