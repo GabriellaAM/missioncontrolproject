@@ -39,7 +39,7 @@ class SignalEventTracker:
         signal_name: str, 
         asset_id: str,
         activation_date: datetime,
-        holding_period: int,
+        decay: int,
         weight: float,
         meta_approved: bool = True
     ) -> bool:
@@ -49,7 +49,7 @@ class SignalEventTracker:
             signal_name: Name of the signal
             asset_id: ID of the asset
             activation_date: Date when the signal activated
-            holding_period: Number of days to hold the signal
+            decay: Number of days to hold the signal
             weight: Weight of the signal based on its effectiveness
             meta_approved: Whether this signal was approved by meta-labeling
             
@@ -64,7 +64,7 @@ class SignalEventTracker:
                 'signal_name': signal_name,
                 'asset_id': asset_id,
                 'date': activation_date,
-                'holding_period': holding_period,
+                'decay': decay,
                 'weight': weight,
                 'reason': 'meta_labeling'
             }
@@ -85,7 +85,7 @@ class SignalEventTracker:
             signal_name=signal_name,
             asset_id=asset_id,
             activation_date=activation_date,
-            holding_period=holding_period,
+            decay=decay,
             weight=weight,
             meta_approved=meta_approved
         )

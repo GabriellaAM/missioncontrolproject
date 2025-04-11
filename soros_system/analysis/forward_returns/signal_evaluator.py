@@ -85,7 +85,7 @@ class SignalEvaluator:
                     'valid': False,
                     'error': "No signal values available",
                     'weight': 0.0,
-                    'optimal_holding_period': 0
+                    'optimal_decay': 0
                 }
             
             # Calculate forward returns for different periods
@@ -112,16 +112,16 @@ class SignalEvaluator:
                 effectiveness_by_period, distribution_stats
             )
             
-            # Only calculate optimal holding period for effective signals
+            # Only calculate optimal decay for effective signals
             if overall_effective:
-                # Signal is effective, determine optimal holding period
-                optimal_period, sortino = self.determine_optimal_holding_period(
+                # Signal is effective, determine optimal decay
+                optimal_period, sortino = self.determine_optimal_decay(
                     effectiveness_by_period, distribution_stats
                 )
             else:
-                # Signal is not effective, set optimal holding period to 0
+                # Signal is not effective, set optimal decay to 0
                 optimal_period, sortino = 0, 0.0
-                self.logger.info(f"Signal {signal.name} for {asset_id} is not effective, setting optimal holding period to 0")
+                self.logger.info(f"Signal {signal.name} for {asset_id} is not effective, setting optimal decay to 0")
             
             # Compile final evaluation
             evaluation = {
@@ -131,7 +131,7 @@ class SignalEvaluator:
                 'metrics': metrics,
                 'overall_effectiveness': overall_effective,
                 'weight': weight,
-                'optimal_holding_period': optimal_period,
+                'optimal_decay': optimal_period,
                 'sortino_ratio': sortino
             }
             
@@ -145,7 +145,7 @@ class SignalEvaluator:
                 'valid': False,
                 'error': str(e),
                 'weight': 0.0,
-                'optimal_holding_period': 0
+                'optimal_decay': 0
             }
     
     def _calculate_signal_effectiveness(
@@ -403,7 +403,7 @@ class SignalEvaluator:
                     'valid': False,
                     'error': str(e),
                     'weight': 0.0,
-                    'optimal_holding_period': 0
+                    'optimal_decay': 0
                 }
         
         return results
@@ -454,165 +454,74 @@ class SignalEvaluator:
         
         return normalized_weights
     
-    def determine_optimal_holding_period(
+    def determine_optimal_decay(
         self, 
         effectiveness_by_period: Dict[int, Dict[str, Any]], 
         distribution_stats: Dict[int, Dict[str, Dict[str, float]]],
         candidate_periods: List[int] = None
     ) -> Tuple[int, float]:
-        """Determine the optimal holding period for a signal.
+        """Determine the optimal decay period for a signal based on Sortino ratio.
         
         Args:
-            effectiveness_by_period: Effectiveness evaluations for different periods
-            distribution_stats: Distribution statistics for returns
-            candidate_periods: List of periods to consider (default: [7, 14, 21, 28])
+            effectiveness_by_period: Dict mapping periods to effectiveness metrics
+            distribution_stats: Dict mapping periods to distribution statistics
+            candidate_periods: List of periods to consider (defaults to all effective periods)
             
         Returns:
             tuple: (optimal_period, sortino_ratio)
         """
-        # Default candidate periods if none provided
-        candidate_periods = candidate_periods or [7, 14, 21, 28]
-        
-        # Filter to only include candidate periods that exist in effectiveness_by_period
-        valid_periods = [p for p in candidate_periods if p in effectiveness_by_period]
-        
-        if not valid_periods:
-            self.logger.warning("No valid periods found in evaluations")
+        # If candidate periods not specified, use all periods
+        if candidate_periods is None:
+            candidate_periods = self.periods
             
-            # Find the highest available period as a fallback
-            available_periods = list(effectiveness_by_period.keys())
-            if available_periods:
-                default_period = max(available_periods)
-                self.logger.info(f"Using highest available period ({default_period}) as fallback")
-                return default_period, 0.0
-            return 14, 0.0  # Default fallback if no periods available
+        # Filter to effective periods
+        effective_periods = []
+        for period in candidate_periods:
+            if period in effectiveness_by_period:
+                try:
+                    # Check if this period has an effective signal
+                    if effectiveness_by_period[period].get('effectiveness', {}).get('overall_effective', False):
+                        effective_periods.append(period)
+                except (KeyError, TypeError):
+                    continue
         
-        # Calculate Sortino ratio for each period
-        sortino_ratios = {}
-        effect_sizes = {}
-        mean_diffs = {}
-        
-        # Store diagnostic information for each period
-        diagnostics = {}
-        
-        for period in valid_periods:
-            # Check if this period is effective
-            period_data = effectiveness_by_period.get(period, {})
-            effectiveness = period_data.get('effectiveness', {})
-            is_effective = effectiveness.get('overall_effective', False)
+        if not effective_periods:
+            # No effective periods found
+            self.logger.warning("No effective periods found for decay calculation")
+            return 0, 0.0
             
-            # Store effect size regardless of effectiveness
-            effect_sizes[period] = abs(effectiveness.get('effect_size', 0.0))
-            
-            # Get return statistics for signal=1 vs signal=0
-            if period not in distribution_stats or 'positive' not in distribution_stats[period]:
-                diagnostics[period] = "Missing distribution stats"
-                continue
+        # Calculate Sortino ratio for each effective period
+        sortino_by_period = {}
+        for period in effective_periods:
+            try:
+                # Get distribution stats for signal=1
+                dist = distribution_stats[period].get('signal_1', {})
                 
-            pos_stats = distribution_stats[period]['positive']
-            neg_stats = distribution_stats[period].get('negative', {})
-            
-            # Store mean difference
-            pos_mean = pos_stats.get('mean', 0.0)
-            neg_mean = neg_stats.get('mean', 0.0)
-            mean_diffs[period] = pos_mean - neg_mean
-            
-            # Calculate Sortino ratio using mean and downside deviation
-            mean_return = pos_stats.get('mean', 0.0)
-            
-            # Get all returns for this period
-            returns = pos_stats.get('returns', [])
-            if not returns:
-                diagnostics[period] = "No returns data available"
-                continue
-            
-            # Calculate downside deviation using only negative returns
-            neg_returns = [r for r in returns if r < 0]
-            
-            # Log detailed diagnostics
-            diagnostic_info = {
-                'mean_return': mean_return,
-                'returns_count': len(returns),
-                'neg_returns_count': len(neg_returns),
-                'effect_size': effect_sizes[period],
-                'is_effective': is_effective
-            }
-            
-            # If we have negative returns, calculate downside deviation
-            if neg_returns:
-                downside_std = np.std(neg_returns)
-                diagnostic_info['downside_std'] = downside_std
-            else:
-                # If no negative returns, use a small value to avoid division by zero
-                downside_std = 0.0001
-                diagnostic_info['downside_std'] = "0.0001 (no negative returns)"
-            
-            # Calculate Sortino ratio
-            sortino = mean_return / downside_std if downside_std > 0 else 0.0
-            diagnostic_info['sortino'] = sortino
-            
-            # Store diagnostic info
-            diagnostics[period] = diagnostic_info
-            
-            # Only include periods with valid Sortino ratios AND effective signals
-            # Use absolute value for comparison but store actual value
-            if not np.isnan(sortino) and np.isfinite(sortino) and abs(sortino) > 0 and is_effective:
-                sortino_ratios[period] = sortino
-        
-        # Log all diagnostics for debugging
-        self.logger.info(f"Period diagnostics: {diagnostics}")
-        
-        # If no effective periods with valid Sortino ratios, find the most effective period
-        if not sortino_ratios:
-            self.logger.warning("No periods with significant effectiveness and valid Sortino ratios found")
-            
-            # Find period with highest effect size that is marked as effective
-            effective_periods = {p: effect_sizes[p] for p in valid_periods 
-                                if effectiveness_by_period.get(p, {}).get('effectiveness', {}).get('overall_effective', False)}
-            
-            if effective_periods:
-                # Find period with highest effect size
-                optimal_period = max(effective_periods.items(), key=lambda x: x[1])[0]
-                self.logger.info(f"Fallback to period with highest effect size: {optimal_period} days (Effect size: {effect_sizes[optimal_period]:.4f})")
-                return optimal_period, 0.0
-            
-            # If no effective periods, find period with highest mean difference
-            if mean_diffs:
-                optimal_period = max(mean_diffs.items(), key=lambda x: abs(x[1]))[0]
-                self.logger.info(f"Fallback to period with highest mean difference: {optimal_period} days (Mean diff: {mean_diffs[optimal_period]:.4f})")
-                return optimal_period, 0.0
+                # Calculate downside deviation (using negative returns only)
+                mean = dist.get('mean', 0)
+                neg_returns = dist.get('neg_returns', [])
                 
-            # Last resort fallback to longest period
-            return max(valid_periods), 0.0
-        
-        # Determine the signal direction (positive or negative effect)
-        # Check if most periods have positive or negative returns
-        positive_periods = sum(1 for sortino in sortino_ratios.values() if sortino > 0)
-        negative_periods = sum(1 for sortino in sortino_ratios.values() if sortino < 0)
-        
-        is_positive_signal = positive_periods >= negative_periods
-        
-        if is_positive_signal:
-            # For positive signals: find period with highest Sortino ratio
-            self.logger.info("Positive effect signal: selecting period with highest Sortino ratio")
-            optimal_period = max(sortino_ratios.items(), key=lambda x: x[1])[0]
-        else:
-            # For negative signals: find period with least negative Sortino ratio (closest to zero)
-            self.logger.info("Negative effect signal: selecting period with least negative Sortino ratio")
+                if not neg_returns or mean <= 0:
+                    sortino = 0.0
+                else:
+                    downside_deviation = np.sqrt(np.mean(np.square(neg_returns)))
+                    sortino = mean / downside_deviation if downside_deviation > 0 else 0.0
+                
+                sortino_by_period[period] = sortino
+                
+            except (KeyError, TypeError, ZeroDivisionError) as e:
+                self.logger.warning(f"Error calculating Sortino for period {period}: {e}")
+                sortino_by_period[period] = 0.0
+                
+        # Find period with highest Sortino ratio
+        if not sortino_by_period:
+            # No valid Sortino ratios
+            return 0, 0.0
             
-            # Filter negative Sortino ratios
-            negative_sortinos = {k: v for k, v in sortino_ratios.items() if v < 0}
-            
-            if negative_sortinos:
-                # Find the least negative Sortino (closest to zero)
-                optimal_period = max(negative_sortinos.items(), key=lambda x: x[1])[0]
-            else:
-                # If no negative Sortinos, fall back to the lowest positive one
-                optimal_period = min(sortino_ratios.items(), key=lambda x: x[1])[0]
+        optimal_period = max(sortino_by_period.items(), key=lambda x: x[1])[0]
+        optimal_sortino = sortino_by_period[optimal_period]
         
-        optimal_sortino = sortino_ratios[optimal_period]
-        
-        self.logger.info(f"Optimal holding period: {optimal_period} days (Sortino: {optimal_sortino:.4f})")
+        self.logger.info(f"Optimal decay: {optimal_period} days (Sortino: {optimal_sortino:.4f})")
         
         return optimal_period, optimal_sortino
     

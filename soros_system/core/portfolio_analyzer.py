@@ -697,13 +697,13 @@ class PortfolioAnalyzer:
                 # Update signal data with evaluation results
                 signal_data.is_effective = evaluation.get('overall_effectiveness', False)
                 signal_data.weight = evaluation.get('weight', 0.0)
-                signal_data.optimal_holding_period = evaluation.get('optimal_holding_period', 7)
+                signal_data.optimal_decay = evaluation.get('optimal_decay', 7)
                 
                 self.logger.info(
                     f"Updated {signal_name} for {asset_id}: "
                     f"effective={signal_data.is_effective}, "
                     f"weight={signal_data.weight:.4f}, "
-                    f"optimal_period={signal_data.optimal_holding_period}"
+                    f"optimal_period={signal_data.optimal_decay}"
                 )
             
             # Store results
@@ -764,11 +764,11 @@ class PortfolioAnalyzer:
             
             for signal_name, evaluation in stored_effective.items():
                 if (signal_name in signals 
-                    and evaluation.get('optimal_holding_period', 0) > 0):
+                    and evaluation.get('optimal_decay', 0) > 0):
                     signal = signals[signal_name]
                     # Add evaluation data to the signal
                     signal.weight = evaluation.get('weight', 0.0)
-                    signal.optimal_holding_period = evaluation.get('optimal_holding_period', 0)
+                    signal.optimal_decay = evaluation.get('optimal_decay', 0)
                     effective_signals[signal_name] = signal
             
             self.logger.debug(
@@ -797,11 +797,11 @@ class PortfolioAnalyzer:
         for signal_name, evaluation in asset_evaluations.items():
             if (signal_name in signals 
                 and evaluation.get('overall_effectiveness', False)
-                and evaluation.get('optimal_holding_period', 0) > 0):
+                and evaluation.get('optimal_decay', 0) > 0):
                 signal = signals[signal_name]
                 # Add evaluation data to the signal
                 signal.weight = evaluation.get('weight', 0.0)
-                signal.optimal_holding_period = evaluation.get('optimal_holding_period', 0)
+                signal.optimal_decay = evaluation.get('optimal_decay', 0)
                 effective_signals[signal_name] = signal
         
         self.logger.debug(
@@ -953,6 +953,10 @@ class PortfolioAnalyzer:
             
             # Register each activation event
             for date in dates_list:
+                # Ensure date is a proper datetime object
+                if not isinstance(date, datetime):
+                    date = pd.to_datetime(date)
+                
                 # Check meta-labeling approval if enabled
                 meta_approved = True
                 if self.use_meta_labeling:
@@ -971,7 +975,7 @@ class PortfolioAnalyzer:
                     signal_name=signal_name,
                     asset_id=asset_id,
                     activation_date=date,
-                    holding_period=signal_data.optimal_holding_period,
+                    decay=signal_data.optimal_decay,
                     weight=signal_data.weight,
                     meta_approved=meta_approved
                 )

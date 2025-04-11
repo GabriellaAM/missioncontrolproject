@@ -2,7 +2,7 @@
 Event-driven portfolio backtester for the Soros System.
 
 This module implements a portfolio backtester that uses event-driven logic
-for signal processing, maintaining signal exposure for optimal holding periods.
+for signal processing, maintaining signal exposure for optimal decay periods.
 """
 
 import pandas as pd
@@ -23,7 +23,7 @@ class EventDrivenBacktester:
     Backtest portfolio strategies using event-driven signal logic.
     
     This class simulates trades based on signal activation events
-    and maintains signal exposure for optimal holding periods.
+    and maintains signal exposure for optimal decay periods.
     """
     
     def __init__(self, portfolio_manager=None, data_loader=None, analyzer=None):
@@ -103,8 +103,8 @@ class EventDrivenBacktester:
         # Create signal event tracker
         event_tracker = SignalEventTracker(threshold=signal_threshold)
         
-        # First pass: determine optimal holding periods for all signals
-        self.logger.info("Analyzing signals to determine optimal holding periods...")
+        # First pass: determine optimal decay periods for all signals
+        self.logger.info("Analyzing signals to determine optimal decay periods...")
         for asset_id, signal_df in signal_tables.items():
             asset_metadata[asset_id] = {'optimal_periods': {}}
             
@@ -132,14 +132,14 @@ class EventDrivenBacktester:
                     self.logger.warning(f"Signal {signal_name} not found in registry, skipping")
                     continue
                 
-                # Evaluate signal to find optimal holding period
+                # Evaluate signal to find optimal decay
                 try:
                     evaluation = self.signal_evaluator.evaluate_signal(
                         signal_instance, asset_data, asset_id
                     )
                     
-                    # Extract optimal holding period
-                    optimal_period = evaluation.get('optimal_holding_period', 14)
+                    # Extract optimal decay
+                    optimal_period = evaluation.get('optimal_decay', 14)
                     is_effective = evaluation.get('overall_effectiveness', False)
                     
                     # Use default period for ineffective signals
@@ -156,7 +156,7 @@ class EventDrivenBacktester:
                     
                     self.logger.info(
                         f"Signal {signal_name} for {asset_id}: "
-                        f"optimal holding period = {optimal_period} days, "
+                        f"optimal decay = {optimal_period} days, "
                         f"weight = {evaluation.get('weight', 0.0):.4f}"
                     )
                     
@@ -250,18 +250,24 @@ class EventDrivenBacktester:
                         # Signal activated!
                         self.logger.debug(f"Signal activated: {signal_col} for {asset_id} on {date}")
                         
-                        # Get optimal holding period and weight
-                        opt_data = asset_metadata[asset_id]['optimal_periods'].get(signal_col, {})
-                        holding_period = opt_data.get('period', 14)
-                        weight = opt_data.get('weight', 0.0)
+                        # Get optimal decay and weight from metadata
+                        # Use default values if not available
+                        decay = 14  # Default
+                        weight = 1.0  # Default
                         
-                        # Register event
+                        if signal_col in asset_metadata[asset_id]['optimal_periods']:
+                            opt_data = asset_metadata[asset_id]['optimal_periods'][signal_col]
+                            decay = opt_data.get('period', 14)
+                            weight = opt_data.get('weight', 0.0)
+                        
+                        # Register signal event with tracker
                         event_tracker.register_signal_event(
-                            signal_name=signal_col,
+                            signal_name=signal_col[:-7],  # Remove '_signal' suffix
                             asset_id=asset_id,
                             activation_date=date,
-                            holding_period=holding_period,
-                            weight=weight
+                            decay=decay,
+                            weight=weight,
+                            meta_approved=True  # No meta-labeling
                         )
                     
                     # Update previous signal
@@ -337,7 +343,7 @@ class EventDrivenBacktester:
                         'asset': asset_id,
                         'entry_date': date,
                         'exit_date': None,
-                        'holding_days': 0,
+                        'decay': 0,
                         'entry_price': open_price,
                         'exit_price': None,
                         'price_return': "0.00%",
@@ -356,11 +362,11 @@ class EventDrivenBacktester:
                 
                 # Sell signal and currently holding
                 elif signal == 0 and current_holdings_qty > 0:
-                    # Calculate holding period
+                    # Calculate decay period
                     if last_entry_date:
-                        holding_days = (date - last_entry_date).days
+                        decay = (date - last_entry_date).days
                     else:
-                        holding_days = 0
+                        decay = 0
                     
                     # Calculate exit value
                     exit_value = current_holdings_qty * open_price
@@ -377,7 +383,7 @@ class EventDrivenBacktester:
                         if trade['is_open']:
                             # Update exit info
                             trade['exit_date'] = date
-                            trade['holding_days'] = holding_days
+                            trade['decay'] = decay
                             trade['exit_price'] = open_price
                             trade['price_return'] = f"{price_return_pct:.2f}%"
                             trade['exit_value'] = exit_value
@@ -419,15 +425,15 @@ class EventDrivenBacktester:
                 # Find open trade to update
                 for trade in asset_trades_list:
                     if trade['is_open']:
-                        # Calculate holding period
+                        # Calculate decay period
                         if last_entry_date:
-                            holding_days = (final_date - last_entry_date).days
+                            decay = (final_date - last_entry_date).days
                         else:
-                            holding_days = 0
+                            decay = 0
                         
                         # Update exit info
                         trade['exit_date'] = final_date
-                        trade['holding_days'] = holding_days
+                        trade['decay'] = decay
                         trade['exit_price'] = final_close
                         
                         # Calculate returns

@@ -237,6 +237,21 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 
 **Outcome**: A comprehensive, user-friendly interface that simplifies daily operations while leveraging the full power of the underlying signal evaluation, event tracking, and backtesting components. This unified interface reduces cognitive overhead and code duplication, allowing for faster development and more maintainable code.
 
+### **Step 3.9: Signal Optimization & Backtesting without Metalabeling** ✅
+- **Refactored Terminology**:
+  - Changed "holding_period" to "decay" throughout the codebase for better semantic clarity
+  - Updated related classes and methods to use consistent terminology
+- **Implemented Signal Normalization Framework**:
+  - Added daily normalization of signal weights across active signals
+  - Created logic to make trading decisions at market close for next day execution
+  - Implemented time-based signal decay based on empirically determined optimal periods
+- **Created Backtesting Scripts without Metalabeling**:
+  - Developed `backtest_without_metalabeling.py` script that bypasses metalabeling checks
+  - Created `daily_signal_execution.py` for demonstrating daily signal process workflow
+  - Added visualization of equity curves and performance metrics
+
+**Outcome**: A fully functional backtesting framework that uses statistically significant signals with empirically-determined weights and decay periods, normalizing them daily to make trading decisions at market close for execution at next day's open.
+
 ---
 
 ## **Phase 4: Streamlit UI & Backtesting**

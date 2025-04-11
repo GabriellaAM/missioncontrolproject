@@ -2,7 +2,7 @@
 Signal event tracking for the Soros System.
 
 This module implements signal activation event tracking for event-driven
-signal logic, allowing signals to remain active for a fixed holding period
+signal logic, allowing signals to remain active for a fixed decay period
 after activation.
 """
 
@@ -17,9 +17,9 @@ class SignalEvent:
     """
     Represents a signal activation event.
     
-    Tracks when a signal activates (0→1), the optimal holding period,
+    Tracks when a signal activates (0→1), the optimal decay period,
     and calculates the expiration date. If the signal reactivates during
-    the holding period, the expiration will reset.
+    the decay period, the expiration will reset.
     """
     
     def __init__(
@@ -27,7 +27,7 @@ class SignalEvent:
         signal_name: str, 
         asset_id: str,
         activation_date: datetime,
-        holding_period: int,  # in days
+        decay: int,  # in days
         weight: float,
         meta_approved: bool = True
     ):
@@ -37,7 +37,7 @@ class SignalEvent:
             signal_name: Name of the signal
             asset_id: ID of the asset
             activation_date: Date when the signal activated
-            holding_period: Number of days to hold the signal (optimal period)
+            decay: Number of days to hold the signal (optimal period)
             weight: Weight of the signal based on its effectiveness
             meta_approved: Whether this signal was approved by meta-labeling
         """
@@ -45,8 +45,8 @@ class SignalEvent:
         self.signal_name = signal_name
         self.asset_id = asset_id
         self.activation_date = activation_date
-        self.holding_period = holding_period
-        self.expiration_date = activation_date + timedelta(days=holding_period)
+        self.decay = decay
+        self.expiration_date = activation_date + timedelta(days=decay)
         self.weight = weight
         self.meta_approved = meta_approved
         
@@ -69,10 +69,10 @@ class SignalEvent:
         """
         self.logger.debug(
             f"Resetting expiration for {self.signal_name} on {self.asset_id} "
-            f"from {self.expiration_date} to {new_activation_date + timedelta(days=self.holding_period)}"
+            f"from {self.expiration_date} to {new_activation_date + timedelta(days=self.decay)}"
         )
         self.activation_date = new_activation_date
-        self.expiration_date = new_activation_date + timedelta(days=self.holding_period)
+        self.expiration_date = new_activation_date + timedelta(days=self.decay)
         
     def get_remaining_days(self, current_date: datetime) -> int:
         """Get the number of days remaining until expiration.

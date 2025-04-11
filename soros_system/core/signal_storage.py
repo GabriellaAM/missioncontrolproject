@@ -230,7 +230,7 @@ class SignalEvaluationStorage:
         for signal_name, evaluation in asset_evals.items():
             if (evaluation.get("overall_effectiveness", False) 
                 and evaluation.get("valid", False)
-                and evaluation.get("optimal_holding_period", 0) > 0):
+                and evaluation.get("optimal_decay", 0) > 0):
                 effective_signals[signal_name] = evaluation
         
         return effective_signals

@@ -20,7 +20,7 @@ class SignalData:
     Container for signal-specific information.
     
     Stores signal values, activation dates, evaluation results,
-    and optimal holding period information.
+    and optimal decay period information.
     """
     
     def __init__(
@@ -44,7 +44,7 @@ class SignalData:
         # Signal evaluation results
         self.is_effective = False
         self.weight = 0.0
-        self.optimal_holding_period = 0
+        self.optimal_decay = 0
         self.evaluation_results = {}
         
         # Activation tracking
@@ -110,12 +110,12 @@ class SignalData:
         # Extract key metrics
         self.is_effective = results.get('overall_effectiveness', False)
         self.weight = results.get('weight', 0.0)
-        self.optimal_holding_period = results.get('optimal_holding_period', 0)
+        self.optimal_decay = results.get('optimal_decay', 0)
         
         self.logger.debug(
             f"Updated evaluation for signal {self.signal_name} on {self.asset_id}: "
             f"effective={self.is_effective}, weight={self.weight:.4f}, "
-            f"holding_period={self.optimal_holding_period}"
+            f"decay={self.optimal_decay}"
         )
         
     def get_activations_in_range(
@@ -156,7 +156,7 @@ class SignalData:
         Args:
             price_data: DataFrame with price data
             feature_columns: List of column names to use as features
-            forward_returns_window: Window size for forward returns (defaults to optimal_holding_period)
+            forward_returns_window: Window size for forward returns (defaults to optimal_decay)
             min_return_threshold: Minimum return to consider a trade successful
             verbose: Whether to print detailed information
             
@@ -170,7 +170,7 @@ class SignalData:
             return 0.0, 0
             
         if forward_returns_window is None:
-            forward_returns_window = self.optimal_holding_period
+            forward_returns_window = self.optimal_decay
             
         if forward_returns_window <= 0:
             self.logger.warning(
@@ -202,7 +202,7 @@ class SignalData:
                 # Find the price at activation
                 entry_price = price_data.loc[date, 'close']
                 
-                # Find the forward price after holding_period days
+                # Find the forward price after decay days
                 forward_date_idx = price_data.index.get_loc(date) + forward_returns_window
                 if forward_date_idx < len(price_data):
                     forward_date = price_data.index[forward_date_idx]
