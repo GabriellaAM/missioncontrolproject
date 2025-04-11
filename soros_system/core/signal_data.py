@@ -55,6 +55,15 @@ class SignalData:
         self.meta_features = []
         self.use_meta_labeling = False
         
+    @property
+    def name(self) -> str:
+        """Alias for signal_name for compatibility.
+        
+        Returns:
+            str: The name of the signal
+        """
+        return self.signal_name
+        
     def set_values(self, values: pd.Series) -> None:
         """Set or update the signal values.
         

@@ -91,6 +91,30 @@ class AssetData:
         """
         return list(self.signals.keys())
         
+    def get_signals(self) -> Dict[str, 'SignalData']:
+        """Get all signals for this asset.
+        
+        Returns:
+            dict: Dictionary mapping signal names to SignalData objects
+        """
+        return self.signals
+        
+    def has_data(self) -> bool:
+        """Check if the asset has price data loaded.
+        
+        Returns:
+            bool: True if price data exists and is not empty, False otherwise
+        """
+        return not self.price_data.empty if hasattr(self.price_data, 'empty') else len(self.price_data) > 0
+        
+    def get_data(self) -> pd.DataFrame:
+        """Get the price data for this asset.
+        
+        Returns:
+            pd.DataFrame: The price data for this asset
+        """
+        return self.price_data
+        
     def get_effective_signals(self) -> Dict[str, 'SignalData']:
         """Get all effective signals for this asset.
         

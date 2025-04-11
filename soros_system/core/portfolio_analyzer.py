@@ -21,6 +21,7 @@ import json
 # Import core data structures
 from .asset_data import AssetData
 from .signal_data import SignalData
+from .signal_storage import SignalEvaluationStorage
 
 # Import existing components
 from ..signals.signal_registry import get_signal, get_all_signals, registry, get_signal_names
@@ -53,7 +54,10 @@ class PortfolioAnalyzer:
         parallelize: bool = True,
         asset_ids: Optional[List[str]] = None,
         verbose: bool = False,
-        num_workers: Optional[int] = None
+        num_workers: Optional[int] = None,
+        use_stored_evaluations: bool = True,
+        signal_storage_dir: str = None,
+        signal_storage_file: str = 'signal_evaluations.json'
     ):
         """Initialize the portfolio analyzer.
         
@@ -72,6 +76,9 @@ class PortfolioAnalyzer:
             verbose: Whether to show detailed log messages
             num_workers: Number of worker processes to use for parallel processing.
                          If None, defaults to number of CPU cores minus 1 (minimum 1).
+            use_stored_evaluations: Whether to use stored signal evaluations (default: True)
+            signal_storage_dir: Directory for signal evaluation storage (default: data_dir/signal_evaluations)
+            signal_storage_file: Filename for signal evaluation storage
         """
         # Set up logging first
         self.setup_logging(verbose)
@@ -98,6 +105,7 @@ class PortfolioAnalyzer:
         self.lookback_days = lookback_days
         self.parallelize = parallelize
         self.verbose = verbose
+        self.use_stored_evaluations = use_stored_evaluations
         
         # Set number of workers for parallel processing
         if num_workers is None:
@@ -118,6 +126,19 @@ class PortfolioAnalyzer:
         )
         self.signal_event_tracker = SignalEventTracker(threshold=signal_threshold)
         self.portfolio_manager = PortfolioManager()
+        
+        # Initialize signal evaluation storage
+        if signal_storage_dir is None:
+            signal_storage_dir = os.path.join(data_dir, 'signal_evaluations')
+        
+        self.signal_storage = SignalEvaluationStorage(
+            storage_dir=signal_storage_dir,
+            filename=signal_storage_file,
+        )
+        
+        # Store whether to use stored evaluations (but don't load automatically)
+        # The use_stored_evaluations flag only indicates preference, not automatic loading
+        self.use_stored_evaluations = use_stored_evaluations
         
         # Create data directory if it doesn't exist
         if not os.path.exists(data_dir):
@@ -543,135 +564,252 @@ class PortfolioAnalyzer:
         self,
         asset_ids: Optional[List[str]] = None,
         signal_names: Optional[List[str]] = None,
-        force_recalculate: bool = False
+        force_recalculate: bool = False,
+        use_stored: bool = False,
+        save_to_storage: bool = False
     ) -> Dict[str, Dict[str, Any]]:
-        """Evaluate signals for specified assets.
+        """Evaluate signals for effectiveness and calculate weights.
         
         Args:
-            asset_ids: List of asset IDs to evaluate. If None, evaluate all loaded assets.
-            signal_names: List of signal names to evaluate. If None, evaluate all registered signals.
-            force_recalculate: Whether to force recalculation of evaluations
+            asset_ids: List of asset IDs to evaluate signals for (defaults to all loaded assets)
+            signal_names: List of signal names to evaluate (defaults to all registered signals)
+            force_recalculate: Whether to force recalculation of signal evaluations
+                              even if they are already stored
+            use_stored: Whether to use stored evaluations if available (overrides self.use_stored_evaluations)
+                       If False, signals will always be freshly evaluated
+            save_to_storage: Whether to save evaluations to storage after calculation
             
         Returns:
-            dict: Dictionary mapping asset IDs to dictionaries mapping signal names to evaluation results
+            dict: Dictionary mapping asset IDs to dictionaries of signal evaluations
         """
-        self.logger.info("Evaluating signals...")
+        self.logger.info("Evaluating signals for effectiveness...")
         
-        # If no asset IDs specified, use all loaded assets
+        # Determine whether to use stored evaluations
+        use_stored_evaluations = use_stored or (self.use_stored_evaluations and not force_recalculate)
+        
+        # Default to all loaded assets if not specified
         if asset_ids is None:
-            asset_ids = self.get_asset_ids()
-            
+            asset_ids = list(self.assets.keys())
+        
         if not asset_ids:
-            self.logger.warning("No assets to evaluate")
+            self.logger.warning("No assets to evaluate signals for")
             return {}
-            
+        
         # Initialize results
-        results = {}
+        evaluations = {}
         
         # Process each asset
-        for asset_id in tqdm(asset_ids, desc="Evaluating assets"):
-            asset_data = self.get_asset_data(asset_id)
-            if asset_data is None:
-                self.logger.warning(f"Asset data not found for {asset_id}")
+        for asset_id in asset_ids:
+            if asset_id not in self.assets:
+                self.logger.warning(f"Asset {asset_id} not loaded, skipping evaluation")
                 continue
-                
-            # Get price data
-            price_data = asset_data.price_data
-            if price_data.empty:
-                self.logger.warning(f"Price data is empty for {asset_id}")
-                continue
-                
-            # Get signals to evaluate
-            if signal_names is None:
-                # Use all registered signals
-                signals_to_evaluate = {}
-                for name in asset_data.get_signal_names():
-                    signal_instance = get_signal(name)
-                    if signal_instance is not None:
-                        signals_to_evaluate[name] = signal_instance
-            else:
-                # Use specified signals
-                signals_to_evaluate = {}
-                for name in signal_names:
-                    signal_instance = get_signal(name)
-                    if signal_instance is not None:
-                        signals_to_evaluate[name] = signal_instance
-                    else:
-                        self.logger.warning(f"Signal {name} not found in registry")
-                
-            if not signals_to_evaluate:
+            
+            asset_data = self.assets[asset_id]
+            asset_signals = asset_data.get_signals()
+            
+            # Filter signals if requested
+            if signal_names:
+                asset_signals = {
+                    name: signal for name, signal in asset_signals.items() 
+                    if name in signal_names
+                }
+            
+            if not asset_signals:
                 self.logger.warning(f"No signals to evaluate for {asset_id}")
                 continue
-                
-            # Evaluate signals
-            asset_results = {}
             
-            for signal_name, signal_instance in signals_to_evaluate.items():
-                # Check if signal is registered with asset
-                if not asset_data.has_signal(signal_name):
-                    # Register signal with asset
-                    signal_data = SignalData(signal_name=signal_name, asset_id=asset_id)
-                    
-                    try:
-                        values = signal_instance.calculate(price_data, asset_id)
-                        signal_data.set_values(values)
-                        asset_data.add_signal(signal_name, signal_data)
-                    except Exception as e:
-                        self.logger.error(f"Error calculating values for {signal_name} on {asset_id}: {e}")
+            # Check if we can use stored evaluations
+            asset_evaluations = {}
+            all_found = True
+            
+            if use_stored_evaluations:
+                for signal_name in asset_signals.keys():
+                    if self.signal_storage.has_signal_evaluation(asset_id, signal_name):
+                        # Use stored evaluation
+                        stored_eval = self.signal_storage.get_signal_evaluation(asset_id, signal_name)
+                        asset_evaluations[signal_name] = stored_eval
+                        self.logger.debug(f"Using stored evaluation for {signal_name} on {asset_id}")
+                    else:
+                        # Need to calculate this one
+                        all_found = False
+                
+                if all_found:
+                    self.logger.info(f"Using stored evaluations for all signals on {asset_id}")
+                    evaluations[asset_id] = asset_evaluations
+                    continue
+            
+            # If we need to calculate any or force_recalculate is True
+            self.logger.info(f"Evaluating {len(asset_signals)} signals for {asset_id}...")
+            
+            # Get price data
+            if not asset_data.has_data():
+                self.logger.warning(f"No data available for {asset_id}, skipping evaluation")
+                continue
+            
+            price_data = asset_data.get_data()
+            
+            # Extract signal names and get signal instances from registry
+            signal_names_list = list(asset_signals.keys())
+            signals = []
+            
+            # Import get_signal here to avoid circular imports
+            from ..signals.signal_registry import get_signal
+            
+            for signal_name in signal_names_list:
+                try:
+                    # Get signal instance from registry
+                    signal_instance = get_signal(signal_name)
+                    if signal_instance is None:
+                        self.logger.warning(f"Signal {signal_name} not found in registry")
                         continue
                     
-                signal_data = asset_data.get_signal(signal_name)
-                
-                # Skip evaluation if already done and not forced
-                if not force_recalculate and signal_data.evaluation_results:
-                    self.logger.debug(f"Using cached evaluation for {signal_name} on {asset_id}")
-                    asset_results[signal_name] = signal_data.evaluation_results
-                    continue
+                    # Set asset_id in signal parameters
+                    if hasattr(signal_instance, 'params'):
+                        signal_instance.params['asset_id'] = asset_id
                     
-                # Evaluate signal
-                try:
-                    evaluation = self.signal_evaluator.evaluate_signal(
-                        signal_instance, price_data, asset_id
-                    )
-                    
-                    # Update signal data with evaluation results
-                    signal_data.set_evaluation_results(evaluation)
-                    
-                    # Store results
-                    asset_results[signal_name] = evaluation
-                    
+                    signals.append(signal_instance)
+                    self.logger.info(f"Evaluating signal {signal_name} for {asset_id}")
                 except Exception as e:
-                    self.logger.error(f"Error evaluating {signal_name} on {asset_id}: {e}")
-                    continue
-                    
-            # Store asset results
-            results[asset_id] = asset_results
+                    self.logger.error(f"Error evaluating signal {signal_name} for {asset_id}: {e}")
             
-        self.logger.info(f"Evaluated signals for {len(results)} assets")
+            if not signals:
+                self.logger.warning(f"No valid signal instances to evaluate for {asset_id}")
+                continue
+            
+            # Evaluate all signals
+            signal_results = self.signal_evaluator.evaluate_multiple_signals(
+                signals=signals,
+                data=price_data,
+                asset_id=asset_id
+            )
+            
+            # Update the SignalData objects with evaluation results
+            for signal_instance, evaluation in zip(signals, signal_results.values()):
+                signal_name = signal_instance.name
+                
+                # Skip if signal name not in asset_signals
+                if signal_name not in asset_signals:
+                    continue
+                
+                # Get signal data object
+                signal_data = asset_signals[signal_name]
+                
+                # Update signal data with evaluation results
+                signal_data.is_effective = evaluation.get('overall_effectiveness', False)
+                signal_data.weight = evaluation.get('weight', 0.0)
+                signal_data.optimal_holding_period = evaluation.get('optimal_holding_period', 7)
+                
+                self.logger.info(
+                    f"Updated {signal_name} for {asset_id}: "
+                    f"effective={signal_data.is_effective}, "
+                    f"weight={signal_data.weight:.4f}, "
+                    f"optimal_period={signal_data.optimal_holding_period}"
+                )
+            
+            # Store results
+            evaluations[asset_id] = signal_results
+            
+            # Store in signal storage for future use if requested
+            if save_to_storage:
+                for signal_name, evaluation in signal_results.items():
+                    # Don't store invalid evaluations
+                    if evaluation.get('valid', False):
+                        self.signal_storage.add_signal_evaluation(
+                            asset_id=asset_id,
+                            signal_name=signal_name,
+                            evaluation=evaluation
+                        )
         
-        return results
-        
+        # Save to disk if requested
+        if save_to_storage:
+            self.signal_storage.save()
+            self.logger.info("Saved signal evaluations to storage")
+            
+        self.logger.info(f"Evaluated signals for {len(evaluations)} assets")
+        return evaluations
+    
     def get_effective_signals(
         self, 
-        asset_id: str
+        asset_id: str,
+        use_stored: bool = False,
+        save_to_storage: bool = False
     ) -> Dict[str, SignalData]:
-        """Get effective signals for a specific asset.
-        
-        A signal is considered effective if it has a non-zero weight
-        and is marked as effective in the evaluation results.
+        """Get effective signals for an asset based on evaluation results.
         
         Args:
             asset_id: ID of the asset
+            use_stored: Whether to use stored evaluations if available (overrides self.use_stored_evaluations)
+                       If False, signals will always be freshly evaluated
+            save_to_storage: Whether to save evaluations to storage after calculation
             
         Returns:
-            dict: Dictionary mapping signal names to SignalData objects
+            dict: Dictionary mapping signal names to SignalData objects for effective signals
         """
-        asset_data = self.get_asset_data(asset_id)
-        if asset_data is None:
-            self.logger.warning(f"Asset data not found for {asset_id}")
+        if asset_id not in self.assets:
+            self.logger.warning(f"Asset {asset_id} not loaded")
             return {}
+        
+        asset_data = self.assets[asset_id]
+        signals = asset_data.get_signals()
+        
+        effective_signals = {}
+        
+        # Determine whether to use stored evaluations
+        use_stored_evaluations = use_stored or self.use_stored_evaluations
+        
+        # First check if we have stored evaluations
+        if use_stored_evaluations and self.signal_storage.has_asset(asset_id):
+            # Use stored evaluations to determine effective signals
+            stored_effective = self.signal_storage.get_asset_effective_signals(asset_id)
             
-        return asset_data.get_effective_signals()
+            for signal_name, evaluation in stored_effective.items():
+                if (signal_name in signals 
+                    and evaluation.get('optimal_holding_period', 0) > 0):
+                    signal = signals[signal_name]
+                    # Add evaluation data to the signal
+                    signal.weight = evaluation.get('weight', 0.0)
+                    signal.optimal_holding_period = evaluation.get('optimal_holding_period', 0)
+                    effective_signals[signal_name] = signal
+            
+            self.logger.debug(
+                f"Found {len(effective_signals)} effective signals for {asset_id} "
+                f"from stored evaluations"
+            )
+            
+            if effective_signals:
+                return effective_signals
+        
+        # If we don't have stored evaluations or found none, evaluate now
+        self.logger.debug(
+            f"No effective signals found in storage for {asset_id}, evaluating now..."
+        )
+        
+        # Evaluate all signals
+        evaluations = self.evaluate_signals(asset_ids=[asset_id], use_stored=use_stored, save_to_storage=save_to_storage)
+        
+        if not evaluations or asset_id not in evaluations:
+            self.logger.warning(f"No evaluations found for {asset_id}")
+            return {}
+        
+        asset_evaluations = evaluations[asset_id]
+        
+        # Filter for effective signals
+        for signal_name, evaluation in asset_evaluations.items():
+            if (signal_name in signals 
+                and evaluation.get('overall_effectiveness', False)
+                and evaluation.get('optimal_holding_period', 0) > 0):
+                signal = signals[signal_name]
+                # Add evaluation data to the signal
+                signal.weight = evaluation.get('weight', 0.0)
+                signal.optimal_holding_period = evaluation.get('optimal_holding_period', 0)
+                effective_signals[signal_name] = signal
+        
+        self.logger.debug(
+            f"Found {len(effective_signals)} effective signals for {asset_id} "
+            f"from fresh evaluation"
+        )
+        
+        return effective_signals
         
     def calculate_signal_values(
         self,
@@ -1440,4 +1578,97 @@ class PortfolioAnalyzer:
             
         # TODO: Implement plotting
         self.logger.info(f"Plotting signals for {asset_id}")
-        # (Placeholder for actual plotting implementation) 
+        # (Placeholder for actual plotting implementation)
+
+    # Add new methods for signal persistence
+    
+    def load_signal_evaluations(self) -> bool:
+        """Explicitly load signal evaluations from storage.
+        
+        Returns:
+            bool: True if successfully loaded, False otherwise
+        """
+        loaded = self.signal_storage.load()
+        if loaded:
+            self.logger.info("Successfully loaded signal evaluations from storage")
+        else:
+            self.logger.warning("Failed to load signal evaluations from storage")
+        return loaded
+    
+    def save_signal_evaluations(self, backup: bool = True) -> bool:
+        """Save current signal evaluations to storage.
+        
+        Args:
+            backup: Whether to create a backup of existing evaluations
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if backup:
+            backup_path = self.signal_storage.create_backup()
+            if backup_path:
+                self.logger.info(f"Created backup of signal evaluations at {backup_path}")
+        
+        saved = self.signal_storage.save()
+        if saved:
+            self.logger.info("Saved signal evaluations to storage")
+        else:
+            self.logger.error("Failed to save signal evaluations")
+        
+        return saved
+    
+    def force_reevaluate_signals(
+        self, 
+        asset_ids: Optional[List[str]] = None,
+        backup: bool = True,
+        save_to_storage: bool = True
+    ) -> Dict[str, Dict[str, Any]]:
+        """Force re-evaluation of all signals for specified assets.
+        
+        This will clear any stored evaluations for the assets and recalculate.
+        
+        Args:
+            asset_ids: List of asset IDs to re-evaluate (defaults to all loaded assets)
+            backup: Whether to create a backup before re-evaluation
+            save_to_storage: Whether to save evaluations to storage after calculation
+            
+        Returns:
+            dict: Dictionary mapping asset IDs to dictionaries of signal evaluations
+        """
+        self.logger.info("Forcing re-evaluation of signals...")
+        
+        # Default to all loaded assets if not specified
+        if asset_ids is None:
+            asset_ids = list(self.assets.keys())
+        
+        if not asset_ids:
+            self.logger.warning("No assets to re-evaluate signals for")
+            return {}
+        
+        # Create a backup if requested
+        if backup and save_to_storage and self.use_stored_evaluations:
+            backup_path = self.signal_storage.create_backup("before_reevaluation")
+            self.logger.info(f"Created backup of signal evaluations at {backup_path}")
+        
+        # Remove existing evaluations for the assets
+        for asset_id in asset_ids:
+            if self.signal_storage.has_asset(asset_id):
+                self.signal_storage.remove_asset(asset_id)
+                self.logger.info(f"Removed stored evaluations for {asset_id}")
+        
+        # Evaluate signals with force_recalculate=True
+        evaluations = self.evaluate_signals(
+            asset_ids=asset_ids,
+            force_recalculate=True,
+            save_to_storage=save_to_storage
+        )
+        
+        return evaluations
+    
+    def get_signal_storage_info(self) -> Dict[str, Any]:
+        """Get information about the signal storage.
+        
+        Returns:
+            dict: Information about the signal storage
+        """
+        return self.signal_storage.get_storage_info() 

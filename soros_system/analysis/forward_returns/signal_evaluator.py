@@ -11,6 +11,7 @@ import logging
 from typing import Dict, List, Optional, Union, Tuple, Any
 import json
 from datetime import datetime
+from scipy.stats import ttest_ind
 
 from ..forward_returns.calculator import ForwardReturnsCalculator
 from ..forward_returns.statistical_tests import StatisticalTester
@@ -56,7 +57,10 @@ class SignalEvaluator:
     def evaluate_signal(
         self, signal: SignalBase, data: pd.DataFrame, asset_id: str, price_col: str = 'close'
     ) -> Dict[str, Any]:
-        """Evaluate the effectiveness of a signal for a specific asset.
+        """Evaluate a signal for a specific asset.
+        
+        This evaluates the effectiveness of a signal by comparing return distributions
+        when the signal is active (1) vs. inactive (0).
         
         Args:
             signal: Signal instance to evaluate
@@ -65,118 +69,74 @@ class SignalEvaluator:
             price_col: Column to use for price data
             
         Returns:
-            dict: Evaluation results
+            dict: Evaluation results with metrics like effectiveness, weight, etc.
         """
         self.logger.info(f"Evaluating signal {signal.name} for {asset_id}")
         
         try:
-            # Generate cache key
-            cache_key = f"{signal.name}_{asset_id}_{self.lookback_days}"
-            
-            # Check cache
-            if cache_key in self.evaluations_cache:
-                self.logger.debug(f"Using cached evaluation for {cache_key}")
-                return self.evaluations_cache[cache_key]
-            
-            # Apply lookback filter if specified
-            if self.lookback_days is not None:
-                if isinstance(data.index, pd.DatetimeIndex):
-                    cutoff_date = data.index[-1] - pd.Timedelta(days=self.lookback_days)
-                    filtered_data = data[data.index >= cutoff_date]
-                else:
-                    # If no DatetimeIndex, use the most recent lookback_days rows
-                    filtered_data = data.iloc[max(0, len(data) - self.lookback_days):]
-            else:
-                filtered_data = data
-            
             # Calculate signal values
-            signal_series = signal.calculate(filtered_data, asset_id)
+            signal_values = self._get_signal_values(signal, data, asset_id)
             
-            # Calculate forward returns
-            data_with_returns = self.calculator.calculate_forward_returns(filtered_data, price_col)
-            
-            # Get conditional returns
-            conditional_returns, sample_counts = self.calculator.get_conditional_returns(
-                data_with_returns, signal_series, min_samples=self.min_samples
-            )
-            
-            # Check if we have enough samples
-            if sample_counts['positive'] < self.min_samples or sample_counts['negative'] < self.min_samples:
-                self.logger.warning(
-                    f"Insufficient samples for signal {signal.name} on {asset_id}: "
-                    f"positive={sample_counts['positive']}, negative={sample_counts['negative']}, "
-                    f"need at least {self.min_samples}"
-                )
-                
-                # Return limited evaluation
-                evaluation = {
+            if signal_values is None or signal_values.empty:
+                self.logger.error(f"Failed to get values for {signal.name} on {asset_id}")
+                return {
                     'signal_name': signal.name,
                     'asset_id': asset_id,
-                    'sample_counts': sample_counts,
                     'valid': False,
-                    'reason': f"Insufficient samples (need {self.min_samples})",
-                    'effectiveness_by_period': {},
-                    'overall_effectiveness': False,
-                    'weight': 0.0
+                    'error': "No signal values available",
+                    'weight': 0.0,
+                    'optimal_holding_period': 0
                 }
-                
-                self.evaluations_cache[cache_key] = evaluation
-                return evaluation
             
-            # Calculate distribution statistics
-            distribution_stats = self.calculator.calculate_distribution_stats(conditional_returns)
+            # Calculate forward returns for different periods
+            returns_by_period = {}
+            for period in self.periods:
+                returns = self._calculate_forward_returns(data, period, price_col)
+                returns_by_period[period] = returns
             
-            # Run statistical tests for each period
+            # Calculate statistics for each period
             effectiveness_by_period = {}
-            for period, returns_dict in conditional_returns.items():
-                if 'positive' not in returns_dict or 'negative' not in returns_dict:
-                    continue
+            distribution_stats = {}
+            
+            for period, returns in returns_by_period.items():
+                # Get statistics for signal=1 vs signal=0
+                period_stats = self._calculate_signal_effectiveness(signal_values, returns)
+                effectiveness_by_period[period] = period_stats
                 
-                # Run tests
-                test_results = self.tester.run_all_tests(
-                    returns_dict['positive'], 
-                    returns_dict['negative'],
-                    returns_dict.get('all')
+                # Get return distributions for different signal states
+                dist_stats = self._calculate_return_distributions(signal_values, returns)
+                distribution_stats[period] = dist_stats
+            
+            # Determine overall effectiveness and weight
+            overall_effective, weight, metrics = self._calculate_overall_effectiveness(
+                effectiveness_by_period, distribution_stats
+            )
+            
+            # Only calculate optimal holding period for effective signals
+            if overall_effective:
+                # Signal is effective, determine optimal holding period
+                optimal_period, sortino = self.determine_optimal_holding_period(
+                    effectiveness_by_period, distribution_stats
                 )
-                
-                # Evaluate effectiveness
-                effectiveness = self.tester.evaluate_signal_effectiveness(test_results)
-                effectiveness_by_period[period] = {
-                    'test_results': test_results,
-                    'effectiveness': effectiveness
-                }
+            else:
+                # Signal is not effective, set optimal holding period to 0
+                optimal_period, sortino = 0, 0.0
+                self.logger.info(f"Signal {signal.name} for {asset_id} is not effective, setting optimal holding period to 0")
             
-            # Calculate overall effectiveness and weight
-            overall_effectiveness, weight, metrics = self._calculate_overall_effectiveness(
-                effectiveness_by_period, distribution_stats
-            )
-            
-            # Determine optimal holding period
-            optimal_period, optimal_sortino = self.determine_optimal_holding_period(
-                effectiveness_by_period, distribution_stats
-            )
-            
-            # Create evaluation result
+            # Compile final evaluation
             evaluation = {
                 'signal_name': signal.name,
                 'asset_id': asset_id,
-                'sample_counts': sample_counts,
-                'distribution_stats': distribution_stats,
-                'effectiveness_by_period': effectiveness_by_period,
-                'overall_effectiveness': overall_effectiveness,
+                'valid': True,
                 'metrics': metrics,
+                'overall_effectiveness': overall_effective,
                 'weight': weight,
                 'optimal_holding_period': optimal_period,
-                'optimal_sortino': optimal_sortino,
-                'valid': True,
-                'timestamp': datetime.now().isoformat()
+                'sortino_ratio': sortino
             }
             
-            # Cache the result
-            self.evaluations_cache[cache_key] = evaluation
-            
             return evaluation
-        
+            
         except Exception as e:
             self.logger.error(f"Error evaluating signal {signal.name} for {asset_id}: {e}")
             return {
@@ -187,6 +147,233 @@ class SignalEvaluator:
                 'weight': 0.0,
                 'optimal_holding_period': 0
             }
+    
+    def _calculate_signal_effectiveness(
+        self, signal_values: pd.Series, returns: pd.Series
+    ) -> Dict[str, Any]:
+        """Calculate the effectiveness of a signal by comparing return distributions.
+        
+        Args:
+            signal_values: Binary signal values (1 for active, 0 for inactive)
+            returns: Forward returns series
+            
+        Returns:
+            dict: Effectiveness metrics
+        """
+        # Align signal values and returns
+        aligned_data = pd.concat([signal_values, returns], axis=1).dropna()
+        
+        if len(aligned_data) < self.min_samples:
+            return {
+                'effectiveness': {
+                    'overall_effective': False,
+                    'effect_size': 0.0,
+                    'confidence': 0.0,
+                    'direction': 0,
+                    'reason': f"Insufficient samples: {len(aligned_data)} < {self.min_samples}"
+                }
+            }
+        
+        # Separate returns by signal value
+        signal_col = aligned_data.columns[0]
+        returns_col = aligned_data.columns[1]
+        
+        signal_1_returns = aligned_data[aligned_data[signal_col] == 1][returns_col]
+        signal_0_returns = aligned_data[aligned_data[signal_col] == 0][returns_col]
+        
+        # Check if we have enough samples in each group
+        if len(signal_1_returns) < self.min_samples / 2 or len(signal_0_returns) < self.min_samples / 2:
+            return {
+                'effectiveness': {
+                    'overall_effective': False,
+                    'effect_size': 0.0,
+                    'confidence': 0.0,
+                    'direction': 0,
+                    'reason': f"Imbalanced samples: signal=1 ({len(signal_1_returns)}) vs signal=0 ({len(signal_0_returns)})"
+                }
+            }
+        
+        # Calculate statistics
+        mean_1 = signal_1_returns.mean()
+        mean_0 = signal_0_returns.mean()
+        mean_diff = mean_1 - mean_0
+        
+        # Perform t-test to determine if the difference is significant
+        t_stat, p_value = ttest_ind(signal_1_returns, signal_0_returns, equal_var=False)
+        
+        # Calculate effect size (Cohen's d)
+        pooled_std = np.sqrt(
+            ((len(signal_1_returns) - 1) * signal_1_returns.std() ** 2 + 
+             (len(signal_0_returns) - 1) * signal_0_returns.std() ** 2) / 
+            (len(signal_1_returns) + len(signal_0_returns) - 2)
+        )
+        
+        effect_size = mean_diff / pooled_std if pooled_std > 0 else 0
+        
+        # Determine if the signal is effective
+        is_significant = p_value < self.alpha
+        
+        # Determine direction of effect (positive or negative)
+        direction = 1 if mean_diff > 0 else -1 if mean_diff < 0 else 0
+        
+        # Calculate confidence level (1 - p_value)
+        confidence = 1 - p_value
+        
+        # Result: signal is effective if it has a significant effect
+        is_effective = is_significant and abs(effect_size) >= 0.1
+        
+        return {
+            'statistics': {
+                'signal_1_mean': mean_1,
+                'signal_0_mean': mean_0,
+                'mean_diff': mean_diff,
+                'signal_1_std': signal_1_returns.std(),
+                'signal_0_std': signal_0_returns.std(),
+                'signal_1_count': len(signal_1_returns),
+                'signal_0_count': len(signal_0_returns),
+                't_statistic': t_stat,
+                'p_value': p_value
+            },
+            'effectiveness': {
+                'overall_effective': is_effective,
+                'effect_size': effect_size,
+                'confidence': confidence,
+                'direction': direction,
+                'reason': "Significant effect" if is_effective else 
+                         "Non-significant effect" if not is_significant else
+                         "Effect size too small"
+            }
+        }
+        
+    def _calculate_return_distributions(
+        self, signal_values: pd.Series, returns: pd.Series
+    ) -> Dict[str, Dict[str, float]]:
+        """Calculate return distributions for different signal states.
+        
+        Args:
+            signal_values: Binary signal values
+            returns: Forward returns series
+            
+        Returns:
+            dict: Return distributions for different signal states
+        """
+        # Align signal values and returns
+        aligned_data = pd.concat([signal_values, returns], axis=1).dropna()
+        
+        if len(aligned_data) < self.min_samples:
+            return {
+                'positive': {'mean': 0.0, 'std': 0.0, 'returns': []},
+                'negative': {'mean': 0.0, 'std': 0.0, 'returns': []}
+            }
+        
+        # Extract columns
+        signal_col = aligned_data.columns[0]
+        returns_col = aligned_data.columns[1]
+        
+        # Get returns for different signal states
+        positive_returns = aligned_data[aligned_data[signal_col] == 1][returns_col]
+        negative_returns = aligned_data[aligned_data[signal_col] == 0][returns_col]
+        
+        # Calculate statistics
+        return {
+            'positive': {
+                'mean': positive_returns.mean() if not positive_returns.empty else 0.0,
+                'std': positive_returns.std() if not positive_returns.empty else 0.0,
+                'returns': positive_returns.tolist() if not positive_returns.empty else []
+            },
+            'negative': {
+                'mean': negative_returns.mean() if not negative_returns.empty else 0.0,
+                'std': negative_returns.std() if not negative_returns.empty else 0.0,
+                'returns': negative_returns.tolist() if not negative_returns.empty else []
+            }
+        }
+    
+    def _calculate_overall_effectiveness(
+        self, effectiveness_by_period: Dict[int, Dict[str, Any]], 
+        distribution_stats: Dict[int, Dict[str, Dict[str, float]]]
+    ) -> Tuple[bool, float, Dict[str, float]]:
+        """Calculate overall effectiveness and weight for a signal.
+        
+        Args:
+            effectiveness_by_period: Dictionary mapping periods to effectiveness evaluations
+            distribution_stats: Dictionary mapping periods to distribution statistics
+            
+        Returns:
+            tuple: (overall_effectiveness, weight, metrics)
+                overall_effectiveness (bool): Whether the signal is effective overall
+                weight (float): Weight for the signal
+                metrics (dict): Metrics used for weight calculation
+        """
+        if not effectiveness_by_period:
+            return False, 0.0, {}
+        
+        # Count effective periods
+        effective_periods = 0
+        total_periods = len(effectiveness_by_period)
+        
+        # Collect metrics for weight calculation
+        effect_sizes = []
+        confidences = []
+        mean_diffs = []
+        directions = []  # Track direction of each period
+        
+        for period, period_data in effectiveness_by_period.items():
+            effectiveness = period_data.get('effectiveness', {})
+            
+            # Check if effective for this period
+            if effectiveness.get('overall_effective', False):
+                effective_periods += 1
+                
+                # Collect metrics
+                effect_sizes.append(abs(effectiveness.get('effect_size', 0.0)))
+                confidences.append(effectiveness.get('confidence', 0.0))
+                directions.append(effectiveness.get('direction', 0))
+                
+                # Get mean difference from stats
+                if (period in distribution_stats and 
+                    'positive' in distribution_stats[period] and 
+                    'negative' in distribution_stats[period]):
+                    pos_mean = distribution_stats[period]['positive'].get('mean', 0.0)
+                    neg_mean = distribution_stats[period]['negative'].get('mean', 0.0)
+                    mean_diffs.append(pos_mean - neg_mean)
+        
+        # Determine overall effectiveness (at least 25% of periods must be effective)
+        ratio_effective = effective_periods / total_periods if total_periods > 0 else 0
+        overall_effective = ratio_effective >= 0.25 and effective_periods > 0
+        
+        # Calculate weight using weighted combination of metrics
+        if overall_effective and effect_sizes:
+            # Calculate mean metrics
+            avg_effect_size = np.mean(effect_sizes)
+            avg_confidence = np.mean(confidences)
+            
+            # Determine dominant direction (-1, 0, or 1)
+            neg_count = sum(1 for d in directions if d < 0)
+            pos_count = sum(1 for d in directions if d > 0)
+            dominant_direction = 1 if pos_count > neg_count else -1 if neg_count > pos_count else 0
+            
+            # Calculate weight (sign indicates direction)
+            # Weight magnitude is based on effect size and confidence
+            weight_magnitude = avg_effect_size * avg_confidence
+            weight = weight_magnitude * dominant_direction
+            
+            metrics = {
+                'avg_effect_size': avg_effect_size,
+                'avg_confidence': avg_confidence,
+                'dominant_direction': dominant_direction,
+                'effective_periods': effective_periods,
+                'total_periods': total_periods,
+                'ratio_effective': ratio_effective
+            }
+            
+            return overall_effective, weight, metrics
+            
+        return overall_effective, 0.0, {
+            'effective_periods': effective_periods,
+            'total_periods': total_periods,
+            'ratio_effective': ratio_effective,
+            'reason': "No effect sizes available" if not effect_sizes else "Not effective overall"
+        }
     
     def evaluate_multiple_signals(
         self, signals: List[SignalBase], data: pd.DataFrame, asset_id: str, price_col: str = 'close'
@@ -278,7 +465,7 @@ class SignalEvaluator:
         Args:
             effectiveness_by_period: Effectiveness evaluations for different periods
             distribution_stats: Distribution statistics for returns
-            candidate_periods: List of periods to consider (default: [7, 14, 30])
+            candidate_periods: List of periods to consider (default: [7, 14, 21, 28])
             
         Returns:
             tuple: (optimal_period, sortino_ratio)
@@ -291,6 +478,7 @@ class SignalEvaluator:
         
         if not valid_periods:
             self.logger.warning("No valid periods found in evaluations")
+            
             # Find the highest available period as a fallback
             available_periods = list(effectiveness_by_period.keys())
             if available_periods:
@@ -301,21 +489,33 @@ class SignalEvaluator:
         
         # Calculate Sortino ratio for each period
         sortino_ratios = {}
+        effect_sizes = {}
+        mean_diffs = {}
+        
+        # Store diagnostic information for each period
+        diagnostics = {}
+        
         for period in valid_periods:
             # Check if this period is effective
             period_data = effectiveness_by_period.get(period, {})
             effectiveness = period_data.get('effectiveness', {})
             is_effective = effectiveness.get('overall_effective', False)
             
-            # Skip ineffective periods
-            if not is_effective:
-                continue
+            # Store effect size regardless of effectiveness
+            effect_sizes[period] = abs(effectiveness.get('effect_size', 0.0))
             
-            # Get return statistics for positive signal
+            # Get return statistics for signal=1 vs signal=0
             if period not in distribution_stats or 'positive' not in distribution_stats[period]:
+                diagnostics[period] = "Missing distribution stats"
                 continue
                 
             pos_stats = distribution_stats[period]['positive']
+            neg_stats = distribution_stats[period].get('negative', {})
+            
+            # Store mean difference
+            pos_mean = pos_stats.get('mean', 0.0)
+            neg_mean = neg_stats.get('mean', 0.0)
+            mean_diffs[period] = pos_mean - neg_mean
             
             # Calculate Sortino ratio using mean and downside deviation
             mean_return = pos_stats.get('mean', 0.0)
@@ -323,32 +523,93 @@ class SignalEvaluator:
             # Get all returns for this period
             returns = pos_stats.get('returns', [])
             if not returns:
+                diagnostics[period] = "No returns data available"
                 continue
             
             # Calculate downside deviation using only negative returns
             neg_returns = [r for r in returns if r < 0]
             
+            # Log detailed diagnostics
+            diagnostic_info = {
+                'mean_return': mean_return,
+                'returns_count': len(returns),
+                'neg_returns_count': len(neg_returns),
+                'effect_size': effect_sizes[period],
+                'is_effective': is_effective
+            }
+            
             # If we have negative returns, calculate downside deviation
             if neg_returns:
                 downside_std = np.std(neg_returns)
+                diagnostic_info['downside_std'] = downside_std
             else:
                 # If no negative returns, use a small value to avoid division by zero
                 downside_std = 0.0001
+                diagnostic_info['downside_std'] = "0.0001 (no negative returns)"
             
             # Calculate Sortino ratio
             sortino = mean_return / downside_std if downside_std > 0 else 0.0
+            diagnostic_info['sortino'] = sortino
             
-            # Only include periods with valid Sortino ratios
-            if not np.isnan(sortino) and np.isfinite(sortino):
+            # Store diagnostic info
+            diagnostics[period] = diagnostic_info
+            
+            # Only include periods with valid Sortino ratios AND effective signals
+            # Use absolute value for comparison but store actual value
+            if not np.isnan(sortino) and np.isfinite(sortino) and abs(sortino) > 0 and is_effective:
                 sortino_ratios[period] = sortino
         
-        # If no effective periods with valid Sortino ratios, use the longest candidate period
+        # Log all diagnostics for debugging
+        self.logger.info(f"Period diagnostics: {diagnostics}")
+        
+        # If no effective periods with valid Sortino ratios, find the most effective period
         if not sortino_ratios:
             self.logger.warning("No periods with significant effectiveness and valid Sortino ratios found")
+            
+            # Find period with highest effect size that is marked as effective
+            effective_periods = {p: effect_sizes[p] for p in valid_periods 
+                                if effectiveness_by_period.get(p, {}).get('effectiveness', {}).get('overall_effective', False)}
+            
+            if effective_periods:
+                # Find period with highest effect size
+                optimal_period = max(effective_periods.items(), key=lambda x: x[1])[0]
+                self.logger.info(f"Fallback to period with highest effect size: {optimal_period} days (Effect size: {effect_sizes[optimal_period]:.4f})")
+                return optimal_period, 0.0
+            
+            # If no effective periods, find period with highest mean difference
+            if mean_diffs:
+                optimal_period = max(mean_diffs.items(), key=lambda x: abs(x[1]))[0]
+                self.logger.info(f"Fallback to period with highest mean difference: {optimal_period} days (Mean diff: {mean_diffs[optimal_period]:.4f})")
+                return optimal_period, 0.0
+                
+            # Last resort fallback to longest period
             return max(valid_periods), 0.0
         
-        # Find period with highest Sortino ratio
-        optimal_period = max(sortino_ratios.items(), key=lambda x: x[1])[0]
+        # Determine the signal direction (positive or negative effect)
+        # Check if most periods have positive or negative returns
+        positive_periods = sum(1 for sortino in sortino_ratios.values() if sortino > 0)
+        negative_periods = sum(1 for sortino in sortino_ratios.values() if sortino < 0)
+        
+        is_positive_signal = positive_periods >= negative_periods
+        
+        if is_positive_signal:
+            # For positive signals: find period with highest Sortino ratio
+            self.logger.info("Positive effect signal: selecting period with highest Sortino ratio")
+            optimal_period = max(sortino_ratios.items(), key=lambda x: x[1])[0]
+        else:
+            # For negative signals: find period with least negative Sortino ratio (closest to zero)
+            self.logger.info("Negative effect signal: selecting period with least negative Sortino ratio")
+            
+            # Filter negative Sortino ratios
+            negative_sortinos = {k: v for k, v in sortino_ratios.items() if v < 0}
+            
+            if negative_sortinos:
+                # Find the least negative Sortino (closest to zero)
+                optimal_period = max(negative_sortinos.items(), key=lambda x: x[1])[0]
+            else:
+                # If no negative Sortinos, fall back to the lowest positive one
+                optimal_period = min(sortino_ratios.items(), key=lambda x: x[1])[0]
+        
         optimal_sortino = sortino_ratios[optimal_period]
         
         self.logger.info(f"Optimal holding period: {optimal_period} days (Sortino: {optimal_sortino:.4f})")
@@ -371,94 +632,73 @@ class SignalEvaluator:
         
         return {name: weight / total_weight for name, weight in weights.items()}
     
-    def _calculate_overall_effectiveness(
-        self, effectiveness_by_period: Dict[int, Dict[str, Any]], 
-        distribution_stats: Dict[int, Dict[str, Dict[str, float]]]
-    ) -> Tuple[bool, float, Dict[str, float]]:
-        """Calculate overall effectiveness and weight for a signal.
+    def _get_signal_values(self, signal: SignalBase, data: pd.DataFrame, asset_id: str) -> pd.Series:
+        """Get signal values for evaluation.
         
         Args:
-            effectiveness_by_period: Dictionary mapping periods to effectiveness evaluations
-            distribution_stats: Dictionary mapping periods to distribution statistics
+            signal: Signal instance
+            data: Price data
+            asset_id: Asset ID
             
         Returns:
-            tuple: (overall_effectiveness, weight, metrics)
-                overall_effectiveness (bool): Whether the signal is effective overall
-                weight (float): Weight for the signal
-                metrics (dict): Metrics used for weight calculation
+            pd.Series: Signal values (1 for active, 0 for inactive)
         """
-        if not effectiveness_by_period:
-            return False, 0.0, {}
-        
-        # Count effective periods
-        effective_periods = 0
-        total_periods = len(effectiveness_by_period)
-        
-        # Collect metrics for weight calculation
-        effect_sizes = []
-        confidences = []
-        mean_diffs = []
-        directions = []  # Track direction of each period
-        
-        for period, period_data in effectiveness_by_period.items():
-            effectiveness = period_data.get('effectiveness', {})
-            
-            # Check if effective for this period
-            if effectiveness.get('overall_effective', False):
-                effective_periods += 1
-                
-                # Collect metrics
-                effect_sizes.append(abs(effectiveness.get('effect_size', 0.0)))
-                confidences.append(effectiveness.get('confidence', 0.0))
-                directions.append(effectiveness.get('direction', 0))
-                
-                # Get mean difference from stats
-                if (period in distribution_stats and 
-                    'positive' in distribution_stats[period] and 
-                    'negative' in distribution_stats[period]):
-                    pos_mean = distribution_stats[period]['positive'].get('mean', 0.0)
-                    neg_mean = distribution_stats[period]['negative'].get('mean', 0.0)
-                    mean_diffs.append(pos_mean - neg_mean)
-        
-        # Determine overall effectiveness (at least 25% of periods must be effective)
-        ratio_effective = effective_periods / total_periods if total_periods > 0 else 0
-        overall_effective = ratio_effective >= 0.25 and effective_periods > 0
-        
-        # Calculate weight using weighted combination of metrics
-        if overall_effective and effect_sizes:
-            # Calculate mean metrics
-            avg_effect_size = np.mean(effect_sizes)
-            avg_confidence = np.mean(confidences)
-            
-            # Determine majority direction
-            mean_direction = np.mean(directions)
-            direction = 1 if mean_direction >= 0 else -1
-            
-            # Calculate mean difference magnitude
-            if mean_diffs:
-                avg_mean_diff = np.mean(mean_diffs)
-                avg_mean_diff_magnitude = abs(avg_mean_diff)
+        try:
+            # Apply lookback filter if specified
+            if self.lookback_days is not None:
+                if isinstance(data.index, pd.DatetimeIndex):
+                    cutoff_date = data.index[-1] - pd.Timedelta(days=self.lookback_days)
+                    filtered_data = data[data.index >= cutoff_date]
+                else:
+                    # If no DatetimeIndex, use the most recent lookback_days rows
+                    filtered_data = data.iloc[max(0, len(data) - self.lookback_days):]
             else:
-                avg_mean_diff_magnitude = 0.0
+                filtered_data = data
             
-            # Calculate weighted sum (weighted by importance)
-            # Formula: weight = effect_size × confidence × direction
-            weight = avg_effect_size * avg_confidence * direction
+            # Calculate signal values
+            signal_values = signal.calculate(filtered_data, asset_id)
             
-            metrics = {
-                'avg_effect_size': avg_effect_size,
-                'avg_confidence': avg_confidence,
-                'direction': direction,
-                'avg_mean_diff': avg_mean_diff_magnitude,
-                'ratio_effective': ratio_effective
-            }
-        else:
-            weight = 0.0
-            metrics = {
-                'ratio_effective': ratio_effective
-            }
+            # Ensure signal values are binary (0 or 1)
+            if not all(val in [0, 1] for val in signal_values.unique()):
+                self.logger.warning(f"Signal {signal.name} contains non-binary values, normalizing")
+                signal_values = (signal_values > 0).astype(int)
+                
+            return signal_values
         
-        return overall_effective, weight, metrics
+        except Exception as e:
+            self.logger.error(f"Error calculating signal values for {signal.name} on {asset_id}: {e}")
+            return pd.Series()
+    
+    def _calculate_forward_returns(self, data: pd.DataFrame, period: int, price_col: str = 'close') -> pd.Series:
+        """Calculate forward returns for a specific period.
+        
+        Args:
+            data: Price data
+            period: Number of days to look forward
+            price_col: Column to use for price data
+            
+        Returns:
+            pd.Series: Forward returns
+        """
+        try:
+            if not isinstance(data.index, pd.DatetimeIndex):
+                # Convert to DatetimeIndex if not already
+                if 'date' in data.columns:
+                    data = data.set_index('date')
+                else:
+                    # Cannot calculate returns without date index
+                    self.logger.error("Cannot calculate forward returns: No date index available")
+                    return pd.Series()
+            
+            # Calculate price changes
+            returns = data[price_col].pct_change(period).shift(-period)
+            
+            # Label returns with the date where the signal would be generated
+            return returns
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating forward returns for period {period}: {e}")
+            return pd.Series()
     
     def clear_cache(self):
         """Clear the evaluations cache."""

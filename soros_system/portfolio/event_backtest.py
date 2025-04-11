@@ -140,13 +140,18 @@ class EventDrivenBacktester:
                     
                     # Extract optimal holding period
                     optimal_period = evaluation.get('optimal_holding_period', 14)
-                    if optimal_period <= 0:
-                        optimal_period = 14  # Default fallback
+                    is_effective = evaluation.get('overall_effectiveness', False)
+                    
+                    # Use default period for ineffective signals
+                    if optimal_period <= 0 or not is_effective:
+                        optimal_period = 14  # Default fallback for ineffective signals
+                        self.logger.debug(f"Signal {signal_name} for {asset_id} is ineffective, using default period of 14 days")
                     
                     # Store in asset metadata
                     asset_metadata[asset_id]['optimal_periods'][col] = {
                         'period': optimal_period,
-                        'weight': evaluation.get('weight', 0.0)
+                        'weight': evaluation.get('weight', 0.0),
+                        'is_effective': is_effective
                     }
                     
                     self.logger.info(
