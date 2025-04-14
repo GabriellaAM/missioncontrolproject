@@ -11,12 +11,11 @@ from typing import Dict, List, Optional, Union, Tuple, Any
 from datetime import datetime
 
 from ..signals.signal_base import SignalBase
-from ..analysis.forward_returns.signal_evaluator import SignalEvaluator
 
 
 class SignalCombiner:
     """
-    Combine multiple signals using calculated weights.
+    Combine multiple signals using provided weights.
     
     This class aggregates signals from multiple sources and computes
     a combined signal value based on their weights.
@@ -24,33 +23,40 @@ class SignalCombiner:
     
     def __init__(
         self, 
-        signal_evaluator: Optional[SignalEvaluator] = None,
         threshold: float = 0.0,
-        auto_weights: bool = True
+        auto_weights: bool = False
     ):
         """Initialize the signal combiner.
         
         Args:
-            signal_evaluator: Evaluator for calculating signal weights. If None, a new one is created.
             threshold: Threshold for final decision (default: 0.0)
-            auto_weights: Whether to automatically calculate weights (default: True)
+            auto_weights: Whether to automatically calculate weights (default: False)
         """
         self.logger = logging.getLogger(__name__)
-        self.signal_evaluator = signal_evaluator or SignalEvaluator()
         self.threshold = threshold
         self.auto_weights = auto_weights
         
-        # Cache for weights and calculated signals
-        self.weights_cache = {}
+        # Cache for calculated signals
         self.combined_signal_cache = {}
+        
+        # Default weights (equal weighting)
+        self.default_weights = {}
+    
+    def set_default_weights(self, weights: Dict[str, float]) -> None:
+        """Set default weights for signals.
+        
+        Args:
+            weights: Dictionary mapping signal names to weights
+        """
+        self.default_weights = weights
+        self.logger.info(f"Set default weights for {len(weights)} signals")
     
     def combine_signals(
         self, 
         signals: List[SignalBase], 
         data: pd.DataFrame, 
         asset_id: str,
-        weights: Optional[Dict[str, float]] = None,
-        recalculate_weights: bool = False
+        weights: Optional[Dict[str, float]] = None
     ) -> Tuple[pd.Series, pd.Series, Dict[str, float]]:
         """Combine multiple signals into a single signal.
         
@@ -59,7 +65,6 @@ class SignalCombiner:
             data: Price data for the asset
             asset_id: ID of the asset
             weights: Dictionary mapping signal names to weights (optional)
-            recalculate_weights: Whether to recalculate weights even if cached
             
         Returns:
             tuple: (combined_signal, final_decision, weights)
@@ -70,23 +75,17 @@ class SignalCombiner:
         self.logger.info(f"Combining {len(signals)} signals for {asset_id}")
         
         try:
-            # Check if we need to calculate weights
-            if weights is None and self.auto_weights:
-                # Check cache first if not forced to recalculate
-                cache_key = f"{asset_id}_{'-'.join(sorted([s.name for s in signals]))}"
-                
-                if not recalculate_weights and cache_key in self.weights_cache:
-                    weights = self.weights_cache[cache_key]
-                    self.logger.debug(f"Using cached weights for {asset_id}")
+            # Use provided weights, default weights, or equal weights
+            if weights is None:
+                # Check if we have default weights for all signals
+                signal_names = [s.name for s in signals]
+                if all(name in self.default_weights for name in signal_names):
+                    weights = {name: self.default_weights[name] for name in signal_names}
+                    self.logger.debug(f"Using default weights for {asset_id}")
                 else:
-                    # Calculate weights
-                    weights = self._calculate_weights(signals, data, asset_id)
-                    
-                    # Cache weights
-                    self.weights_cache[cache_key] = weights
-            elif weights is None:
-                # If auto_weights is False and no weights provided, use equal weights
-                weights = {signal.name: 1.0 / len(signals) for signal in signals}
+                    # Use equal weights
+                    weights = {signal.name: 1.0 / len(signals) for signal in signals}
+                    self.logger.debug(f"Using equal weights for {asset_id}")
             
             # Calculate individual signal values
             signal_values = {}
@@ -161,32 +160,6 @@ class SignalCombiner:
             # Return empty series with proper index
             return pd.Series(index=data.index), pd.Series(index=data.index), {}
     
-    def _calculate_weights(
-        self, signals: List[SignalBase], data: pd.DataFrame, asset_id: str
-    ) -> Dict[str, float]:
-        """Calculate weights for signals based on their effectiveness.
-        
-        Args:
-            signals: List of signal instances
-            data: Price data for the asset
-            asset_id: ID of the asset
-            
-        Returns:
-            dict: Dictionary mapping signal names to weights
-        """
-        # Evaluate each signal
-        evaluations = self.signal_evaluator.evaluate_multiple_signals(
-            signals, data, asset_id
-        )
-        
-        # Calculate normalized weights
-        weights = self.signal_evaluator.calculate_normalized_weights(evaluations)
-        
-        # Log weights
-        self.logger.info(f"Calculated weights for {asset_id}: {weights}")
-        
-        return weights
-    
     def set_threshold(self, threshold: float) -> None:
         """Set the threshold for final decision.
         
@@ -200,8 +173,5 @@ class SignalCombiner:
     
     def clear_cache(self) -> None:
         """Clear all caches."""
-        self.weights_cache = {}
         self.combined_signal_cache = {}
-        if self.signal_evaluator:
-            self.signal_evaluator.clear_cache()
-        self.logger.info("Cleared all caches") 
+        self.logger.info("Cleared cache") 

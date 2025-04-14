@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Union, Any
 
 from ..signals.signal_base import SignalBase
+from .signal_data import SignalData
 
 
 class AssetData:
@@ -60,6 +61,48 @@ class AssetData:
         """
         self.signals[signal_name] = signal_data
         self.logger.debug(f"Added signal {signal_name} for {self.asset_id}")
+
+    def register_signal(self, signal: SignalBase, params: Optional[Dict[str, Any]] = None) -> Optional[SignalData]:
+        """Register a signal with this asset.
+        
+        This creates a SignalData object for the signal and calculates initial values.
+        
+        Args:
+            signal: Signal instance to register
+            params: Parameters for signal calculation
+            
+        Returns:
+            SignalData object if successful, None otherwise
+        """
+        try:
+            # Update signal parameters if provided
+            if params:
+                if hasattr(signal, 'params'):
+                    signal.params.update(params)
+                
+            # Create SignalData object
+            signal_data = SignalData(signal_name=signal.name, asset_id=self.asset_id)
+            
+            # Register the signal instance with the SignalData
+            signal_data.register_signal_instance(signal)
+            
+            # Add signal to asset
+            self.add_signal(signal.name, signal_data)
+            
+            # Calculate initial values if we have price data
+            if self.has_data():
+                try:
+                    values = signal.calculate(self.price_data, self.asset_id)
+                    signal_data.set_values(values)
+                    self.logger.info(f"Calculated initial values for {signal.name} on {self.asset_id}: {len(values)} points")
+                except Exception as e:
+                    self.logger.error(f"Error calculating initial values for {signal.name} on {self.asset_id}: {e}")
+            
+            return signal_data
+            
+        except Exception as e:
+            self.logger.error(f"Error registering signal {signal.name}: {e}")
+            return None
         
     def get_signal(self, signal_name: str) -> Optional['SignalData']:
         """Get a signal by name.
@@ -107,7 +150,7 @@ class AssetData:
         """
         return not self.price_data.empty if hasattr(self.price_data, 'empty') else len(self.price_data) > 0
         
-    def get_data(self) -> pd.DataFrame:
+    def get_price_data(self) -> pd.DataFrame:
         """Get the price data for this asset.
         
         Returns:
@@ -115,16 +158,6 @@ class AssetData:
         """
         return self.price_data
         
-    def get_effective_signals(self) -> Dict[str, 'SignalData']:
-        """Get all effective signals for this asset.
-        
-        Returns:
-            dict: Dictionary mapping signal names to SignalData objects
-                  for signals that are effective (have non-zero weight)
-        """
-        return {name: signal for name, signal in self.signals.items() 
-                if signal.weight != 0 and signal.is_effective}
-                
     def get_signal_values(self, start_date: Optional[datetime] = None, 
                          end_date: Optional[datetime] = None) -> pd.DataFrame:
         """Get values for all signals within a date range.

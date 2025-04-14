@@ -32,6 +32,11 @@ class PortfolioManager:
         self.ssr_handler = ssr_handler
         self.markov_vol_model = markov_vol_model
         self.signal_selector = signal_selector or SignalSelector()
+        
+        # Create portfolios directory if it doesn't exist
+        if not os.path.exists(portfolios_dir):
+            os.makedirs(portfolios_dir)
+            self.logger.info(f"Created portfolios directory: {portfolios_dir}")
     
     def _load_portfolios(self):
         """Load existing portfolios from the portfolios directory."""

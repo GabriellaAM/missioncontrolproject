@@ -29,12 +29,12 @@ class SignalBase(ABC):
         self.name = self.__class__.__name__
     
     @abstractmethod
-    def calculate(self, data: pd.DataFrame, **kwargs) -> pd.Series:
+    def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
         """Calculate the signal values for the given data.
         
         Args:
             data (pd.DataFrame): Input data for the signal calculation.
-            **kwargs: Additional keyword arguments for the calculation.
+            asset_id (str): ID of the asset for which to calculate the signal.
             
         Returns:
             pd.Series: A pandas Series with binary signal values (1 for active signal, 0 for inactive)

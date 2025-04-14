@@ -79,6 +79,15 @@ combined_signal, final_decision, weights = combiner.combine_signals(
 - **MarkovVolatilitySignal**: Signal based on Markov volatility model regime detection
 - **VolatilityTrendSignal**: Signal based on the trend of volatility changes
 
+### Donchian Channel Signals
+
+- **DonchianEnsembleUSD/BTC**: Ensemble signal that combines multiple Donchian Channel breakout strategies
+  - Utilizes lookback periods of 5, 10, 20, 30, 60, 90, 150, 250, and 360 days simultaneously
+  - For each window, calculates a breakout signal when price closes above the upper channel
+  - Exit signal occurs when price closes below the trailing stop (maximum of previous stop and mid-line)
+  - Final signal is determined by majority voting - if 50% or more of windows show a buy signal, the ensemble signal is 1 (buy)
+  - Reduces false signals by requiring confirmation across multiple timeframes
+
 ## Signal Evaluation
 
 The signal framework includes tools for evaluating signal effectiveness:

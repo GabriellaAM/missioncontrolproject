@@ -252,6 +252,26 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 
 **Outcome**: A fully functional backtesting framework that uses statistically significant signals with empirically-determined weights and decay periods, normalizing them daily to make trading decisions at market close for execution at next day's open.
 
+### **Step 3.10: Simplified Signal-Based Trading Framework** ✅
+- **Removed Statistical Testing Components**:
+  - Deleted the forward_returns module and statistical testing components
+  - Removed signal evaluation based on statistical tests 
+  - Simplified the signal selection process
+- **Created Direct Signal Application System**:
+  - Updated SignalData class to focus on signal values and activation events
+  - Added signal weight and decay configuration directly in PortfolioAnalyzer
+  - Streamlined SignalCombiner to work with manually configured weights
+- **Simplified Core Components**:
+  - Removed dependencies on complex evaluation metrics
+  - Created a cleaner, more maintainable signal registration workflow
+  - Enhanced AssetData class with direct signal registration
+- **Workflow Improvements**:
+  - Simplified the signal workflow to load data → calculate indicators → generate signals → make decisions
+  - Provided clear configuration options for signal weights and decay periods
+  - Created foundation for future metalabeling implementation without statistical dependencies
+
+**Outcome**: A more streamlined and maintainable system that directly applies signals to trading decisions without complex statistical selection processes, setting the foundation for more sophisticated approaches like metalabeling in the future.
+
 ---
 
 ## **Phase 4: Streamlit UI & Backtesting**

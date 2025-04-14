@@ -131,10 +131,14 @@ class TrendSignalBase(SignalBase):
         Returns:
             pd.DataFrame: Classified trend data
         """
-        # Create a cache key based on asset_id and data shape/hash
-        # This ensures we don't reuse stale data
-        data_hash = hash(str(data.shape) + str(data.index[0]) + str(data.index[-1]))
-        cache_key = f"{asset_id}_{data_hash}"
+        # Create a more efficient cache key based on asset_id and just the essential data attributes
+        # Use the first and last date and length to identify the dataset
+        first_date = data.index[0]
+        last_date = data.index[-1]
+        data_length = len(data)
+        
+        # Create a lightweight cache key
+        cache_key = f"{asset_id}_{data_length}_{first_date}_{last_date}"
         
         # Check if we have cached results
         if cache_key in _TREND_CACHE:
@@ -192,10 +196,11 @@ class TrendSignalBase(SignalBase):
             self.logger.warning(f"Trend column {trend_col} not found for {asset_id}")
             return pd.Series(index=data.index)
         
-        # Create signal based on exact trend value match
-        signal = classified_data[trend_col].apply(
-            lambda x: 1 if pd.notna(x) and x == self.trend_value else 0
-        )
+        # Create signal based on exact trend value match - more efficiently
+        # Instead of using apply, use vectorized operations
+        signal = pd.Series(0, index=classified_data.index)
+        mask = (classified_data[trend_col] == self.trend_value) & classified_data[trend_col].notna()
+        signal[mask] = 1
         
         return signal
 

@@ -18,6 +18,7 @@ from . import trend_signals
 from . import rsi_signals
 from . import ssr_signals
 from . import volatility_signals
+from . import donchian_signals  # Import the new Donchian signals module
 
 # Import specific signals for easy access
 from .trend_signals import (
@@ -31,6 +32,17 @@ from .rsi_signals import (
 )
 from .ssr_signals import SSR_RiskOn, SSR_RiskOff
 from .volatility_signals import MarkovLowVolatilitySignal, MarkovHighVolatilitySignal
+from .donchian_signals import (  # Import the Donchian ensemble signals
+    DonchianEnsembleUSD, DonchianEnsembleBTC,
+)
+
+# Ensure all signals are properly loaded and registered
+from .ensure_signals_loaded import signals as registered_signals
+
+# Log the number of registered signals
+import logging
+logger = logging.getLogger(__name__)
+logger.info(f"Loaded a total of {len(registered_signals)} signals in the registry")
 
 __all__ = [
     'SignalBase',
@@ -68,4 +80,8 @@ __all__ = [
     # Volatility signals
     'MarkovLowVolatilitySignal',
     'MarkovHighVolatilitySignal',
+    
+    # Donchian signals
+    'DonchianEnsembleUSD',
+    'DonchianEnsembleBTC',
 ] 
