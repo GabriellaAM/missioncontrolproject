@@ -345,77 +345,52 @@ class StatisticalTester:
     ) -> Dict[str, Any]:
         """Evaluate overall signal effectiveness based on test results.
         
+        Note: This method is maintained for backward compatibility. 
+        For new code, use evaluate_signal_effectiveness_new directly.
+        
         Args:
-            test_results: Results from run_all_tests
+            test_results: Dictionary with test results from run_all_tests
             
         Returns:
-            dict: Dictionary with effectiveness evaluation
+            dict: Dictionary with overall effectiveness metrics
         """
-        evaluation = {
-            'valid_tests': 0,
-            'significant_tests': 0,
-            'mean_difference_significant': False,
-            'median_difference_significant': False,
-            'distribution_difference': False,
-            'favorable_skew': False,
-            'overall_effective': False,
-            'confidence': 0.0,
-            'effect_size': 0.0,
-            'direction': 0  # 1 for positive, -1 for negative
+        self.logger.warning(
+            "The evaluate_signal_effectiveness method is deprecated. "
+            "Use evaluate_signal_effectiveness_new instead."
+        )
+        
+        # Extract the returns by period from test results
+        # This is a bit hacky but necessary for backward compatibility
+        returns_by_period = {}
+        for test_name, test_result in test_results.items():
+            if test_name == 'Mann-Whitney U':
+                for period, period_data in test_result.items():
+                    if isinstance(period_data, dict) and 'raw_data' in period_data:
+                        raw_data = period_data['raw_data']
+                        positive_returns = raw_data.get('positive_returns', pd.Series())
+                        negative_returns = raw_data.get('negative_returns', pd.Series())
+                        returns_by_period[period] = (positive_returns, negative_returns)
+        
+        # If we couldn't extract the returns, return a default result
+        if not returns_by_period:
+            return {
+                'overall_effective': False,
+                'weight': 0.0,
+                'reason': "Could not extract return data from test results"
+            }
+        
+        # Use the new implementation
+        result = self.evaluate_signal_effectiveness_new(returns_by_period)
+        
+        # Return a simplified version for backward compatibility
+        return {
+            'overall_effective': result['overall_effective'],
+            'weight': result['metrics'].get('weight', 0.0),
+            'confidence': result['metrics'].get('confidence', 0.0),
+            'direction': 1 if result['metrics'].get('delta', 0.0) > 0 else -1 if result['metrics'].get('delta', 0.0) < 0 else 0,
+            'optimal_period': result['metrics'].get('optimal_period', 0),
+            'metrics': result['metrics']
         }
-        
-        # Count valid and significant tests
-        if 't_test' in test_results and test_results['t_test'].get('valid', False):
-            evaluation['valid_tests'] += 1
-            if test_results['t_test'].get('significant', False):
-                evaluation['significant_tests'] += 1
-                
-                # Check direction of mean difference (significant in either direction)
-                mean_diff = test_results['t_test'].get('mean_difference', 0)
-                evaluation['mean_difference_significant'] = True
-                
-                # Store effect size (magnitude) and direction
-                effect_size = test_results['t_test'].get('effect_size', 0)
-                evaluation['effect_size'] = abs(effect_size)  # Use absolute value for magnitude
-                evaluation['direction'] = 1 if mean_diff > 0 else -1
-        
-        if 'mann_whitney' in test_results and test_results['mann_whitney'].get('valid', False):
-            evaluation['valid_tests'] += 1
-            if test_results['mann_whitney'].get('significant', False):
-                evaluation['significant_tests'] += 1
-                
-                # Check for significant median difference (either direction)
-                median_diff = test_results['mann_whitney'].get('median_difference', 0)
-                evaluation['median_difference_significant'] = True
-                
-                # Set direction if not already set by t-test
-                if evaluation['direction'] == 0:
-                    evaluation['direction'] = 1 if median_diff > 0 else -1
-        
-        if 'ks_test' in test_results and test_results['ks_test'].get('valid', False):
-            evaluation['valid_tests'] += 1
-            if test_results['ks_test'].get('significant', False):
-                evaluation['significant_tests'] += 1
-                evaluation['distribution_difference'] = True
-        
-        if 'skew_kurt' in test_results and test_results['skew_kurt'].get('valid', False):
-            # Check if positive returns have more favorable skew
-            pos_skew = test_results['skew_kurt'].get('positive_skew', 0)
-            neg_skew = test_results['skew_kurt'].get('negative_skew', 0)
-            
-            # Positive skew is generally favorable for returns
-            if pos_skew > neg_skew:
-                evaluation['favorable_skew'] = True
-        
-        # Calculate confidence based on proportion of significant tests
-        if evaluation['valid_tests'] > 0:
-            evaluation['confidence'] = evaluation['significant_tests'] / evaluation['valid_tests']
-        
-        # Overall effectiveness criteria - modified to consider significance in either direction
-        if (evaluation['mean_difference_significant'] or evaluation['median_difference_significant']) and evaluation['confidence'] >= 0.5:
-            evaluation['overall_effective'] = True
-        
-        return evaluation
     
     def _cohens_d(self, group1: pd.Series, group2: pd.Series) -> float:
         """Calculate Cohen's d effect size.
@@ -465,4 +440,253 @@ class StatisticalTester:
         elif d < 0.8:
             return "medium"
         else:
-            return "large" 
+            return "large"
+    
+    def calculate_cliffs_delta(
+        self, group1: pd.Series, group2: pd.Series
+    ) -> float:
+        """Calculate Cliff's Delta, a non-parametric effect size measure.
+        
+        Cliff's Delta measures the probability that a randomly chosen value
+        from group1 is greater than a randomly chosen value from group2,
+        minus the reverse probability. It ranges from -1 to 1, where:
+        - -1: All values in group2 > all values in group1
+        - 0: Groups are completely overlapping
+        - 1: All values in group1 > all values in group2
+        
+        Args:
+            group1: First group of values
+            group2: Second group of values
+            
+        Returns:
+            float: Cliff's Delta effect size
+        """
+        # Convert to numpy arrays for faster computation
+        x = group1.to_numpy()
+        y = group2.to_numpy()
+        
+        # Count comparisons
+        count1 = 0  # x > y
+        count2 = 0  # x < y
+        
+        for i in range(len(x)):
+            for j in range(len(y)):
+                if x[i] > y[j]:
+                    count1 += 1
+                elif x[i] < y[j]:
+                    count2 += 1
+        
+        # Calculate delta
+        delta = (count1 - count2) / (len(x) * len(y))
+        return delta
+    
+    def interpret_cliffs_delta(self, delta: float) -> str:
+        """Interpret Cliff's Delta effect size.
+        
+        Args:
+            delta: Cliff's Delta value
+            
+        Returns:
+            str: Interpretation of effect size
+        """
+        abs_delta = abs(delta)
+        
+        if abs_delta < 0.147:
+            return "negligible"
+        elif abs_delta < 0.33:
+            return "small"
+        elif abs_delta < 0.474:
+            return "medium"
+        else:
+            return "large"
+    
+    def apply_fdr_correction(
+        self, p_values: Dict[int, float], alpha: float = 0.05
+    ) -> Dict[int, bool]:
+        """Apply Benjamini-Hochberg FDR correction to p-values.
+        
+        Args:
+            p_values: Dictionary mapping test identifiers to p-values
+            alpha: Desired FDR level (default: 0.05)
+            
+        Returns:
+            dict: Dictionary mapping test identifiers to significance (True/False)
+        """
+        if not p_values:
+            return {}
+        
+        # Convert to list and sort
+        items = list(p_values.items())
+        items.sort(key=lambda x: x[1])  # Sort by p-value
+        
+        # Apply B-H procedure
+        m = len(items)
+        significance = {}
+        
+        # Find the largest k such that P(k) ≤ (k/m) * alpha
+        for k, (identifier, p_value) in enumerate(items, start=1):
+            if p_value <= (k / m) * alpha:
+                significance[identifier] = True
+            else:
+                significance[identifier] = False
+        
+        # Convert to original identifier order
+        result = {}
+        for identifier in p_values:
+            result[identifier] = significance.get(identifier, False)
+        
+        return result
+        
+    def run_mann_whitney_and_cliffs_delta(
+        self, positive_returns: pd.Series, negative_returns: pd.Series
+    ) -> Dict[str, Any]:
+        """Run Mann-Whitney U test and calculate Cliff's Delta.
+        
+        This is the primary test for evaluating signal effectiveness.
+        
+        Args:
+            positive_returns: Returns when signal is positive
+            negative_returns: Returns when signal is negative
+            
+        Returns:
+            dict: Dictionary with test results
+        """
+        results = {}
+        
+        try:
+            # Check if we have enough samples
+            if len(positive_returns) < 20 or len(negative_returns) < 20:
+                self.logger.warning("Not enough samples for Mann-Whitney U test")
+                results['warning'] = "Not enough samples for Mann-Whitney U test"
+                results['valid'] = False
+                return results
+            
+            # Run Mann-Whitney U test
+            stat, p_value = mannwhitneyu(
+                positive_returns, negative_returns, alternative='two-sided'
+            )
+            
+            # Calculate Cliff's Delta
+            delta = self.calculate_cliffs_delta(positive_returns, negative_returns)
+            effect_magnitude = self.interpret_cliffs_delta(delta)
+            
+            # Store results
+            results['test'] = 'Mann-Whitney U with Cliff\'s Delta'
+            results['test_type'] = 'non-parametric'
+            results['comparison'] = 'positive_vs_negative'
+            results['statistic'] = stat
+            results['p_value'] = p_value
+            results['significant'] = p_value < self.alpha
+            results['effect_size'] = delta
+            results['effect_magnitude'] = effect_magnitude
+            results['median_difference'] = positive_returns.median() - negative_returns.median()
+            results['mean_difference'] = positive_returns.mean() - negative_returns.mean()
+            results['valid'] = True
+            
+        except Exception as e:
+            self.logger.error(f"Error running Mann-Whitney U test with Cliff's Delta: {e}")
+            results['error'] = str(e)
+            results['valid'] = False
+        
+        return results
+        
+    def evaluate_signal_effectiveness_new(
+        self, returns_by_period: Dict[int, Tuple[pd.Series, pd.Series]]
+    ) -> Dict[str, Any]:
+        """Evaluate signal effectiveness using Mann-Whitney U and FDR correction.
+        
+        Args:
+            returns_by_period: Dictionary mapping periods to (positive_returns, negative_returns)
+            
+        Returns:
+            dict: Evaluation results with metrics
+        """
+        # Run tests for each period
+        test_results = {}
+        p_values = {}
+        all_period_data = {}
+        
+        for period, (positive_returns, negative_returns) in returns_by_period.items():
+            # Run Mann-Whitney U test and calculate Cliff's Delta
+            results = self.run_mann_whitney_and_cliffs_delta(positive_returns, negative_returns)
+            test_results[period] = results
+            
+            # Store p-value for FDR correction
+            if results.get('valid', False):
+                p_values[period] = results.get('p_value', 1.0)
+                all_period_data[period] = {
+                    'delta': results.get('effect_size', 0.0),
+                    'mean_diff': results.get('mean_difference', 0.0),
+                    'significant': results.get('significant', False),
+                    'effect_magnitude': results.get('effect_magnitude', 'negligible')
+                }
+        
+        # Apply FDR correction
+        fdr_significant = self.apply_fdr_correction(p_values)
+        
+        # Calculate confidence and weight for each period
+        confidence_by_period = {}
+        weight_by_period = {}
+        
+        for period, is_significant in fdr_significant.items():
+            delta = all_period_data[period]['delta']
+            
+            # Calculate confidence
+            if is_significant and abs(delta) >= 0.147:  # Only non-negligible effects
+                confidence = abs(delta)  # Confidence is the absolute effect size
+            else:
+                confidence = 0.0
+            
+            # Calculate weight
+            weight = delta * confidence  # Weight includes direction (positive or negative)
+            
+            confidence_by_period[period] = confidence
+            weight_by_period[period] = weight
+        
+        # Determine overall effectiveness
+        effective_periods = [p for p, conf in confidence_by_period.items() if conf > 0]
+        overall_effective = len(effective_periods) > 0
+        
+        # Calculate overall metrics
+        if overall_effective:
+            # Find period with highest confidence
+            best_period = max(confidence_by_period.items(), key=lambda x: x[1])[0]
+            optimal_period = best_period
+            optimal_delta = all_period_data[best_period]['delta']
+            optimal_confidence = confidence_by_period[best_period]
+            optimal_weight = weight_by_period[best_period]
+            
+            # Summary metrics
+            metrics = {
+                'optimal_period': optimal_period,
+                'delta': optimal_delta,
+                'confidence': optimal_confidence,
+                'weight': optimal_weight,
+                'effect_magnitude': all_period_data[best_period]['effect_magnitude'],
+                'mean_difference': all_period_data[best_period]['mean_diff'],
+                'effective_periods': len(effective_periods),
+                'total_periods': len(returns_by_period),
+                'effective_ratio': len(effective_periods) / len(returns_by_period)
+            }
+        else:
+            # No effective periods
+            metrics = {
+                'optimal_period': 0,
+                'delta': 0.0,
+                'confidence': 0.0,
+                'weight': 0.0,
+                'effect_magnitude': 'negligible',
+                'mean_difference': 0.0,
+                'effective_periods': 0,
+                'total_periods': len(returns_by_period),
+                'effective_ratio': 0.0
+            }
+        
+        return {
+            'overall_effective': overall_effective,
+            'metrics': metrics,
+            'confidence_by_period': confidence_by_period,
+            'weight_by_period': weight_by_period,
+            'fdr_significant': fdr_significant,
+            'all_period_data': all_period_data
+        } 
