@@ -303,6 +303,7 @@ class DonchianBreakoutSignal(DonchianSignalBase):
         # Get signal threshold from params, default to 3 (at least 3 window signals must be active)
         signal_threshold = self.params.get('signal_threshold', 3)
         
+        
         try:
             # Use all available window lengths from the base class
             windows = self.WINDOWS  # [5, 10, 20, 30, 60, 90, 150, 250, 360]
@@ -328,31 +329,10 @@ class DonchianBreakoutSignal(DonchianSignalBase):
             max_window = max(windows)
             signal_df['final_signal'].iloc[:max_window*2] = 0
             
-            # Log final ensemble signal statistics
-            total_days = len(signal_df)
-            signal_days = signal_df['final_signal'].sum()
-            signal_pct = (signal_days / total_days) * 100 if total_days > 0 else 0
-            
-            # Log window usage statistics
-            window_usage = {}
-            for window in windows:
-                days_active = signal_df[f'window_{window}'].sum()
-                pct_active = (days_active / total_days) * 100 if total_days > 0 else 0
-                window_usage[window] = (days_active, pct_active)
-                
-            window_stats = ", ".join([f"W{w}: {d}/{total_days} ({p:.1f}%)" 
-                                     for w, (d, p) in window_usage.items()])
-            
-            self.logger.info(
-                f"Ensemble signal for {asset_id}: {signal_days}/{total_days} days in position ({signal_pct:.1f}%)"
-            )
-            self.logger.info(f"Window statistics for {asset_id}: {window_stats}")
-            
             return signal_df['final_signal']
             
         except Exception as e:
             self.logger.error(f"Error calculating Donchian ensemble signal for {asset_id}: {str(e)}")
-            self.logger.exception(e)  # Log full traceback
             return pd.Series(0, index=data.index)
 
 

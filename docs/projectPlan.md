@@ -272,6 +272,27 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 
 **Outcome**: A more streamlined and maintainable system that directly applies signals to trading decisions without complex statistical selection processes, setting the foundation for more sophisticated approaches like metalabeling in the future.
 
+### **Step 3.11: Regime Detection Signal Implementation** ✅
+- **Designed and Implemented Momentum-Variance Regime Detection**:
+  - Created `RegimeDetectionBase` class for calculating momentum and variance components
+  - Implemented `BullHighVarianceSignalUSD`, `BullLowVarianceSignalUSD`, `BearHighVarianceSignalUSD`, and `BearLowVarianceSignalUSD` classes for USD-quoted assets
+  - Implemented `BullHighVarianceSignalBTC`, `BullLowVarianceSignalBTC`, `BearHighVarianceSignalBTC`, and `BearLowVarianceSignalBTC` classes for BTC-quoted assets
+  - Used 30-day EMA of 5-day log returns standard deviation for variance component
+  - Used 5-day EMA of price, then another 5-day EMA of that EMA for momentum component
+  - Normalized variance component using 90-day rolling normalized score
+  - Normalized momentum component using 14-day rolling normalized score
+- **Integration with PortfolioAnalyzer**:
+  - Updated signal registry to include the new regime detection signals
+  - Created test scripts to verify signal functionality for both USD and BTC quotes
+  - Created example notebook demonstrating visualization and use of regime signals
+  - Added comparison tools to analyze agreement between USD and BTC signals
+- **Visualization Capabilities**:
+  - Implemented specialized visualization for regime detection signals
+  - Created tools to analyze the percentage of time assets spend in different regimes
+  - Added dashboard to display current regime for all assets
+
+**Outcome**: A sophisticated regime detection system that classifies market conditions into four distinct regimes based on momentum and volatility, providing valuable context for trading decisions and risk management. The system now supports both USD-quoted and BTC-quoted assets, enabling relative performance analysis across different quote currencies.
+
 ---
 
 ## **Phase 4: Streamlit UI & Backtesting**

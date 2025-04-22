@@ -19,6 +19,7 @@ from . import rsi_signals
 from . import ssr_signals
 from . import volatility_signals
 from . import donchian_signals  # Import the new Donchian signals module
+from . import regime_signals  # Import the new Regime Detection signals module
 
 # Import specific signals for easy access
 from .trend_signals import (
@@ -34,6 +35,12 @@ from .ssr_signals import SSR_RiskOn, SSR_RiskOff
 from .volatility_signals import MarkovLowVolatilitySignal, MarkovHighVolatilitySignal
 from .donchian_signals import (  # Import the Donchian ensemble signals
     DonchianEnsembleUSD, DonchianEnsembleBTC,
+)
+from .regime_signals import (  # Import the Regime Detection signals
+    BullHighVarianceSignalUSD, BullLowVarianceSignalUSD,
+    BearHighVarianceSignalUSD, BearLowVarianceSignalUSD,
+    BullHighVarianceSignalBTC, BullLowVarianceSignalBTC,
+    BearHighVarianceSignalBTC, BearLowVarianceSignalBTC,
 )
 
 # Ensure all signals are properly loaded and registered
@@ -84,4 +91,16 @@ __all__ = [
     # Donchian signals
     'DonchianEnsembleUSD',
     'DonchianEnsembleBTC',
+    
+    # Regime Detection signals (USD)
+    'BullHighVarianceSignalUSD',
+    'BullLowVarianceSignalUSD',
+    'BearHighVarianceSignalUSD',
+    'BearLowVarianceSignalUSD',
+    
+    # Regime Detection signals (BTC)
+    'BullHighVarianceSignalBTC',
+    'BullLowVarianceSignalBTC',
+    'BearHighVarianceSignalBTC',
+    'BearLowVarianceSignalBTC',
 ] 

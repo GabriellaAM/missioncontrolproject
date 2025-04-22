@@ -211,6 +211,11 @@ class PortfolioAnalyzer:
             except ImportError:
                 self.logger.warning("Could not import ROSTER. Please specify assets explicitly.")
                 return {}
+        
+        # Convert assets to list if it's a set or other iterable
+        if not isinstance(assets, list):
+            assets = list(assets)
+            self.logger.info(f"Converted assets to list with {len(assets)} items")
                 
         # Convert dates to datetime objects if they are strings
         if isinstance(start_date, str):
@@ -238,7 +243,7 @@ class PortfolioAnalyzer:
                     return asset_id, None
             
             # Execute in parallel
-            with ThreadPoolExecutor(max_workers=min(8, total_assets)) as executor:
+            with ThreadPoolExecutor(max_workers=min(self.num_workers, total_assets)) as executor:
                 future_to_asset = {
                     executor.submit(load_asset_data, asset): asset 
                     for asset in assets
@@ -425,43 +430,58 @@ class PortfolioAnalyzer:
         # Register signals with asset data
         registered_signals = {}
         
-        for signal_name in signal_names:
-            try:
-                # Get signal instance
-                signal = get_signal(signal_name)
-                
-                if signal is None:
-                    # Signal not found in registry
-                    self.logger.debug(f"Signal {signal_name} not found in registry")
+        # First check which signals are already registered to avoid duplicate work
+        existing_signals = asset_data.get_signal_names()
+        new_signals = [s for s in signal_names if s not in existing_signals]
+        reuse_signals = [s for s in signal_names if s in existing_signals]
+        
+        if reuse_signals:
+            self.logger.info(f"Reusing {len(reuse_signals)} already registered signals for {asset_id}")
+            # Add existing signals to the result
+            for signal_name in reuse_signals:
+                signal_data = asset_data.get_signal(signal_name)
+                registered_signals[signal_name] = signal_data
+        
+        # Process only new signals
+        if new_signals:
+            self.logger.info(f"Registering {len(new_signals)} new signals for {asset_id}")
+            for signal_name in new_signals:
+                try:
+                    # Get signal instance
+                    signal = get_signal(signal_name)
                     
-                    # Create an empty SignalData anyway for consistency
-                    signal_data = SignalData(signal_name=signal_name, asset_id=asset_id)
-                    asset_data.add_signal(signal_name, signal_data)
-                    registered_signals[signal_name] = signal_data
+                    if signal is None:
+                        # Signal not found in registry
+                        self.logger.debug(f"Signal {signal_name} not found in registry")
+                        
+                        # Create an empty SignalData anyway for consistency
+                        signal_data = SignalData(signal_name=signal_name, asset_id=asset_id)
+                        asset_data.add_signal(signal_name, signal_data)
+                        registered_signals[signal_name] = signal_data
+                        continue
+                    
+                    # Initialize params with asset_id
+                    params = {'asset_id': asset_id}
+                    
+                    # Register signal with asset data
+                    signal_data = asset_data.register_signal(signal, params)
+                    
+                    if signal_data:
+                        registered_signals[signal_name] = signal_data
+                        self.logger.debug(f"Registered signal {signal_name} for {asset_id}")
+                        
+                        # Calculate values if requested
+                        if calculate_values:
+                            # Pass the price data to calculate_values to avoid warnings
+                            values = signal_data.calculate_values(asset_data.price_data)
+                            self.logger.debug(
+                                f"Calculated values for {signal_name} on {asset_id}: "
+                                f"{len(values)} data points"
+                            )
+                    
+                except Exception as e:
+                    self.logger.error(f"Error registering signal {signal_name} for {asset_id}: {e}")
                     continue
-                
-                # Initialize params with asset_id
-                params = {'asset_id': asset_id}
-                
-                # Register signal with asset data
-                signal_data = asset_data.register_signal(signal, params)
-                
-                if signal_data:
-                    registered_signals[signal_name] = signal_data
-                    self.logger.debug(f"Registered signal {signal_name} for {asset_id}")
-                    
-                    # Calculate values if requested
-                    if calculate_values:
-                        # Pass the price data to calculate_values to avoid warnings
-                        values = signal_data.calculate_values(asset_data.price_data)
-                        self.logger.debug(
-                            f"Calculated values for {signal_name} on {asset_id}: "
-                            f"{len(values)} data points"
-                        )
-                
-            except Exception as e:
-                self.logger.error(f"Error registering signal {signal_name} for {asset_id}: {e}")
-                continue
         
         return registered_signals
     
@@ -470,7 +490,8 @@ class PortfolioAnalyzer:
         asset_ids: List[str],
         signal_names: Optional[List[str]] = None,
         calculate_values: bool = True,
-        signal_categories: Optional[List[str]] = None
+        signal_categories: Optional[List[str]] = None,
+        skip_trend_signals: bool = False
     ) -> Dict[str, Dict[str, SignalData]]:
         """Register signals for multiple assets in parallel.
         
@@ -480,19 +501,40 @@ class PortfolioAnalyzer:
             calculate_values: Whether to calculate signal values
             signal_categories: Filter signals by category ('trend', 'rsi', 'ssr', 'markov', etc.)
                               This can dramatically reduce calculation time.
+            skip_trend_signals: If True, skip all trend signals regardless of other parameters
             
         Returns:
             dict: Dictionary mapping asset IDs to dictionaries mapping signal names to SignalData objects
         """
         self.logger.info(f"Registering signals in parallel for {len(asset_ids)} assets...")
         
-        # Clear trend cache before starting
-        try:
-            from ..signals.trend_signals import TrendSignalBase
-            TrendSignalBase.clear_trend_cache()
-            self.logger.info("Cleared trend signal cache")
-        except Exception as e:
-            self.logger.warning(f"Could not clear trend signal cache: {e}")
+        # Convert asset_ids to list if it's a set or other iterable
+        if not isinstance(asset_ids, list):
+            asset_ids = list(asset_ids)
+            self.logger.info(f"Converted asset_ids to list with {len(asset_ids)} items")
+        
+        # Clear trend cache before starting (unless skipping trend signals)
+        if not skip_trend_signals:
+            try:
+                from ..signals.trend_signals import TrendSignalBase
+                TrendSignalBase.clear_trend_cache()
+                self.logger.info("Cleared trend signal cache")
+            except Exception as e:
+                self.logger.warning(f"Could not clear trend signal cache: {e}")
+        else:
+            self.logger.info("Trend signals will be skipped")
+            
+        # If skipping trend signals and signal_names is None, filter out trend signals
+        if skip_trend_signals and signal_names is None:
+            # Get all signal names
+            all_signals = get_signal_names()
+            # Filter out trend signals (those likely to be trend-related)
+            signal_names = [s for s in all_signals if not s.startswith('ShortTerm') 
+                           and not s.startswith('MediumTerm')
+                           and not s.startswith('LongTerm')
+                           and not s.startswith('Overall')
+                           and 'Trend' not in s]
+            self.logger.info(f"Skipping trend signals, using {len(signal_names)} non-trend signals")
         
         results = {}
         
@@ -522,12 +564,32 @@ class PortfolioAnalyzer:
                 results[asset_id] = asset_signals
         else:
             # Use thread pool for I/O-bound operations
-            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-                future_to_asset = {executor.submit(_register_for_asset, asset_id): asset_id for asset_id in asset_ids}
+            # Limit max_workers to something reasonable (min of num_workers or number of assets)
+            max_workers = min(self.num_workers, len(asset_ids))
+            self.logger.info(f"Using {max_workers} workers for parallel signal registration")
+            
+            # Process in groups to better manage memory
+            # Use groups of 5 assets, process each group completely before moving to the next
+            group_size = 5
+            for i in range(0, len(asset_ids), group_size):
+                group = asset_ids[i:i+group_size]
+                group_num = i // group_size + 1
+                total_groups = (len(asset_ids) + group_size - 1) // group_size
                 
-                for future in tqdm(as_completed(future_to_asset), total=len(asset_ids), desc="Registering signals"):
-                    asset_id, asset_signals = future.result()
-                    results[asset_id] = asset_signals
+                self.logger.info(f"Processing asset group {group_num}/{total_groups} with {len(group)} assets")
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_asset = {executor.submit(_register_for_asset, asset_id): asset_id for asset_id in group}
+                    
+                    for future in tqdm(as_completed(future_to_asset), total=len(group), 
+                                       desc=f"Registering signals group {group_num}/{total_groups}"):
+                        asset_id, asset_signals = future.result()
+                        results[asset_id] = asset_signals
+                
+                # Optional: suggest garbage collection between groups
+                if len(asset_ids) > group_size * 2:  # Only do this for larger datasets
+                    import gc
+                    gc.collect()
         
         # Log summary
         total_signals = sum(len(signals) for signals in results.values())
