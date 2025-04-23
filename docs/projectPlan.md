@@ -248,29 +248,29 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 - **Created Backtesting Scripts without Metalabeling**:
   - Developed `backtest_without_metalabeling.py` script that bypasses metalabeling checks
   - Created `daily_signal_execution.py` for demonstrating daily signal process workflow
-  - Added visualization of equity curves and performance metrics
 
-**Outcome**: A fully functional backtesting framework that uses statistically significant signals with empirically-determined weights and decay periods, normalizing them daily to make trading decisions at market close for execution at next day's open.
-
-### **Step 3.10: Simplified Signal-Based Trading Framework** ✅
-- **Removed Statistical Testing Components**:
-  - Deleted the forward_returns module and statistical testing components
-  - Removed signal evaluation based on statistical tests 
-  - Simplified the signal selection process
-- **Created Direct Signal Application System**:
-  - Updated SignalData class to focus on signal values and activation events
-  - Added signal weight and decay configuration directly in PortfolioAnalyzer
-  - Streamlined SignalCombiner to work with manually configured weights
-- **Simplified Core Components**:
-  - Removed dependencies on complex evaluation metrics
-  - Created a cleaner, more maintainable signal registration workflow
-  - Enhanced AssetData class with direct signal registration
-- **Workflow Improvements**:
-  - Simplified the signal workflow to load data → calculate indicators → generate signals → make decisions
-  - Provided clear configuration options for signal weights and decay periods
-  - Created foundation for future metalabeling implementation without statistical dependencies
-
-**Outcome**: A more streamlined and maintainable system that directly applies signals to trading decisions without complex statistical selection processes, setting the foundation for more sophisticated approaches like metalabeling in the future.
+### **Step 3.10: Asset-Specific Backtesting Framework** ✅
+- **Implemented Asset-Level Backtesting**:
+  - Created `backtest_asset` method in PortfolioBacktester for individual asset backtesting
+  - Added support for both USD and BTC signals with configurable combinations
+  - Implemented special handling for Bitcoin (only USD signals applicable)
+  - Added comprehensive performance metrics calculation (returns, drawdowns, ratios)
+  - Implemented trade tracking with entry/exit details and profitability metrics
+  - Added classification metrics (accuracy, precision, recall, F1 score)
+- **Enhanced Asset Data Storage**:
+  - Extended AssetData class to store backtest results
+  - Added methods to access and manage backtest history
+  - Implemented descriptive backtest naming based on signal combinations
+- **Simplified API through PortfolioAnalyzer**:
+  - Added `backtest_asset` wrapper method in PortfolioAnalyzer
+  - Implemented automatic backtester creation and configuration
+  - Added sensible default signals when none are specified
+- **Created Example Scripts**:
+  - Developed `asset_backtest_example.py` with comprehensive testing of different signal combinations
+  - Created `simple_asset_backtest.py` for minimal demonstration of the API
+  - Added visualization of performance metrics and equity curves
+  
+**Outcome**: A flexible asset-specific backtesting framework that allows testing individual assets with custom signal combinations, including support for USD-only, BTC-only, or combined signal approaches, with comprehensive performance metrics and visualization tools.
 
 ### **Step 3.11: Regime Detection Signal Implementation** ✅
 - **Designed and Implemented Momentum-Variance Regime Detection**:

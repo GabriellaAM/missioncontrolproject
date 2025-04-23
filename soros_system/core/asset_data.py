@@ -215,6 +215,15 @@ class AssetData:
         """
         self.backtest_results[backtest_name] = result
         self.logger.debug(f"Added backtest result {backtest_name} for {self.asset_id}")
+    
+    def add_backtest(self, backtest_name: str, result: Dict[str, Any]) -> None:
+        """Alias for add_backtest_result for compatibility with backtest code.
+        
+        Args:
+            backtest_name: Name of the backtest
+            result: Dictionary with backtest results
+        """
+        self.add_backtest_result(backtest_name, result)
         
     def get_backtest_result(self, backtest_name: str) -> Optional[Dict[str, Any]]:
         """Get a backtest result by name.

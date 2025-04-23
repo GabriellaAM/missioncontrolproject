@@ -60,7 +60,8 @@ class Backtester:
         price_data: Dict[str, pd.DataFrame],
         decisions: Dict[str, pd.Series],
         start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None
+        end_date: Optional[datetime] = None,
+        asset_specific_costs: Optional[Dict[str, float]] = None
     ) -> Dict[str, Any]:
         """Run a backtest based on price data and binary decisions.
         
@@ -69,6 +70,8 @@ class Backtester:
             decisions: Dictionary mapping asset IDs to decision series (1 for buy, 0 for sell)
             start_date: Start date for the backtest
             end_date: End date for the backtest
+            asset_specific_costs: Dictionary mapping asset IDs to trading costs.
+                                 Use 'default' as key for the default cost.
             
         Returns:
             dict: Dictionary with backtest results
@@ -133,6 +136,22 @@ class Backtester:
                     continue
                 current_price = price_data[asset_id].loc[day, 'close']
                 
+                # Determine trading cost for this asset
+                if asset_specific_costs is not None:
+                    # Use asset-specific cost if provided, otherwise use default
+                    if asset_id in asset_specific_costs:
+                        trade_cost = asset_specific_costs[asset_id]
+                    elif 'default' in asset_specific_costs:
+                        trade_cost = asset_specific_costs['default']
+                    else:
+                        trade_cost = self.trade_cost
+                else:
+                    trade_cost = self.trade_cost
+                
+                # Log the trading cost
+                if self.debug:
+                    self.logger.debug(f"Using trade cost {trade_cost:.3%} for {asset_id}")
+                
                 # Execute trades based on decision
                 if decision == 1 and current_position == 0:
                     # Buy signal
@@ -142,12 +161,12 @@ class Backtester:
                     
                     # Calculate trade size (including costs)
                     trade_size = trade_value / (current_price * (1 + self.slippage_pct))
-                    trade_cost = trade_value * self.trade_cost
+                    trade_cost_amount = trade_value * trade_cost
                     
                     # Execute trade
-                    if cash >= trade_value + trade_cost:
+                    if cash >= trade_value + trade_cost_amount:
                         # Update cash and position
-                        cash -= (trade_value + trade_cost)
+                        cash -= (trade_value + trade_cost_amount)
                         positions[asset_id] = trade_size
                         
                         # Log trade
@@ -158,21 +177,22 @@ class Backtester:
                             'price': current_price,
                             'amount': trade_size,
                             'value': trade_value,
-                            'cost': trade_cost
+                            'cost': trade_cost_amount,
+                            'cost_rate': trade_cost
                         })
                         
                         self.logger.debug(
                             f"Buy {asset_id} on {day}: {trade_size} units at {current_price}, "
-                            f"value: {trade_value}, cost: {trade_cost}"
+                            f"value: {trade_value}, cost: {trade_cost_amount} ({trade_cost:.3%})"
                         )
                         
                 elif decision == 0 and current_position > 0:
                     # Sell signal
                     trade_value = current_position * current_price * (1 - self.slippage_pct)
-                    trade_cost = trade_value * self.trade_cost
+                    trade_cost_amount = trade_value * trade_cost
                     
                     # Execute trade
-                    cash += (trade_value - trade_cost)
+                    cash += (trade_value - trade_cost_amount)
                     positions[asset_id] = 0.0
                     
                     # Log trade
@@ -183,12 +203,13 @@ class Backtester:
                         'price': current_price,
                         'amount': current_position,
                         'value': trade_value,
-                        'cost': trade_cost
+                        'cost': trade_cost_amount,
+                        'cost_rate': trade_cost
                     })
                     
                     self.logger.debug(
                         f"Sell {asset_id} on {day}: {current_position} units at {current_price}, "
-                        f"value: {trade_value}, cost: {trade_cost}"
+                        f"value: {trade_value}, cost: {trade_cost_amount} ({trade_cost:.3%})"
                     )
         
         # Calculate final portfolio metrics

@@ -561,3 +561,607 @@ class PortfolioBacktester:
         ])
         
         return metrics_df
+
+    def backtest_asset(self,
+                      asset_id,
+                      start_date,
+                      end_date,
+                      initial_capital=10000.0,
+                      trade_cost=0.001,
+                      slippage_pct=0.0,
+                      usd_signals=None,
+                      btc_signals=None):
+        """
+        Backtest a trading strategy for a single asset using specified signals.
+        
+        Args:
+            asset_id (str): Asset ID to backtest
+            start_date (str or datetime): Start date for backtesting
+            end_date (str or datetime): End date for backtesting
+            initial_capital (float): Initial capital for backtesting (default: 10000.0)
+            trade_cost (float): Fee rate for transactions (default: 0.001)
+            slippage_pct (float): Slippage percentage for trading (default: 0.0)
+            usd_signals (list): List of USD signal names to use (default: None)
+            btc_signals (list): List of BTC signal names to use (default: None)
+            
+        Returns:
+            dict: Dictionary with backtest results, including dataframe, evaluation metrics, and summary
+        """
+        self.logger.info(f"Starting backtest for asset '{asset_id}' from {start_date} to {end_date}")
+        
+        # Validate input signals
+        if (usd_signals is None or len(usd_signals) == 0) and (btc_signals is None or len(btc_signals) == 0):
+            raise ValueError("At least one of usd_signals or btc_signals must be provided")
+        
+        # For Bitcoin, only USD signals are valid
+        if asset_id == 'bitcoin' and btc_signals and len(btc_signals) > 0:
+            self.logger.warning("BTC signals are not applicable for Bitcoin itself. Using only USD signals.")
+            btc_signals = None
+            
+        # Convert dates to datetime
+        try:
+            start_date = pd.to_datetime(start_date)
+            end_date = pd.to_datetime(end_date)
+        except ValueError as e:
+            self.logger.error(f"Invalid date format: {e}")
+            return None
+        
+        # Load asset data - corrected for PortfolioAnalyzer
+        asset_data = None
+        if hasattr(self.data_loader, 'assets'):
+            # Direct access to PortfolioAnalyzer's assets dictionary
+            asset_obj = self.data_loader.assets.get(asset_id)
+            if asset_obj and hasattr(asset_obj, 'price_data'):
+                asset_data = asset_obj.price_data
+        elif hasattr(self.data_loader, 'get_asset_data'):
+            # Using PortfolioAnalyzer's get_asset_data method
+            asset = self.data_loader.get_asset_data(asset_id)
+            if asset and hasattr(asset, 'price_data'):
+                asset_data = asset.price_data
+        elif hasattr(self.data_loader, 'get_asset_processed_data'):
+            # Fallback to TrendAnalyzer method
+            asset_data = self.data_loader.get_asset_processed_data(asset_id)
+            
+        if asset_data is None or asset_data.empty:
+            self.logger.error(f"Failed to load data for asset '{asset_id}'")
+            return None
+        
+        # Ensure we have a DatetimeIndex
+        if not isinstance(asset_data.index, pd.DatetimeIndex) and 'date' in asset_data.columns:
+            asset_data['date'] = pd.to_datetime(asset_data['date'])
+            asset_data = asset_data.set_index('date')
+        
+        # Filter to date range
+        asset_data = asset_data[(asset_data.index >= start_date) & (asset_data.index <= end_date)]
+        
+        if asset_data.empty:
+            self.logger.warning(f"No data available for {asset_id} in the specified date range")
+            return None
+        
+        # Check for required price columns
+        required_cols = ['open', 'close']
+        missing_cols = [col for col in required_cols if col not in asset_data.columns]
+        
+        if missing_cols:
+            self.logger.warning(f"Missing required price columns for {asset_id}: {missing_cols}")
+            # Try to fill missing price columns
+            if 'open' in missing_cols and 'close' in asset_data.columns:
+                self.logger.info(f"Using 'close' for 'open' in {asset_id}")
+                asset_data['open'] = asset_data['close']
+                missing_cols.remove('open')
+            
+            if 'close' in missing_cols and 'open' in asset_data.columns:
+                self.logger.info(f"Using 'open' for 'close' in {asset_id}")
+                asset_data['close'] = asset_data['open']
+                missing_cols.remove('close')
+            
+            if missing_cols:
+                self.logger.error(f"Still missing critical price columns for {asset_id}: {missing_cols}")
+                return None
+        
+        # Ensure we have signal values for each specified signal
+        all_signals = []
+        if usd_signals:
+            all_signals.extend(usd_signals)
+        if btc_signals:
+            all_signals.extend(btc_signals)
+            
+        # Get signal values
+        signal_values = {}
+        missing_signals = []
+        
+        for signal_name in all_signals:
+            # Check if signal is already in asset_data
+            if signal_name in asset_data.columns:
+                signal_values[signal_name] = asset_data[signal_name]
+            else:
+                # Try to get signal from asset in the analyzer
+                signal_found = False
+                
+                # Try direct access to assets dictionary
+                if hasattr(self.data_loader, 'assets'):
+                    asset = self.data_loader.assets.get(asset_id)
+                    if asset and hasattr(asset, 'get_signal'):
+                        signal_data = asset.get_signal(signal_name)
+                        if signal_data and hasattr(signal_data, 'values') and signal_data.values is not None:
+                            # Ensure the values have the same index as our price data
+                            signal_series = pd.Series(
+                                signal_data.values, 
+                                index=signal_data.values.index if hasattr(signal_data.values, 'index') else None
+                            )
+                            if hasattr(signal_series, 'reindex'):
+                                signal_series = signal_series.reindex(asset_data.index)
+                            signal_values[signal_name] = signal_series
+                            signal_found = True
+                
+                # Fallback to get_asset_data
+                if not signal_found and hasattr(self.data_loader, 'get_asset_data'):
+                    asset = self.data_loader.get_asset_data(asset_id)
+                    if asset and hasattr(asset, 'get_signal'):
+                        signal_data = asset.get_signal(signal_name)
+                        if signal_data and hasattr(signal_data, 'values') and signal_data.values is not None:
+                            # Ensure the values have the same index as our price data
+                            signal_series = pd.Series(
+                                signal_data.values, 
+                                index=signal_data.values.index if hasattr(signal_data.values, 'index') else None
+                            )
+                            if hasattr(signal_series, 'reindex'):
+                                signal_series = signal_series.reindex(asset_data.index)
+                            signal_values[signal_name] = signal_series
+                            signal_found = True
+                
+                if not signal_found:
+                    missing_signals.append(signal_name)
+        
+        if missing_signals:
+            self.logger.warning(f"Could not find signal values for: {missing_signals}")
+            all_signals = [s for s in all_signals if s not in missing_signals]
+            
+            if len(all_signals) == 0:
+                self.logger.error("No valid signals available. Cannot proceed with backtest.")
+                return None
+        
+        # Create a DataFrame for our backtest results
+        backtest_df = pd.DataFrame(index=asset_data.index)
+        
+        # Add price data
+        backtest_df['open'] = asset_data['open']
+        backtest_df['close'] = asset_data['close']
+        
+        # Add signals
+        for signal_name, values in signal_values.items():
+            backtest_df[signal_name] = values
+        
+        # Calculate final signal decision based on USD and BTC signals
+        # For BTC, only use USD signals
+        if asset_id == 'bitcoin':
+            if usd_signals and len(usd_signals) > 0:
+                # Calculate USD signal - 1 if all USD signals are 1, 0 otherwise
+                backtest_df['usd_signal'] = backtest_df[usd_signals].prod(axis=1)
+                backtest_df['final_decision'] = backtest_df['usd_signal']
+            else:
+                self.logger.error("No USD signals provided for Bitcoin")
+                return None
+        else:
+            # For altcoins, can use both USD and BTC signals
+            if usd_signals and len(usd_signals) > 0:
+                backtest_df['usd_signal'] = backtest_df[usd_signals].prod(axis=1)
+            else:
+                backtest_df['usd_signal'] = 1  # Default to 1 if no USD signals
+                
+            if btc_signals and len(btc_signals) > 0:
+                backtest_df['btc_signal'] = backtest_df[btc_signals].prod(axis=1)
+            else:
+                backtest_df['btc_signal'] = 1  # Default to 1 if no BTC signals
+                
+            # Final decision is 1 if both USD and BTC signals are 1
+            # If only one type of signal is provided, only use that one
+            if usd_signals and len(usd_signals) > 0 and btc_signals and len(btc_signals) > 0:
+                backtest_df['final_decision'] = (backtest_df['usd_signal'] & backtest_df['btc_signal']).astype(int)
+            elif usd_signals and len(usd_signals) > 0:
+                backtest_df['final_decision'] = backtest_df['usd_signal']
+            elif btc_signals and len(btc_signals) > 0:
+                backtest_df['final_decision'] = backtest_df['btc_signal']
+        
+        # Shift the final decision to avoid lookahead bias 
+        # (use today's signal for tomorrow's open trade)
+        backtest_df['final_decision_shifted'] = backtest_df['final_decision'].shift(1)
+        
+        # Initialize trading simulation
+        backtest_df['position'] = 0
+        backtest_df['cash'] = initial_capital
+        backtest_df['holdings_qty'] = 0.0
+        backtest_df['holdings_value'] = 0.0
+        backtest_df['portfolio_value'] = initial_capital
+        backtest_df['trade_executed'] = False
+        backtest_df['daily_return'] = 0.0
+        backtest_df['strategy_cumulative_return'] = 1.0
+        
+        # Buy and hold reference values
+        buy_price = asset_data['open'].iloc[1]  # Start with second day opening price
+        buy_qty = initial_capital / buy_price
+        backtest_df['buy_hold_value'] = asset_data['close'] * buy_qty
+        backtest_df['buy_hold_daily_return'] = backtest_df['buy_hold_value'].pct_change()
+        backtest_df['buy_hold_cumulative_return'] = (1 + backtest_df['buy_hold_daily_return']).cumprod()
+        
+        # Trading simulation
+        current_cash = initial_capital
+        current_holdings_qty = 0.0
+        total_cost_rate = trade_cost + slippage_pct
+        trades = []
+        
+        # Track position entry details
+        entry_price = 0.0
+        entry_date = None
+        trade_id = 0
+        
+        # Exclude the first row with NaN values
+        for date in backtest_df.index[1:]:
+            row = backtest_df.loc[date]
+            signal = row['final_decision_shifted']
+            open_price = row['open']
+            close_price = row['close']
+            
+            # Skip if signal is NaN or prices are invalid
+            if pd.isna(signal) or open_price <= 0:
+                backtest_df.loc[date, 'cash'] = current_cash
+                backtest_df.loc[date, 'holdings_qty'] = current_holdings_qty
+                backtest_df.loc[date, 'holdings_value'] = current_holdings_qty * close_price
+                backtest_df.loc[date, 'portfolio_value'] = current_cash + backtest_df.loc[date, 'holdings_value']
+                continue
+            
+            # Flag for trade execution
+            trade_executed = False
+            
+            # Buy signal (1) and not holding
+            if signal == 1 and current_holdings_qty == 0:
+                trade_id += 1
+                
+                # Calculate transaction cost
+                transaction_cost = current_cash * total_cost_rate
+                cash_for_purchase = current_cash - transaction_cost
+                
+                # Buy with all available cash
+                quantity = cash_for_purchase / open_price
+                
+                # Update holdings
+                current_cash = 0
+                current_holdings_qty = quantity
+                entry_price = open_price
+                entry_date = date
+                
+                # Record trade for later analysis
+                entry_trade = {
+                    'trade_id': trade_id,
+                    'asset': asset_id,
+                    'entry_date': date,
+                    'exit_date': None,
+                    'holding_days': 0,
+                    'entry_price': open_price,
+                    'exit_price': None,
+                    'price_return': 0.0,
+                    'entry_value': cash_for_purchase,
+                    'entry_cost': transaction_cost,
+                    'exit_value': None,
+                    'exit_cost': None,
+                    'trade_return': 0.0,
+                    'is_open': True
+                }
+                trades.append(entry_trade)
+                trade_executed = True
+                
+                # Mark the position
+                backtest_df.loc[date, 'position'] = 1
+                
+            # Sell signal (0) and currently holding
+            elif signal == 0 and current_holdings_qty > 0:
+                # Calculate gross value and transaction cost
+                gross_value = current_holdings_qty * open_price
+                transaction_cost = gross_value * total_cost_rate
+                net_value = gross_value - transaction_cost
+                
+                # Update holdings
+                current_cash = net_value
+                current_holdings_qty = 0
+                
+                # Update the exit information for the last entry trade
+                holding_days = (date - entry_date).days if entry_date else 0
+                price_return = (open_price / entry_price - 1) if entry_price > 0 else 0
+                trade_return = (net_value / trades[-1]['entry_value'] - 1) if trades[-1]['entry_value'] > 0 else 0
+                
+                trades[-1].update({
+                    'exit_date': date,
+                    'holding_days': holding_days,
+                    'exit_price': open_price,
+                    'price_return': price_return,
+                    'exit_value': gross_value,
+                    'exit_cost': transaction_cost,
+                    'trade_return': trade_return,
+                    'is_open': False
+                })
+                
+                trade_executed = True
+                
+                # Mark the position
+                backtest_df.loc[date, 'position'] = 0
+                
+            else:
+                # No change in position
+                backtest_df.loc[date, 'position'] = 1 if current_holdings_qty > 0 else 0
+            
+            # Update the backtest DataFrame
+            backtest_df.loc[date, 'cash'] = current_cash
+            backtest_df.loc[date, 'holdings_qty'] = current_holdings_qty
+            backtest_df.loc[date, 'holdings_value'] = current_holdings_qty * close_price
+            backtest_df.loc[date, 'portfolio_value'] = current_cash + backtest_df.loc[date, 'holdings_value']
+            backtest_df.loc[date, 'trade_executed'] = trade_executed
+        
+        # Calculate strategy returns
+        backtest_df['daily_return'] = backtest_df['portfolio_value'].pct_change()
+        backtest_df['strategy_cumulative_return'] = (1 + backtest_df['daily_return']).cumprod()
+        
+        # If the position is still open at the end, close it for metrics calculation
+        if current_holdings_qty > 0 and len(trades) > 0 and trades[-1]['is_open']:
+            last_date = backtest_df.index[-1]
+            last_close = backtest_df.loc[last_date, 'close']
+            
+            gross_value = current_holdings_qty * last_close
+            transaction_cost = gross_value * total_cost_rate
+            net_value = gross_value - transaction_cost
+            
+            holding_days = (last_date - entry_date).days if entry_date else 0
+            price_return = (last_close / entry_price - 1) if entry_price > 0 else 0
+            trade_return = (net_value / trades[-1]['entry_value'] - 1) if trades[-1]['entry_value'] > 0 else 0
+            
+            trades[-1].update({
+                'exit_date': last_date,
+                'holding_days': holding_days,
+                'exit_price': last_close,
+                'price_return': price_return,
+                'exit_value': gross_value,
+                'exit_cost': transaction_cost,
+                'trade_return': trade_return,
+                'is_open': False  # Mark as closed for final analysis
+            })
+        
+        # Compute performance metrics for strategy and buy & hold
+        strategy_metrics = self._calculate_backtest_metrics(
+            backtest_df, 
+            trades, 
+            'daily_return', 
+            'strategy_cumulative_return', 
+            initial_capital
+        )
+        
+        buy_hold_metrics = self._calculate_backtest_metrics(
+            backtest_df, 
+            [], 
+            'buy_hold_daily_return', 
+            'buy_hold_cumulative_return', 
+            initial_capital
+        )
+        
+        # Create evaluation metrics comparison table
+        metrics_comparison = pd.DataFrame({
+            'Strategy': [
+                strategy_metrics['total_return'],
+                strategy_metrics['max_drawdown'],
+                strategy_metrics['sharpe_ratio'],
+                strategy_metrics['sortino_ratio'],
+                strategy_metrics['calmar_ratio'],
+                strategy_metrics['win_rate'],
+                strategy_metrics['annualized_volatility'],
+                strategy_metrics['annualized_return'],
+                strategy_metrics.get('accuracy', np.nan),
+                strategy_metrics.get('precision', np.nan),
+                strategy_metrics.get('recall', np.nan),
+                strategy_metrics.get('f1_score', np.nan)
+            ],
+            'Buy & Hold': [
+                buy_hold_metrics['total_return'],
+                buy_hold_metrics['max_drawdown'],
+                buy_hold_metrics['sharpe_ratio'],
+                buy_hold_metrics['sortino_ratio'],
+                buy_hold_metrics['calmar_ratio'],
+                buy_hold_metrics['win_rate'],
+                buy_hold_metrics['annualized_volatility'],
+                buy_hold_metrics['annualized_return'],
+                buy_hold_metrics.get('accuracy', np.nan),
+                buy_hold_metrics.get('precision', np.nan),
+                buy_hold_metrics.get('recall', np.nan),
+                buy_hold_metrics.get('f1_score', np.nan)
+            ]
+        }, index=[
+            'Total Return',
+            'Max Drawdown',
+            'Sharpe Ratio',
+            'Sortino Ratio',
+            'Calmar Ratio',
+            'Win Rate',
+            'Annualized Volatility',
+            'Annualized Return',
+            'Accuracy',
+            'Precision',
+            'Recall',
+            'F1 Score'
+        ])
+        
+        # Store the backtest results in the asset's data structure if possible
+        if hasattr(self.data_loader, 'assets'):
+            asset = self.data_loader.assets.get(asset_id)
+            if asset and hasattr(asset, 'add_backtest_result'):
+                # Create a descriptive backtest name based on the signals used
+                signal_desc = []
+                if usd_signals and len(usd_signals) > 0:
+                    signal_desc.append(f"USD:{'+'.join(usd_signals)}")
+                if btc_signals and len(btc_signals) > 0:
+                    signal_desc.append(f"BTC:{'+'.join(btc_signals)}")
+                
+                backtest_name = "_".join(signal_desc)
+                asset.add_backtest_result(backtest_name, {
+                    'results': backtest_df,
+                    'trades': trades,
+                    'metrics': metrics_comparison,
+                    'strategy_metrics': strategy_metrics,
+                    'buy_hold_metrics': buy_hold_metrics,
+                    'parameters': {
+                        'initial_capital': initial_capital,
+                        'trade_cost': trade_cost,
+                        'slippage_pct': slippage_pct,
+                        'usd_signals': usd_signals,
+                        'btc_signals': btc_signals,
+                        'start_date': start_date,
+                        'end_date': end_date
+                    }
+                })
+                self.logger.info(f"Stored backtest results in asset {asset_id} with name '{backtest_name}'")
+        elif hasattr(self.data_loader, 'get_asset_data'):
+            asset = self.data_loader.get_asset_data(asset_id)
+            if asset and hasattr(asset, 'add_backtest_result'):
+                # Create a descriptive backtest name based on the signals used
+                signal_desc = []
+                if usd_signals and len(usd_signals) > 0:
+                    signal_desc.append(f"USD:{'+'.join(usd_signals)}")
+                if btc_signals and len(btc_signals) > 0:
+                    signal_desc.append(f"BTC:{'+'.join(btc_signals)}")
+                
+                backtest_name = "_".join(signal_desc)
+                asset.add_backtest_result(backtest_name, {
+                    'results': backtest_df,
+                    'trades': trades,
+                    'metrics': metrics_comparison,
+                    'strategy_metrics': strategy_metrics,
+                    'buy_hold_metrics': buy_hold_metrics,
+                    'parameters': {
+                        'initial_capital': initial_capital,
+                        'trade_cost': trade_cost,
+                        'slippage_pct': slippage_pct,
+                        'usd_signals': usd_signals,
+                        'btc_signals': btc_signals,
+                        'start_date': start_date,
+                        'end_date': end_date
+                    }
+                })
+                self.logger.info(f"Stored backtest results in asset {asset_id} with name '{backtest_name}'")
+        
+        # Return the complete results
+        return {
+            'asset_id': asset_id,
+            'results_df': backtest_df,
+            'trades': trades,
+            'metrics_comparison': metrics_comparison,
+            'strategy_metrics': strategy_metrics,
+            'buy_hold_metrics': buy_hold_metrics,
+            'parameters': {
+                'initial_capital': initial_capital,
+                'trade_cost': trade_cost,
+                'slippage_pct': slippage_pct,
+                'usd_signals': usd_signals,
+                'btc_signals': btc_signals,
+                'start_date': start_date,
+                'end_date': end_date
+            }
+        }
+    
+    def _calculate_backtest_metrics(self, backtest_df, trades, return_col, cumret_col, initial_capital):
+        """
+        Calculate detailed performance metrics for a backtest.
+        
+        Args:
+            backtest_df (pd.DataFrame): DataFrame with backtest results
+            trades (list): List of trade dictionaries
+            return_col (str): Column name for daily returns
+            cumret_col (str): Column name for cumulative returns
+            initial_capital (float): Initial capital for the backtest
+            
+        Returns:
+            dict: Dictionary with performance metrics
+        """
+        # Drop NaN values
+        returns = backtest_df[return_col].dropna()
+        
+        if len(returns) == 0:
+            return {
+                'total_return': 0.0,
+                'max_drawdown': 0.0,
+                'sharpe_ratio': 0.0,
+                'sortino_ratio': 0.0,
+                'calmar_ratio': 0.0,
+                'win_rate': 0.0,
+                'annualized_volatility': 0.0,
+                'annualized_return': 0.0
+            }
+        
+        # Calculate basic metrics
+        total_return = backtest_df[cumret_col].iloc[-1] - 1.0 if not pd.isna(backtest_df[cumret_col].iloc[-1]) else 0.0
+        daily_volatility = returns.std()
+        annual_volatility = daily_volatility * np.sqrt(365) if daily_volatility else 0.0
+        annual_return = (1 + total_return) ** (365 / len(returns)) - 1 if total_return > -1 else -1.0
+        
+        # Calculate drawdown
+        cumulative = backtest_df[cumret_col].dropna()
+        running_max = cumulative.cummax()
+        drawdown = (cumulative / running_max - 1)
+        max_drawdown = drawdown.min() if not drawdown.empty else 0.0
+        
+        # Risk metrics
+        risk_free_rate = 0.0  # Assuming zero risk-free rate for simplicity
+        excess_returns = returns - risk_free_rate
+        negative_returns = returns[returns < 0]
+        downside_volatility = negative_returns.std() * np.sqrt(365) if len(negative_returns) > 0 else annual_volatility
+        
+        # Ratios
+        sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility if annual_volatility else 0.0
+        sortino_ratio = (annual_return - risk_free_rate) / downside_volatility if downside_volatility else 0.0
+        calmar_ratio = annual_return / abs(max_drawdown) if max_drawdown < 0 else 0.0
+        
+        # Calculate win rate from trades
+        if trades:
+            winning_trades = [t for t in trades if t.get('trade_return', 0) > 0]
+            win_rate = len(winning_trades) / len(trades) if trades else 0.0
+        else:
+            win_rate = 0.0
+            
+        # Signal accuracy metrics
+        if 'final_decision_shifted' in backtest_df.columns and return_col in backtest_df.columns:
+            # Only include rows where we have both signal and return data
+            mask = backtest_df['final_decision_shifted'].notna() & backtest_df[return_col].notna()
+            valid_data = backtest_df.loc[mask]
+            
+            if len(valid_data) > 0:
+                # True positive: Signal = 1 and return > 0
+                tp = ((valid_data['final_decision_shifted'] == 1) & (valid_data[return_col] > 0)).sum()
+                
+                # False positive: Signal = 1 but return <= 0
+                fp = ((valid_data['final_decision_shifted'] == 1) & (valid_data[return_col] <= 0)).sum()
+                
+                # True negative: Signal = 0 and return <= 0
+                tn = ((valid_data['final_decision_shifted'] == 0) & (valid_data[return_col] <= 0)).sum()
+                
+                # False negative: Signal = 0 but return > 0
+                fn = ((valid_data['final_decision_shifted'] == 0) & (valid_data[return_col] > 0)).sum()
+                
+                # Calculate metrics
+                accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0.0
+                precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+                recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+                f1_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+            else:
+                accuracy = precision = recall = f1_score = 0.0
+        else:
+            accuracy = precision = recall = f1_score = 0.0
+        
+        return {
+            'total_return': total_return,
+            'max_drawdown': max_drawdown,
+            'sharpe_ratio': sharpe_ratio,
+            'sortino_ratio': sortino_ratio,
+            'calmar_ratio': calmar_ratio,
+            'win_rate': win_rate,
+            'annualized_volatility': annual_volatility,
+            'annualized_return': annual_return,
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1_score
+        }

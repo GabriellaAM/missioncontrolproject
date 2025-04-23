@@ -29,7 +29,7 @@ This roadmap is tailored to AI-assisted development while maintaining engineerin
   - **Attribution & Performance**: Must display multi-period performance with asset-level contribution.  
   - **Extensibility**: Modular design to incorporate future ML/AI, new data sources, and advanced allocation methods.
 
-**Goal**: Reach a **clear alignment** on the project’s scope, inputs, outputs, and constraints before proceeding with development.
+**Goal**: Reach a **clear alignment** on the project's scope, inputs, outputs, and constraints before proceeding with development.
 
 ---
 
@@ -100,8 +100,8 @@ This roadmap is tailored to AI-assisted development while maintaining engineerin
 
 1. **Regime Classification**  
    - Incorporate momentum/variance signals for BTC and altcoins.  
-   - Integrate on-chain metrics (SOPR, MVRV) as a separate “layer.”  
-   - Output numeric probabilities (e.g., “Bull/High Vol” = 60%, “Bear/Low Vol” = 40%).
+   - Integrate on-chain metrics (SOPR, MVRV) as a separate "layer."  
+   - Output numeric probabilities (e.g., "Bull/High Vol" = 60%, "Bear/Low Vol" = 40%).
 
 2. **Risk Calculations**  
    - Daily rolling drawdowns, ATR-based stop-loss thresholds.  
@@ -115,12 +115,12 @@ This roadmap is tailored to AI-assisted development while maintaining engineerin
 ### **Phase 3: Portfolio Reporting & Attribution**
 
 1. **Google Sheets Integration**  
-   - Pull each day’s allocations. Track partial sells/buys by spotting day-over-day changes.  
+   - Pull each day's allocations. Track partial sells/buys by spotting day-over-day changes.  
    - Summarize daily returns and total equity curve.
 
 2. **Attribution**  
    - Multi-period (monthly or user-defined range) performance analysis.  
-   - Visualize each asset’s contribution to total PnL using bar/waterfall charts.
+   - Visualize each asset's contribution to total PnL using bar/waterfall charts.
 
 3. **Recommended Rebalancing Logic**  
    - (Optional) Propose re-weighting or partial shifts based on RORO and risk signals.  
@@ -133,10 +133,13 @@ This roadmap is tailored to AI-assisted development while maintaining engineerin
 1. **Backtesting Framework**  
    - Feed historical data into the RORO + risk logic.  
    - Compare results to a BTC buy-and-hold baseline for key metrics (CAGR, MDD, Sharpe).
+   - **Asset-Specific Backtesting**: Test individual assets with various signal combinations, including USD-only, BTC-only, or combined approaches, with comprehensive metrics for strategy evaluation.
+   - **Portfolio-Level Backtesting**: Simulate portfolio performance with various allocation strategies and rebalancing methodologies.
 
 2. **Advanced Visuals & Reporting**  
-   - Multi-page Streamlit app, including a “Home” summary and dedicated pages for RORO, Risk, Portfolio, and Macro.  
+   - Multi-page Streamlit app, including a "Home" summary and dedicated pages for RORO, Risk, Portfolio, and Macro.  
    - Exportable daily or weekly reports in Markdown/PDF.
+   - **Backtest Visualization**: Equity curves, drawdown charts, and comparative metrics for strategy assessment.
 
 3. **Polishing & Expansion**  
    - Tweak signals, refine ATR stop-loss widths, manage alert thresholds.  

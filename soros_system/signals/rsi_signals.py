@@ -496,3 +496,143 @@ class RSI_Bearish_BTC(RSIBearishBase):
         """
         super().__init__(params)
         self.quote_type = 'BTC'
+
+
+class RSIEnsembleBase(RSISignalBase):
+    """Base class for RSI ensemble signals that combine multiple window periods.
+    
+    This signal calculates RSI bullish conditions (RSI > 50 and rising) for multiple
+    time windows and generates a signal when a threshold number of windows produce positive signals.
+    """
+    
+    def __init__(self, params: Optional[Dict[str, Any]] = None):
+        """Initialize the signal."""
+        super().__init__(params)
+        # Standard window periods to use
+        self.WINDOWS = [7, 14, 21, 28]
+        # Threshold for how many windows must be positive to generate a signal
+        self.signal_threshold = self.params.get('signal_threshold', 2)  # Default: at least 2 windows
+        
+    def get_min_required_samples(self) -> int:
+        """Get minimum required samples for the signal calculation."""
+        return max(self.WINDOWS) * 2  # Need enough data for the largest window
+    
+    def calculate_window_signal(self, data: pd.DataFrame, window: int, asset_id: str) -> pd.Series:
+        """Calculate RSI bullish signal for a specific window period.
+        
+        Args:
+            data: DataFrame with price data
+            window: Window period for RSI calculation
+            asset_id: ID of the asset
+            
+        Returns:
+            Series with signal values (1 for bullish, 0 for not bullish)
+        """
+        # Get the appropriate price column
+        price_col = self.get_price_column(data)
+        if price_col is None:
+            return pd.Series(0, index=data.index)
+        
+        try:
+            # Calculate RSI and RoC for this window
+            result_df = self.rsi_calculator.calculate_smooth_rsi(
+                data, price_col, rsi_length=window, roc_length=window
+            )
+            
+            # Get RSI and RoC columns
+            rsi_col = f'RSI_{price_col}'
+            roc_col = f'RoC_{price_col}'
+            
+            if rsi_col in result_df.columns and roc_col in result_df.columns:
+                # Signal is bullish if RSI > 50 AND RoC > 0
+                signal = result_df.apply(
+                    lambda row: 1 if pd.notna(row[rsi_col]) and pd.notna(row[roc_col]) and 
+                                    row[rsi_col] > 50 and row[roc_col] > 0 else 0,
+                    axis=1
+                )
+                return signal
+            else:
+                self.logger.warning(f"Required columns {rsi_col} and/or {roc_col} not found for {asset_id}")
+                return pd.Series(0, index=data.index)
+        
+        except Exception as e:
+            self.logger.error(f"Error calculating RSI window signal for {asset_id} with window {window}: {str(e)}")
+            return pd.Series(0, index=data.index)
+            
+    def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
+        """Calculate the ensemble signal by combining multiple window signals.
+        
+        Args:
+            data: DataFrame with price data
+            asset_id: ID of the asset
+            
+        Returns:
+            Series with ensemble signal values (1 for buy, 0 for no signal)
+        """
+        if not self.validate(data, asset_id):
+            # Return empty series with same index as data
+            return pd.Series(0, index=data.index)
+        
+        # Store the asset_id in params for later use
+        self.params['asset_id'] = asset_id
+        
+        try:
+            # Calculate signals for each window
+            window_signals = {}
+            for window in self.WINDOWS:
+                window_signals[window] = self.calculate_window_signal(data, window, asset_id)
+                
+            # Combine signals into a DataFrame
+            signal_df = pd.DataFrame(index=data.index)
+            for window, signal in window_signals.items():
+                signal_df[f'window_{window}'] = signal
+                
+            # Count active signals and check against threshold
+            signal_df['active_count'] = signal_df.sum(axis=1)
+            
+            # Generate final signal if enough window signals are positive
+            signal_df['final_signal'] = (signal_df['active_count'] >= self.signal_threshold).astype(int)
+            
+            # Handle initialization period
+            # Set initial signals to 0 to avoid false positives at the start
+            init_period = max(self.WINDOWS) + 5
+            if len(signal_df) > init_period:
+                signal_df['final_signal'].iloc[:init_period] = 0
+            
+            self.logger.info(f"RSI Ensemble for {asset_id}: Using {len(self.WINDOWS)} windows with threshold {self.signal_threshold}")
+            
+            return signal_df['final_signal']
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating RSI ensemble signal for {asset_id}: {str(e)}")
+            return pd.Series(0, index=data.index)
+
+
+@register_signal
+class RSI_Ensemble_Signal_USD(RSIEnsembleBase):
+    """Ensemble signal combining multiple RSI window signals in USD terms.
+    
+    This signal calculates RSI bullish conditions (RSI > 50 and rising) for multiple
+    time windows (7, 14, 21, 28 days) and generates a signal when a threshold 
+    number of windows produce positive signals.
+    """
+    
+    def __init__(self, params: Optional[Dict[str, Any]] = None):
+        """Initialize the signal."""
+        super().__init__(params)
+        self.quote_type = 'USD'
+
+
+@register_signal
+class RSI_Ensemble_Signal_BTC(RSIEnsembleBase):
+    """Ensemble signal combining multiple RSI window signals in BTC terms.
+    
+    This signal calculates RSI bullish conditions (RSI > 50 and rising) for multiple
+    time windows (7, 14, 21, 28 days) and generates a signal when a threshold 
+    number of windows produce positive signals.
+    """
+    
+    def __init__(self, params: Optional[Dict[str, Any]] = None):
+        """Initialize the signal."""
+        super().__init__(params)
+        self.quote_type = 'BTC'

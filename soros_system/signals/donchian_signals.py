@@ -19,8 +19,14 @@ from .signal_registry import register_signal
 class DonchianSignalBase(SignalBase):
     """Base class for Donchian Channel signals."""
     
-    # Available window lengths for Donchian Channels
-    WINDOWS = [5, 10, 20, 30, 60, 90, 150, 250, 360]
+    # Standard window lengths for Donchian Channels for assets with sufficient history
+    STANDARD_WINDOWS = [5, 10, 20, 30, 60, 90, 150, 250, 360]
+    
+    # Minimum data length required for standard windows
+    MIN_DATA_LENGTH = 720  # 2 * max window
+    
+    # Minimum set of windows for very short datasets
+    MIN_WINDOWS = [3, 5, 10, 15, 20]
     
     def __init__(self, params: Optional[Dict[str, Any]] = None):
         """Initialize the signal."""
@@ -28,13 +34,8 @@ class DonchianSignalBase(SignalBase):
         self.quote_type = self.params.get('quote_type', 'USD')
         self.window = self.params.get('window', 20)  # Default to 20-day window
         
-        # Ensure window is one of the allowed values
-        if self.window not in self.WINDOWS:
-            self.logger.warning(
-                f"Window {self.window} not in allowed windows {self.WINDOWS}. "
-                f"Using default window of 20."
-            )
-            self.window = 20
+        # Windows will be determined when calculate() is called based on data length
+        self.WINDOWS = self.STANDARD_WINDOWS.copy()
             
         # Track if we've already warned about missing column
         self._warned_missing_column = False
@@ -60,7 +61,9 @@ class DonchianSignalBase(SignalBase):
     
     def get_min_required_samples(self) -> int:
         """Get minimum required samples for the signal calculation."""
-        return max(self.WINDOWS) + 10  # Need max window length plus some extra samples
+        # Use a smaller minimum for assets with less data
+        # This allows some signal calculation even for shorter histories
+        return max(self.MIN_WINDOWS) + 10 
     
     def _get_asset_id(self) -> str:
         """Extract asset_id from parameters."""
@@ -114,6 +117,45 @@ class DonchianSignalBase(SignalBase):
             return False
             
         return True
+    
+    def _adapt_windows_to_data_length(self, data_length: int) -> List[int]:
+        """Adapt window lengths based on available data length.
+        
+        Args:
+            data_length: Number of data points available
+            
+        Returns:
+            List of window lengths appropriate for the data length
+        """
+        # If we have enough data, use standard windows
+        if data_length >= self.MIN_DATA_LENGTH:
+            return self.STANDARD_WINDOWS
+            
+        # For very short datasets, use minimal windows
+        if data_length <= 50:
+            return [w for w in self.MIN_WINDOWS if w <= data_length // 3]
+            
+        # Scale windows based on data length
+        scaling_factor = data_length / self.MIN_DATA_LENGTH
+        adapted_windows = []
+        
+        for window in self.STANDARD_WINDOWS:
+            scaled_window = int(window * scaling_factor)
+            if scaled_window >= 3 and scaled_window <= data_length // 3:
+                adapted_windows.append(scaled_window)
+                
+        # Ensure we have at least some windows
+        if not adapted_windows:
+            # Add minimal windows that fit the data
+            for w in self.MIN_WINDOWS:
+                if w <= data_length // 3 and w not in adapted_windows:
+                    adapted_windows.append(w)
+                    
+        # Sort windows
+        adapted_windows.sort()
+        
+        self.logger.info(f"Adapted windows for data length {data_length}: {adapted_windows}")
+        return adapted_windows
     
     def calculate_donchian_channels(self, data: pd.DataFrame, window: int) -> Dict[str, pd.Series]:
         """Calculate Donchian Channels for the given data.
@@ -305,16 +347,23 @@ class DonchianBreakoutSignal(DonchianSignalBase):
         
         
         try:
-            # Use all available window lengths from the base class
-            windows = self.WINDOWS  # [5, 10, 20, 30, 60, 90, 150, 250, 360]
+            # Adapt window lengths based on available data
+            data_length = len(data)
+            windows = self._adapt_windows_to_data_length(data_length)
+            
+            # If we couldn't create any valid windows, return zeros
+            if not windows:
+                self.logger.warning(f"No valid window sizes for {asset_id} with {data_length} data points")
+                return pd.Series(0, index=data.index)
             
             # Calculate signals for window lengths
             window_signals = {}
             for window in windows:
                 window_signals[window] = self.calculate_window_signal(data, window)
                 
-                # Ensure first window*2 days have zero signal (initialization period)
-                window_signals[window].iloc[:window*2] = 0
+                # Adapt initialization period based on data length
+                init_period = min(window * 2, data_length // 3)
+                window_signals[window].iloc[:init_period] = 0
             
             # Combine signals
             signal_df = pd.DataFrame(index=data.index)
@@ -323,11 +372,18 @@ class DonchianBreakoutSignal(DonchianSignalBase):
             
             # Count active signals and check against threshold
             signal_df['active_count'] = signal_df.sum(axis=1)
-            signal_df['final_signal'] = (signal_df['active_count'] >= signal_threshold).astype(int)
             
-            # Ensure first max_window*2 days have zero signal - initialization period
+            # Adapt threshold if we have fewer windows than the standard threshold
+            adapted_threshold = min(signal_threshold, len(windows) // 2 + 1)
+            signal_df['final_signal'] = (signal_df['active_count'] >= adapted_threshold).astype(int)
+            
+            # Adapt initialization period for the final signal
             max_window = max(windows)
-            signal_df['final_signal'].iloc[:max_window*2] = 0
+            init_period = min(max_window * 2, data_length // 3)
+            signal_df['final_signal'].iloc[:init_period] = 0
+            
+            # Log the adapted parameters
+            self.logger.info(f"Asset {asset_id}: Using {len(windows)} windows with threshold {adapted_threshold}")
             
             return signal_df['final_signal']
             

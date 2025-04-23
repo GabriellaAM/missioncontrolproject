@@ -309,6 +309,46 @@ class BearLowVarianceSignalUSD(RegimeDetectionBase):
         return signal
 
 
+@register_signal
+class BullRegimeSignalUSD(RegimeDetectionBase):
+    """Signal for combined bull market regime (both high and low variance) in USD.
+    
+    This signal returns 1 if the asset is in any bull market regime,
+    regardless of variance (combines bull high variance and bull low variance).
+    """
+    
+    def __init__(self, params: Optional[Dict[str, Any]] = None):
+        """Initialize the signal."""
+        super().__init__(params)
+        self.quote_type = 'USD'
+    
+    def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
+        """Calculate the signal values.
+        
+        Args:
+            data: DataFrame with price data
+            asset_id: ID of the asset
+            
+        Returns:
+            Series with signal values (1 for bull regime detected, 0 otherwise)
+        """
+        if not self.validate(data, asset_id):
+            return pd.Series(0, index=data.index)
+            
+        # Calculate components
+        components = self.calculate_components(data, asset_id)
+        if not components:
+            return pd.Series(0, index=data.index)
+            
+        var_score = components['var_score']
+        mom_score = components['mom_score']
+        
+        # Bull Regime: momentum score > 0 (regardless of variance)
+        signal = (mom_score > 0).astype(int)
+        
+        return signal
+
+
 # ========== BTC QUOTE SIGNALS ==========
 
 @register_signal
@@ -451,5 +491,45 @@ class BearLowVarianceSignalBTC(RegimeDetectionBase):
         
         # Bear Low Variance: momentum score < 0 AND variance score < 0
         signal = ((mom_score < 0) & (var_score < 0)).astype(int)
+        
+        return signal
+
+
+@register_signal
+class BullRegimeSignalBTC(RegimeDetectionBase):
+    """Signal for combined bull market regime (both high and low variance) in BTC.
+    
+    This signal returns 1 if the asset is in any bull market regime,
+    regardless of variance (combines bull high variance and bull low variance).
+    """
+    
+    def __init__(self, params: Optional[Dict[str, Any]] = None):
+        """Initialize the signal."""
+        super().__init__(params)
+        self.quote_type = 'BTC'
+    
+    def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
+        """Calculate the signal values.
+        
+        Args:
+            data: DataFrame with price data
+            asset_id: ID of the asset
+            
+        Returns:
+            Series with signal values (1 for bull regime detected, 0 otherwise)
+        """
+        if not self.validate(data, asset_id):
+            return pd.Series(0, index=data.index)
+            
+        # Calculate components
+        components = self.calculate_components(data, asset_id)
+        if not components:
+            return pd.Series(0, index=data.index)
+            
+        var_score = components['var_score']
+        mom_score = components['mom_score']
+        
+        # Bull Regime: momentum score > 0 (regardless of variance)
+        signal = (mom_score > 0).astype(int)
         
         return signal 
