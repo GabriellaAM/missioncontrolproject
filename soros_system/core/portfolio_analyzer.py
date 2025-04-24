@@ -111,6 +111,9 @@ class PortfolioAnalyzer:
         # Initialize components
         self.portfolio_manager = PortfolioManager()
         
+        # Initialize metrics calculator to None (will be lazily loaded)
+        self.metrics_calculator = None
+        
         # Create data directory if it doesn't exist
         if not os.path.exists(data_dir):
             os.makedirs(data_dir)
@@ -1873,6 +1876,45 @@ class PortfolioAnalyzer:
         
         return result
     
+    def get_backtest_summary_table(self, results):
+        """
+        Format the backtest results into a nicely formatted summary table.
+        
+        Args:
+            results: Dictionary with backtest results from backtest_assets
+            
+        Returns:
+            pd.DataFrame: Formatted summary table
+        """
+        # Check if results contains a summary
+        if 'summary' not in results or results['summary'].empty:
+            self.logger.warning("No summary data in backtest results")
+            return pd.DataFrame()
+        
+        # Make a copy to avoid modifying the original
+        summary_df = results['summary'].copy()
+        
+        # Create a formatted summary table with the required columns
+        formatted_df = pd.DataFrame(index=summary_df.index)
+        
+        # Required columns in the desired order from the image
+        formatted_df['Total Return (%)'] = summary_df['Total Return (%)'].round(2)
+        formatted_df['Peak Return (%)'] = summary_df['Peak Return (%)'].round(2)
+        formatted_df['Buy & Hold Return (%)'] = summary_df['Buy & Hold Return (%)'].round(2)
+        formatted_df['Buy & Hold Peak (%)'] = summary_df['Buy & Hold Peak (%)'].round(2)
+        formatted_df['Sharpe'] = summary_df['Sharpe Ratio'].round(2)
+        formatted_df['Buy & Hold Sharpe'] = summary_df['Buy & Hold Sharpe'].round(2)
+        formatted_df['Sortino Ratio'] = summary_df['Sortino Ratio'].round(2)
+        formatted_df['Buy & Hold Sortino'] = summary_df['Buy & Hold Sortino'].round(2)
+        formatted_df['Max Drawdown (%)'] = summary_df['Max Drawdown (%)'].round(2)
+        formatted_df['Buy & Hold Max Drawdown (%)'] = summary_df['Buy & Hold Drawdown (%)'].round(2)
+        formatted_df['Annualized Volatility (%)'] = summary_df['Annualized Volatility (%)'].round(2)
+        formatted_df['Buy & Hold Volatility (%)'] = summary_df['Buy & Hold Volatility (%)'].round(2)
+        formatted_df['Trade Count'] = summary_df['Trade Count']
+        formatted_df['Total Cost'] = summary_df['Total Cost'].round(2)
+        
+        return formatted_df
+        
     def backtest_assets(self,
                        asset_ids: List[str],
                        start_date: Union[str, datetime],
@@ -1884,155 +1926,114 @@ class PortfolioAnalyzer:
                        usd_signals: Optional[List[str]] = None,
                        btc_signals: Optional[List[str]] = None,
                        use_btc_filter: bool = False) -> Dict[str, Any]:
-        """Backtest multiple assets at once, automatically handling differences between BTC and altcoins.
-        
-        This method will:
-        1. Process each asset in the list
-        2. Apply only USD signals to Bitcoin
-        3. Apply both USD and BTC signals to altcoins
-        4. When use_btc_filter=True, only allow altcoin buys when Bitcoin signals are bullish
-        5. Return consolidated results for all assets
+        """Run backtests for multiple assets and combine results.
         
         Args:
             asset_ids: List of asset IDs to backtest
-            start_date: Start date for backtesting
-            end_date: End date for backtesting
-            initial_capital: Initial capital for each asset backtest
-            btc_cost: Trading cost for Bitcoin
-            alt_cost: Trading cost for altcoins
-            slippage_pct: Slippage percentage for trading
-            usd_signals: List of USD signal names to use (applied to all assets)
-            btc_signals: List of BTC signal names to use (applied only to altcoins)
-            use_btc_filter: If True, only allow altcoin buys when Bitcoin signals are bullish
+            start_date: Start date for backtest
+            end_date: End date for backtest
+            initial_capital: Initial capital for each asset's backtest
+            btc_cost: Transaction cost for Bitcoin
+            alt_cost: Transaction cost for altcoins
+            slippage_pct: Slippage percentage
+            usd_signals: USD signals to use
+            btc_signals: BTC signals to use
+            use_btc_filter: Whether to use Bitcoin filter for altcoins
             
         Returns:
-            dict: Dictionary with:
-                - asset_results: Dictionary mapping asset IDs to their backtest results
-                - summary: DataFrame with comparison of results across assets (using tickers)
+            Combined backtest results
         """
-        # Validate and normalize asset_ids
-        if isinstance(asset_ids, str):
-            # If a single string was passed, convert to a list
-            self.logger.warning(f"Converting single asset ID string '{asset_ids}' to a list")
-            asset_ids = [asset_ids]
-        elif not isinstance(asset_ids, (list, tuple, set)):
-            # If not a string or a list/tuple/set, try to convert to list
-            try:
-                asset_ids = list(asset_ids)
-            except Exception as e:
-                self.logger.error(f"Could not convert asset_ids to list: {str(e)}")
-                return {'asset_results': {}, 'summary': pd.DataFrame()}
+        # Ensure asset_ids is a list with unique values, preserving original order as much as possible
+        if not isinstance(asset_ids, list):
+            # Convert to list if it's a set or other iterable
+            asset_ids = list(asset_ids)
         
-        # Filter out invalid asset IDs
-        valid_asset_ids = []
+        # Remove duplicates while preserving order
+        unique_asset_ids = []
+        seen = set()
         for asset_id in asset_ids:
-            if not isinstance(asset_id, str):
-                self.logger.warning(f"Skipping non-string asset ID: {asset_id}")
-                continue
-            if len(asset_id) <= 1:
-                self.logger.warning(f"Skipping too short asset ID: '{asset_id}'")
-                continue
-            valid_asset_ids.append(asset_id)
+            if asset_id not in seen:
+                unique_asset_ids.append(asset_id)
+                seen.add(asset_id)
         
-        if len(valid_asset_ids) < len(asset_ids):
-            self.logger.warning(f"Filtered out {len(asset_ids) - len(valid_asset_ids)} invalid asset IDs")
+        self.logger.info(f"Running backtests for {len(unique_asset_ids)} assets")
+        if len(unique_asset_ids) < len(asset_ids):
+            self.logger.warning(f"Removed {len(asset_ids) - len(unique_asset_ids)} duplicate asset IDs")
         
-        if not valid_asset_ids:
-            self.logger.error("No valid asset IDs provided")
-            return {'asset_results': {}, 'summary': pd.DataFrame()}
+        # Use the deduplicated list going forward
+        asset_ids = unique_asset_ids
         
-        self.logger.info(f"Starting backtest for {len(valid_asset_ids)} assets from {start_date} to {end_date}")
-        
-        # If no signals are provided, use default criteria
-        if (usd_signals is None or len(usd_signals) == 0) and (btc_signals is None or len(btc_signals) == 0):
-            usd_signals = ["BullLowVarianceSignalUSD", "RSI_Oversold_USD"]
-            btc_signals = ["BullLowVarianceSignalBTC", "RSI_Oversold_BTC"]
-            self.logger.info(f"Using default signals: USD={usd_signals}, BTC={btc_signals}")
-        
-        # Initialize results dictionary
-        results = {}
-        
-        # If we're using Bitcoin as a filter for altcoin trades, we need to run Bitcoin first
+        # Convert dates to datetime objects if they are strings
+        if isinstance(start_date, str):
+            start_date = pd.to_datetime(start_date)
+        if isinstance(end_date, str):
+            end_date = pd.to_datetime(end_date)
+            
+        # Default signals if none provided
+        if usd_signals is None:
+            usd_signals = ["RSI_Bullish_USD"]
+        if btc_signals is None and use_btc_filter:
+            btc_signals = ["RSI_Bullish_BTC"]
+            
+        # Set up Bitcoin filter if needed
         bitcoin_decisions = None
-        if use_btc_filter and 'bitcoin' in valid_asset_ids:
-            self.logger.info("Running Bitcoin backtest first to use as a filter for altcoins...")
+        if use_btc_filter:
+            self.logger.info(f"Using Bitcoin as a filter with signals: {usd_signals}")
             
-            # Make sure bitcoin is loaded
-            if 'bitcoin' not in self.assets:
-                self.logger.info("Loading data for bitcoin...")
-                self.load_data(assets='bitcoin')
-                
-                # Exit if we couldn't load bitcoin
-                if 'bitcoin' not in self.assets:
-                    self.logger.error("Failed to load data for bitcoin, cannot use as filter.")
-                    use_btc_filter = False
-            
-            if 'bitcoin' in self.assets:
-                # Run the Bitcoin backtest
+            # First run backtest on Bitcoin
+            bitcoin_result = None
+            try:
                 bitcoin_result = self.backtest_asset(
-                    asset_id='bitcoin',
+                    asset_id="bitcoin",
                     start_date=start_date,
                     end_date=end_date,
                     initial_capital=initial_capital,
                     trade_cost=btc_cost,
                     slippage_pct=slippage_pct,
                     usd_signals=usd_signals,
-                    btc_signals=None  # Bitcoin doesn't use BTC signals
+                    btc_signals=None  # No BTC signals for Bitcoin itself
                 )
+            except Exception as e:
+                self.logger.error(f"Error running Bitcoin backtest: {str(e)}")
                 
-                # Store the Bitcoin result
-                results['bitcoin'] = bitcoin_result
-                
-                # Extract the trading decisions if the backtest was successful
-                if bitcoin_result and 'results_df' in bitcoin_result:
-                    # Get the trading decisions (1 for buy, 0 for sell)
-                    bitcoin_decisions = bitcoin_result['results_df'].get('final_decision_shifted', pd.Series())
-                    
-                    # Log information about the Bitcoin decisions
-                    btc_buy_days = bitcoin_decisions[bitcoin_decisions == 1].count()
-                    total_days = len(bitcoin_decisions)
-                    self.logger.info(f"Bitcoin signaled buy on {btc_buy_days} out of {total_days} days ({btc_buy_days/total_days:.2%})")
-                else:
-                    self.logger.error("Bitcoin backtest failed, cannot use as filter.")
-                    use_btc_filter = False
-                    
-        # Process each asset (skipping Bitcoin if we already processed it)
-        for asset_id in valid_asset_ids:
-            # Skip bitcoin if we already ran it above
-            if asset_id == 'bitcoin' and 'bitcoin' in results:
-                continue
-                
-            self.logger.info(f"Backtesting {asset_id}...")
-            
-            # Make sure the asset is loaded
-            if asset_id not in self.assets:
-                self.logger.info(f"Loading data for {asset_id}...")
-                self.load_data(assets=asset_id)
-                
-                # Skip if we couldn't load the asset
-                if asset_id not in self.assets:
-                    self.logger.error(f"Failed to load data for {asset_id}, skipping.")
-                    continue
-            
-            # Set trade cost based on asset type
-            trade_cost = btc_cost if asset_id == 'bitcoin' else alt_cost
-            
-            # For Bitcoin, only use USD signals
-            if asset_id == 'bitcoin':
-                asset_result = self.backtest_asset(
-                    asset_id=asset_id,
-                    start_date=start_date,
-                    end_date=end_date,
-                    initial_capital=initial_capital,
-                    trade_cost=trade_cost,
-                    slippage_pct=slippage_pct,
-                    usd_signals=usd_signals,
-                    btc_signals=None  # Bitcoin doesn't use BTC signals
-                )
-            # For altcoins, use both USD and BTC signals, and apply Bitcoin filter if enabled
+            if bitcoin_result and 'decisions' in bitcoin_result:
+                bitcoin_decisions = bitcoin_result['decisions']
+                self.logger.info(f"Bitcoin decisions generated for filtering: {len(bitcoin_decisions)} entries")
             else:
-                # If we're using Bitcoin as a filter and we have valid Bitcoin decisions
-                if use_btc_filter and bitcoin_decisions is not None and len(bitcoin_decisions) > 0:
+                self.logger.warning("Bitcoin filter enabled but no decisions generated")
+                # Continue without filter
+                use_btc_filter = False
+        
+        # Run backtests for each asset
+        asset_results = {}
+        combined_equity = pd.Series(name="Combined")
+        summary_data = []
+        price_data = {}
+        
+        # Create a data loader to get tickers
+        from ..data.data_loader import DataLoader
+        data_loader = DataLoader(
+            data_path=self.data_path,
+            btc_data_path=self.btc_data_path,
+            ssr_data_path=self.ssr_data_path,
+            market_data_path=self.market_data_path,
+            asset_ids=asset_ids
+        )
+        
+        for asset_id in asset_ids:
+            try:
+                # Get ticker from asset ID using DataLoader
+                ticker = data_loader.get_ticker_from_id(asset_id)
+                
+                if asset_id == "bitcoin":
+                    trade_cost = btc_cost
+                else:
+                    trade_cost = alt_cost  # Higher cost for altcoins
+                
+                self.logger.info(f"Running backtest for {asset_id} (identified as {ticker})")
+            
+                # Handle BTC filter for altcoins if needed
+                if use_btc_filter and asset_id != "bitcoin" and bitcoin_decisions is not None:
                     self.logger.info(f"Using Bitcoin as a filter for {asset_id}")
                     
                     # Custom backtest that uses Bitcoin decisions as a filter
@@ -2059,139 +2060,182 @@ class PortfolioAnalyzer:
                         usd_signals=usd_signals,
                         btc_signals=btc_signals
                     )
-            
-            results[asset_id] = asset_result
-            
-            # Print summary of results
-            if asset_result:
-                metrics = asset_result['metrics_comparison']
-                self.logger.info(f"  Total Return: Strategy={metrics.loc['Total Return', 'Strategy']:.2%}, Buy & Hold={metrics.loc['Total Return', 'Buy & Hold']:.2%}")
-                self.logger.info(f"  Sharpe Ratio: Strategy={metrics.loc['Sharpe Ratio', 'Strategy']:.2f}")
-                if 'Win Rate' in metrics.index:
-                    self.logger.info(f"  Win Rate: Strategy={metrics.loc['Win Rate', 'Strategy']:.2%}")
-                self.logger.info(f"  Trade Count: {len(asset_result['trades'])}")
-        
-        # Create a mapping from asset_id to ticker
-        ticker_mapping = {}
-        try:
-            from ..data.data_loader import DataLoader
-            data_loader = DataLoader(
-                data_path=self.data_path,
-                btc_data_path=self.btc_data_path,
-                ssr_data_path=self.ssr_data_path,
-                market_data_path=self.market_data_path,
-                asset_ids=self.asset_ids
-            )
-            
-            for asset_id in results.keys():
-                ticker = data_loader.get_ticker_from_id(asset_id)
-                ticker_mapping[asset_id] = ticker.upper() if ticker else asset_id.upper()
-        except Exception as e:
-            self.logger.warning(f"Could not create ticker mapping: {e}")
-            # Fallback to using asset_ids as tickers
-            for asset_id in results.keys():
-                ticker_mapping[asset_id] = asset_id.upper()
-        
-        # Create summary dataframe
-        summary_data = []
-        
-        for asset_id, result in results.items():
-            if result is None:
-                continue
-            
-            # Get ticker for the asset
-            ticker = ticker_mapping.get(asset_id, asset_id.upper())
-            
-            # Skip stablecoins (USDT, USDC, TUSD)
-            if ticker in ['USDT', 'USDC', 'TUSD']:
-                self.logger.info(f"Skipping stablecoin {ticker} in summary table")
-                continue
                 
-            strategy_metrics = result['strategy_metrics']
-            buy_hold_metrics = result['buy_hold_metrics']
-            
-            # Calculate total transaction costs from trades
-            total_cost = 0.0
-            if 'trades' in result:
-                for trade in result['trades']:
-                    entry_cost = trade.get('entry_cost', 0.0)
-                    exit_cost = trade.get('exit_cost', 0.0)
-                    total_cost += entry_cost + exit_cost
-            
-            # Calculate peak performance (maximum portfolio value)
-            peak_return = 0.0
-            if 'results_df' in result and 'portfolio_value' in result['results_df'].columns:
-                max_portfolio_value = result['results_df']['portfolio_value'].max()
-                peak_return = (max_portfolio_value / initial_capital) - 1
-            
-            # Calculate peak return for buy & hold
-            bh_peak_return = 0.0
-            if 'results_df' in result and 'close' in result['results_df'].columns:
-                # Most reliable source: close prices directly from results_df
-                price_series = result['results_df']['close']
-                max_price = price_series.max()
-                initial_price = price_series.iloc[0]
-                if initial_price > 0:
-                    bh_peak_return = (max_price / initial_price) - 1
-            elif asset_id in self.assets:
-                # Fallback: get the price data from the original asset data
-                asset_data = self.get_asset_data(asset_id)
-                if asset_data is not None:
-                    # Filter to match the backtest period
-                    price_data = asset_data.get_price_data()
-                    if start_date is not None:
-                        if isinstance(start_date, str):
-                            start_date = pd.to_datetime(start_date)
-                        price_data = price_data[price_data.index >= start_date]
-                    if end_date is not None:
-                        if isinstance(end_date, str):
-                            end_date = pd.to_datetime(end_date)
-                        price_data = price_data[price_data.index <= end_date]
+                if asset_result:
+                    asset_results[asset_id] = asset_result
                     
-                    if not price_data.empty and 'close' in price_data.columns:
-                        price_series = price_data['close']
-                        max_price = price_series.max()
-                        initial_price = price_series.iloc[0]
-                        if initial_price > 0:
-                            bh_peak_return = (max_price / initial_price) - 1
-            else:
-                self.logger.warning(f"Could not extract close price data for {asset_id} peak return calculation")
-            
-            # Calculate retention ratio (how much of peak return is retained)
-            retention_ratio = 0.0
-            if peak_return > 0:
-                retention_ratio = strategy_metrics['total_return'] / peak_return
-            
-            summary_data.append({
-                'Asset': ticker,  # Use ticker instead of asset_id
-                'Total Return (%)': round(strategy_metrics['total_return'] * 100, 2),
-                'Peak Return (%)': round(peak_return * 100, 2),
-                'Buy & Hold Return (%)': round(buy_hold_metrics['total_return'] * 100, 2),
-                'Buy & Hold Peak (%)': round(bh_peak_return * 100, 2),
-                'Sharpe Ratio': round(strategy_metrics['sharpe_ratio'], 2),
-                'Buy & Hold Sharpe': round(buy_hold_metrics['sharpe_ratio'], 2),
-                'Sortino Ratio': round(strategy_metrics['sortino_ratio'], 2),
-                'Buy & Hold Sortino': round(buy_hold_metrics['sortino_ratio'], 2),
-                'Max Drawdown (%)': round(strategy_metrics['max_drawdown'] * 100, 2),
-                'Buy & Hold Drawdown (%)': round(buy_hold_metrics['max_drawdown'] * 100, 2),
-                'Annualized Volatility (%)': round(strategy_metrics['annualized_volatility'] * 100, 2),
-                'Buy & Hold Volatility (%)': round(buy_hold_metrics['annualized_volatility'] * 100, 2),
-                'Trade Count': len(result['trades']) if 'trades' in result else 0,
-                'Total Cost': round(total_cost, 2)
-            })
+                    # Store price data
+                    if 'price_data' in asset_result:
+                        price_data[asset_id] = asset_result['price_data']
+                    
+                    # Add to combined equity curve
+                    if 'results_df' in asset_result and 'portfolio_value' in asset_result['results_df'].columns:
+                        equity_curve = asset_result['results_df']['portfolio_value']
+                        
+                        # Initialize combined equity with first asset
+                        if combined_equity.empty:
+                            combined_equity = equity_curve
+                        else:
+                            # Align and add to combined equity
+                            combined_df = pd.DataFrame({
+                                'existing': combined_equity,
+                                'new': equity_curve
+                            })
+                            # Fill any NaN values with the last valid value
+                            combined_df = combined_df.fillna(method='ffill')
+                            # Sum the equity curves
+                            combined_equity = combined_df.sum(axis=1)
+                    
+                    # Extract metrics for summary - FIXED: use correct keys
+                    strategy_metrics = asset_result.get('strategy_metrics', {})
+                    buy_hold_metrics = asset_result.get('buy_hold_metrics', {})
+                    
+                    if not strategy_metrics or not buy_hold_metrics:
+                        # Add detailed debugging to see what's in the asset_result
+                        self.logger.warning(f"Missing metrics for {asset_id}")
+                        self.logger.debug(f"Asset result keys: {list(asset_result.keys())}")
+                        if 'metrics_comparison' in asset_result:
+                            self.logger.debug(f"metrics_comparison shape: {asset_result['metrics_comparison'].shape}")
+                            self.logger.debug(f"metrics_comparison columns: {list(asset_result['metrics_comparison'].columns)}")
+                            self.logger.debug(f"metrics_comparison index: {list(asset_result['metrics_comparison'].index)}")
+                            
+                            # Try to extract metrics from metrics_comparison instead
+                            if isinstance(asset_result['metrics_comparison'], pd.DataFrame):
+                                try:
+                                    strategy_metrics = {
+                                        'total_return': asset_result['metrics_comparison'].loc['Total Return', 'Strategy'],
+                                        'max_drawdown': asset_result['metrics_comparison'].loc['Max Drawdown', 'Strategy'],
+                                        'sharpe_ratio': asset_result['metrics_comparison'].loc['Sharpe Ratio', 'Strategy'],
+                                        'sortino_ratio': asset_result['metrics_comparison'].loc['Sortino Ratio', 'Strategy'],
+                                        'annualized_volatility': asset_result['metrics_comparison'].loc['Annualized Volatility', 'Strategy'],
+                                        'annualized_return': asset_result['metrics_comparison'].loc['Annualized Return', 'Strategy']
+                                    }
+                                    
+                                    buy_hold_metrics = {
+                                        'total_return': asset_result['metrics_comparison'].loc['Total Return', 'Buy & Hold'],
+                                        'max_drawdown': asset_result['metrics_comparison'].loc['Max Drawdown', 'Buy & Hold'],
+                                        'sharpe_ratio': asset_result['metrics_comparison'].loc['Sharpe Ratio', 'Buy & Hold'],
+                                        'sortino_ratio': asset_result['metrics_comparison'].loc['Sortino Ratio', 'Buy & Hold'],
+                                        'annualized_volatility': asset_result['metrics_comparison'].loc['Annualized Volatility', 'Buy & Hold'],
+                                        'annualized_return': asset_result['metrics_comparison'].loc['Annualized Return', 'Buy & Hold']
+                                    }
+                                    
+                                    self.logger.info(f"Successfully extracted metrics from metrics_comparison for {asset_id}")
+                                    # Continue with the rest of the function
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to extract metrics from metrics_comparison: {str(e)}")
+                                    continue
+                            else:
+                                self.logger.warning(f"metrics_comparison is not a DataFrame: {type(asset_result['metrics_comparison'])}")
+                                continue
+                        else:
+                            self.logger.warning(f"No metrics_comparison in asset_result for {asset_id}")
+                            continue
+                    
+                    # Calculate total transaction costs from trades
+                    total_cost = 0.0
+                    if 'trades' in asset_result:
+                        for trade in asset_result['trades']:
+                            entry_cost = abs(trade.get('entry_cost', 0.0))
+                            exit_cost = abs(trade.get('exit_cost', 0.0)) if trade.get('exit_cost') is not None else 0.0
+                            total_cost += entry_cost + exit_cost
+                    
+                    # Calculate peak performance (maximum portfolio value)
+                    peak_return = 0.0
+                    if 'results_df' in asset_result and 'portfolio_value' in asset_result['results_df'].columns:
+                        max_portfolio_value = asset_result['results_df']['portfolio_value'].max()
+                        peak_return = (max_portfolio_value / initial_capital) - 1
+                    
+                    # Calculate peak return for buy & hold
+                    bh_peak_return = 0.0
+                    if 'results_df' in asset_result and 'buy_hold_value' in asset_result['results_df'].columns:
+                        max_bh_value = asset_result['results_df']['buy_hold_value'].max()
+                        bh_peak_return = (max_bh_value / initial_capital) - 1
+                    elif 'price_data' in asset_result:
+                        price_series = asset_result['price_data']
+                        if isinstance(price_series, dict) and 'close' in price_series:
+                            price_series = price_series['close']
+                        elif isinstance(price_series, pd.DataFrame) and 'close' in price_series.columns:
+                            price_series = price_series['close']
+                        
+                        if isinstance(price_series, pd.Series):
+                            max_price = price_series.max()
+                            initial_price = price_series.iloc[0]
+                            if initial_price > 0:
+                                bh_peak_return = (max_price / initial_price) - 1
+                        else:
+                            self.logger.warning(f"Could not extract close price series for {asset_id} peak return calculation")
+                    
+                    # Calculate retention ratio (how much of peak return is retained)
+                    retention_ratio = 0.0
+                    if peak_return > 0:
+                        retention_ratio = strategy_metrics['total_return'] / peak_return
+                    
+                    summary_data.append({
+                        'Asset': ticker,  # Use ticker instead of asset_id
+                        'Total Return (%)': round(strategy_metrics['total_return'] * 100, 2),
+                        'Peak Return (%)': round(peak_return * 100, 2),
+                        'Buy & Hold Return (%)': round(buy_hold_metrics['total_return'] * 100, 2),
+                        'Buy & Hold Peak (%)': round(bh_peak_return * 100, 2),
+                        'Sharpe Ratio': round(strategy_metrics['sharpe_ratio'], 2),
+                        'Buy & Hold Sharpe': round(buy_hold_metrics['sharpe_ratio'], 2),
+                        'Sortino Ratio': round(strategy_metrics['sortino_ratio'], 2),
+                        'Buy & Hold Sortino': round(buy_hold_metrics['sortino_ratio'], 2),
+                        'Max Drawdown (%)': round(strategy_metrics['max_drawdown'] * 100, 2),
+                        'Buy & Hold Drawdown (%)': round(buy_hold_metrics['max_drawdown'] * 100, 2),
+                        'Annualized Volatility (%)': round(strategy_metrics['annualized_volatility'] * 100, 2),
+                        'Buy & Hold Volatility (%)': round(buy_hold_metrics['annualized_volatility'] * 100, 2),
+                        'Trade Count': len(asset_result['trades']) if 'trades' in asset_result else 0,
+                        'Total Cost': round(total_cost, 2)
+                    })
+                    
+            except Exception as e:
+                self.logger.error(f"Error backtesting {asset_id}: {str(e)}")
         
-        # Create summary dataframe
-        summary_df = pd.DataFrame(summary_data)
-        if not summary_df.empty:
-            summary_df = summary_df.set_index('Asset')
+        # Create summary table
+        if summary_data:
+            summary_df = pd.DataFrame(summary_data)
+            # Set Asset column as index for better display
+            summary_df.set_index('Asset', inplace=True)
             
-        self.logger.info(f"Completed backtesting for {len(results)} assets")
-        
-        return {
-            'asset_results': results,
-            'summary': summary_df
+            # Sort by total return descending
+            if 'Total Return (%)' in summary_df.columns:
+                summary_df = summary_df.sort_values('Total Return (%)', ascending=False)
+        else:
+            summary_df = pd.DataFrame()
+            
+        # Calculate combined metrics
+        combined_metrics = {}
+        if not combined_equity.empty:
+            combined_returns = combined_equity.pct_change().dropna()
+            combined_metrics = self._calculate_metrics(combined_returns)
+         
+        # Create the formatted summary table   
+        results_dict = {
+            'asset_results': asset_results,
+            'combined_equity': combined_equity,
+            'combined_metrics': combined_metrics,
+            'summary': summary_df,
+            'price_data': price_data,
+            'start_date': start_date,
+            'end_date': end_date,
+            'parameters': {
+                'usd_signals': usd_signals,
+                'btc_signals': btc_signals,
+                'use_btc_filter': use_btc_filter,
+                'initial_capital': initial_capital,
+                'btc_cost': btc_cost,
+                'alt_cost': alt_cost,
+                'slippage_pct': slippage_pct
+            }
         }
         
+        # Format and add the summary table
+        formatted_summary = self.get_backtest_summary_table(results_dict)
+        results_dict['formatted_summary'] = formatted_summary
+            
+        return results_dict
+    
     def _backtest_asset_with_btc_filter(self,
                                       asset_id: str,
                                       start_date: Union[str, datetime],
@@ -2557,3 +2601,28 @@ class PortfolioAnalyzer:
         else:
             self.logger.warning(f"Asset {asset_id} not found")
             return [] 
+
+    def _calculate_metrics(self, returns_series):
+        """
+        Calculate portfolio metrics from a returns series.
+        
+        Args:
+            returns_series (pd.Series): Series of returns
+            
+        Returns:
+            dict: Dictionary of portfolio metrics
+        """
+        # Create a DataFrame in the format expected by PortfolioMetricsCalculator
+        if self.metrics_calculator is None:
+            from ..portfolio.metrics_calculator import PortfolioMetricsCalculator
+            self.metrics_calculator = PortfolioMetricsCalculator()
+        
+        # Convert returns series to a DataFrame with required columns
+        portfolio_df = pd.DataFrame({
+            'date': returns_series.index,
+            'returns': returns_series.values,
+            'portfolio_value': (1 + returns_series).cumprod() * 100  # Arbitrary starting value of 100
+        })
+        
+        # Calculate metrics using the portfolio metrics calculator
+        return self.metrics_calculator.calculate_portfolio_metrics(portfolio_df)

@@ -545,11 +545,13 @@ class RSIEnsembleBase(RSISignalBase):
             
             if rsi_col in result_df.columns and roc_col in result_df.columns:
                 # Signal is bullish if RSI > 50 AND RoC > 0
-                signal = result_df.apply(
-                    lambda row: 1 if pd.notna(row[rsi_col]) and pd.notna(row[roc_col]) and 
-                                    row[rsi_col] > 50 and row[roc_col] > 0 else 0,
-                    axis=1
-                )
+                signal = pd.Series(0, index=data.index)  # Initialize with zeros using original index
+                
+                # Use loc to set values, avoiding reindexing issues
+                mask = (result_df[rsi_col] > 50) & (result_df[roc_col] > 0) & result_df[rsi_col].notna() & result_df[roc_col].notna()
+                if not mask.empty:
+                    signal.loc[mask.index[mask]] = 1
+                
                 return signal
             else:
                 self.logger.warning(f"Required columns {rsi_col} and/or {roc_col} not found for {asset_id}")
@@ -582,12 +584,20 @@ class RSIEnsembleBase(RSISignalBase):
             for window in self.WINDOWS:
                 window_signals[window] = self.calculate_window_signal(data, window, asset_id)
                 
-            # Combine signals into a DataFrame
+            # Combine signals into a DataFrame with the original data index
             signal_df = pd.DataFrame(index=data.index)
+            
+            # Ensure all window signals have the same index as the original data
             for window, signal in window_signals.items():
-                signal_df[f'window_{window}'] = signal
-                
-            # Count active signals and check against threshold
+                if signal.index.equals(data.index):
+                    signal_df[f'window_{window}'] = signal
+                else:
+                    # Safely reindex if needed (this should not happen with our improved implementation)
+                    aligned_signal = pd.Series(0, index=data.index)
+                    aligned_signal.loc[signal.index.intersection(data.index)] = signal.loc[signal.index.intersection(data.index)]
+                    signal_df[f'window_{window}'] = aligned_signal
+            
+            # Count active signals for each date
             signal_df['active_count'] = signal_df.sum(axis=1)
             
             # Generate final signal if enough window signals are positive
@@ -601,6 +611,7 @@ class RSIEnsembleBase(RSISignalBase):
             
             self.logger.info(f"RSI Ensemble for {asset_id}: Using {len(self.WINDOWS)} windows with threshold {self.signal_threshold}")
             
+            # Ensure we return a Series with the same index as the input data
             return signal_df['final_signal']
             
         except Exception as e:
