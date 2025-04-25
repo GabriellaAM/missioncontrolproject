@@ -76,3 +76,35 @@ def parse_gecko_prices(data):
     return df
 
 
+def get_ticker_mapping(portfolio_assets):
+    """
+    Uses the CoinGecko API to retrieve the coins list and creates a mapping 
+    from coin ticker (upper-case) to coin id.
+    """
+    cg = CoinGeckoAPI()
+    coins_list = cg.get_coins_list()
+    coins_df = pd.DataFrame(coins_list)
+    
+    # Define known mappings for ambiguous tickers
+    known_mappings = {
+        'VIRTUAL': 'virtual-protocol',
+        'HYPE': 'hyperliquid',
+        'YNE': 'yesnoerror'
+    }
+    
+    # Create mapping by first checking known mappings, then filtering by portfolio_assets
+    mapping = {}
+    
+    # Add known mappings first
+    for ticker, coin_id in known_mappings.items():
+        if coin_id in portfolio_assets:
+            mapping[ticker] = coin_id
+    
+    # Add remaining mappings from CoinGecko
+    filtered_coins_df = coins_df[coins_df['id'].isin(portfolio_assets)]
+    for _, row in filtered_coins_df.iterrows():
+        ticker = row['symbol'].upper()
+        if ticker not in mapping:  # Don't override known mappings
+            mapping[ticker] = row['id']
+    
+    return mapping

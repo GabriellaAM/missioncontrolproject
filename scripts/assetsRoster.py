@@ -11,7 +11,7 @@ carteira_EXC = ['aave', 'arbitrum', 'arweave','audius','aurory','avalanche-2','a
                 'terra-luna-2', 'tezos', 'tribe-2', 'uniswap', 'wibx', 'wrapped-nxm', 'yearn-finance', 
                 'zcash', 'frax-share', 'celestia', 'ronin', 'thorchain', 'immutable-x',
                 'akash-network', 'render-token', 'blockstack', 'ondo-finance', 'the-open-network', 
-                'aerodrome-finance', 'morpho', 'ethena', 'virtual-protocol', 'hyperliquid']
+                'aerodrome-finance', 'morpho', 'ethena', 'virtual-protocol', 'hyperliquid', 'bittensor']
 
 carteira_HB = ['ethereum', 'tether', 'maker', 'havven', 'aave', 'uniswap', 'dydx',
               'cosmos', 'secret', 'the-sandbox', 'helium', 'matic-network',
@@ -32,11 +32,11 @@ carteira_LC = ['arweave', 'badger-dao', 'my-neighbor-alice', 'perpetual-protocol
 
 carteira_AC = ['bitcoin', 'ethereum', 'solana', 'maker', 'chainlink', 'thorchain', 
                'blockstack', 'immutable-x', 'uniswap', 'pendle', 'aave',
-               'ethervista', 'morpho', 'ethena', 'virtual-protocol', 'yne']
+               'ethervista', 'morpho', 'ethena', 'virtual-protocol', 'yne', 'bittensor']
 
 others = ['fartcoin', 'raydium', 'aixbt', 'griffain', 'orbit-3', 'hyperliquid', 'yne', 'usd-coin', 'sui', 
           'hedera-hashgraph', 'mantra-dao', 'bittensor', 'pepe', 'sonic-3', 'jupiter-exchange-solana', 'dogecoin',
-          'tron', 'leo-token', 'stellar', 'pi-network', ]
+          'tron', 'leo-token', 'stellar', 'pi-network', 'chex-token', 'deep', 'instadapp']
 
 combo = carteira_AC + carteira_EXC + carteira_HB + carteira_LC + others
 
