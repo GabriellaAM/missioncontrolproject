@@ -64,15 +64,19 @@ series_mapping = {
     'BAMLC0A0CM': 'creditSpreadsHighGrade', # monthly
     'SP500': 'sp500', # daily
     'NASDAQCOM': 'nasdaq', # daily
-    'GFDEBTN': 'usTotalDebt', # monthly
+    'GFDEBTN': 'usTotalDebt',
+    'GFDEGDQ188S' : 'usTotalDebt_GDP', # monthly
     'WTREGEN': 'tga', # monthly
     'VIXCLS': 'vix', # daily
     'JPNASSETS': 'bojAssets', # monthly
-    'ECBASSETSW': 'ecbAssets', # monthly
+    'ECBASSETSW': 'ecbAssets',
+    'PSAVERT': 'personalSavingsRate',
+    'DSPIC96': 'realDisposableIncome',
+    'PAYEMS': 'allEmployees'
 }
 
 # Folder for saving the data
-output_folder = "data/macro/fredData"
+output_folder = "data/macro/fredData" 
 os.makedirs(output_folder, exist_ok=True)
 
 output_folder = "data/macro/fredData"

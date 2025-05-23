@@ -3,6 +3,9 @@ import numpy as np
 import os
 import logging
 from pycoingecko import CoinGeckoAPI
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class DataLoader:
     """
@@ -42,7 +45,7 @@ class DataLoader:
         Returns:
             dict: Mapping of tickers to asset IDs
         """
-        cg = CoinGeckoAPI()
+        cg = CoinGeckoAPI(api_key=os.getenv('COINGECKO_API_KEY'))
         coins_list = cg.get_coins_list()
         coins_df = pd.DataFrame(coins_list)
         

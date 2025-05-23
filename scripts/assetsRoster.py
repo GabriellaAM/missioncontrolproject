@@ -11,7 +11,8 @@ carteira_EXC = ['aave', 'arbitrum', 'arweave','audius','aurory','avalanche-2','a
                 'terra-luna-2', 'tezos', 'tribe-2', 'uniswap', 'wibx', 'wrapped-nxm', 'yearn-finance', 
                 'zcash', 'frax-share', 'celestia', 'ronin', 'thorchain', 'immutable-x',
                 'akash-network', 'render-token', 'blockstack', 'ondo-finance', 'the-open-network', 
-                'aerodrome-finance', 'morpho', 'ethena', 'virtual-protocol', 'hyperliquid', 'bittensor']
+                'aerodrome-finance', 'morpho', 'ethena', 'virtual-protocol', 'hyperliquid', 'bittensor',
+                'sui']
 
 carteira_HB = ['ethereum', 'tether', 'maker', 'havven', 'aave', 'uniswap', 'dydx',
               'cosmos', 'secret', 'the-sandbox', 'helium', 'matic-network',
@@ -22,21 +23,25 @@ carteira_HB = ['ethereum', 'tether', 'maker', 'havven', 'aave', 'uniswap', 'dydx
               'chainlink', 'solana', 'avalanche-2', 'kujira', 'echelon-prime', 'akash-network', 
               'render-token', 'beam-2', 'multibit',
               'ondo-finance', 'ether-fi', 'aerodrome-finance', 'morpho', 
-              'virtual-protocol', 'ethena']
+              'virtual-protocol', 'ethena', 'curve-dao-token', 'deep']
 
 carteira_LC = ['arweave', 'badger-dao', 'my-neighbor-alice', 'perpetual-protocol',
               'alpha-finance', 'yield-guild-games', 'genopets', 'acala','rainbow-token-2',
               'guild-of-guardians', 'aurory', 'illuvium', 'conic-finance', 'vela-token',
               'radiant-capital', 'botto', 'pendle', 'nunet', 'kryptonite', 'prisma-governance-token',
-              'genesysgo-shadow', 'neon', 'mintlayer', 'ethervista', 'heyanon', 'yne']
+              'genesysgo-shadow', 'neon', 'mintlayer', 'ethervista', 'heyanon', 'yne', 'griffain']
 
 carteira_AC = ['bitcoin', 'ethereum', 'solana', 'maker', 'chainlink', 'thorchain', 
                'blockstack', 'immutable-x', 'uniswap', 'pendle', 'aave',
-               'ethervista', 'morpho', 'ethena', 'virtual-protocol', 'yne', 'bittensor']
+               'ethervista', 'morpho', 'ethena', 'virtual-protocol', 'yne', 'bittensor', 'sui']
 
 others = ['fartcoin', 'raydium', 'aixbt', 'griffain', 'orbit-3', 'hyperliquid', 'yne', 'usd-coin', 'sui', 
           'hedera-hashgraph', 'mantra-dao', 'bittensor', 'pepe', 'sonic-3', 'jupiter-exchange-solana', 'dogecoin',
-          'tron', 'leo-token', 'stellar', 'pi-network', 'chex-token', 'deep', 'instadapp']
+          'tron', 'stellar', 'chex-token', 'deep', 'instadapp', 'syrup', 'kamino', 'moonwell-artemis',
+          'euler', 'grass', 'solayer', 'worldcoin-wld', 'fetch-ai', 'sei-network', 'story-2', 'aioz-network',
+          'plume', 'axelar', 'kaspa', 'quant-network', 'venice-token', 'sturdy', 'verasity', 'y', 'metacade', 
+          'alchemist-ai', 'anzen-finance', 'bertram-the-pomeranian', 'fwog', 'paal-ai', 'power-ledger', 'neiro-3',
+          'mog-coin', 'tokenbot-2']
 
 combo = carteira_AC + carteira_EXC + carteira_HB + carteira_LC + others
 
