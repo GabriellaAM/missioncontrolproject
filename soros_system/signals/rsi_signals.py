@@ -217,16 +217,75 @@ class RSIBullishBase(RSISignalBase):
     def __init__(self, params: Optional[Dict[str, Any]] = None):
         """Initialize the signal."""
         super().__init__(params)
-        self.rsi_length = self.params.get('rsi_length', 28)
-        self.roc_length = self.params.get('roc_length', 28)
+        self.rsi_length = self.params.get('rsi_length', 28)  # Changed back to 28
+        self.roc_length = self.params.get('roc_length', 28)  # Changed back to 28
         self._warned_insufficient = False
+    
+    def get_required_columns(self) -> List[str]:
+        """Get required columns for the signal calculation."""
+        if self.quote_type == 'USD':
+            return ['open', 'high', 'low', 'close']  # Need all OHLC columns
+        else:  # BTC quote type
+            # Skip BTC signals for bitcoin itself
+            asset_id = self._get_asset_id()
+            if asset_id == 'bitcoin':
+                return ['open', 'high', 'low', 'close']
+            # For other assets, we still need OHLC for the asset but BTC price for comparison
+            return ['open', 'high', 'low', 'close', f'{asset_id}_btc'] if asset_id else ['open', 'high', 'low', 'close']
     
     def get_min_required_samples(self) -> int:
         """Get minimum required samples for the signal calculation."""
         return max(self.rsi_length, self.roc_length) + 10
     
+    def calculate_ohlc_rsi_roc(self, data: pd.DataFrame, price_suffix: str = '') -> Tuple[pd.Series, pd.Series]:
+        """Calculate smoothed RSI and ROC from OHLC data.
+        
+        Args:
+            data: DataFrame with OHLC data
+            price_suffix: Suffix for column names (e.g., '_btc' for BTC quotes)
+            
+        Returns:
+            Tuple of (smoothed_rsi, smoothed_roc)
+        """
+        import ta
+        
+        # Define column names
+        open_col = f'open{price_suffix}'
+        high_col = f'high{price_suffix}'
+        low_col = f'low{price_suffix}'
+        close_col = f'close{price_suffix}'
+        
+        # For BTC quotes of non-bitcoin assets, we use the asset's USD OHLC data
+        # but calculate signals based on the BTC price column
+        if price_suffix == '_btc':
+            # Use the asset's OHLC data in USD terms
+            open_col = 'open'
+            high_col = 'high' 
+            low_col = 'low'
+            close_col = 'close'
+        
+        # Calculate RSI for each OHLC component
+        rsi_open = ta.momentum.RSIIndicator(close=data[open_col], window=self.rsi_length).rsi()
+        rsi_high = ta.momentum.RSIIndicator(close=data[high_col], window=self.rsi_length).rsi()
+        rsi_low = ta.momentum.RSIIndicator(close=data[low_col], window=self.rsi_length).rsi()
+        rsi_close = ta.momentum.RSIIndicator(close=data[close_col], window=self.rsi_length).rsi()
+        
+        # Calculate smoothed RSI (average of OHLC RSI values)
+        rsi_smooth = (rsi_open + rsi_high + rsi_low + rsi_close) / 4
+        
+        # Calculate ROC for each OHLC component
+        roc_open = ta.momentum.ROCIndicator(close=data[open_col], window=self.roc_length).roc()
+        roc_high = ta.momentum.ROCIndicator(close=data[high_col], window=self.roc_length).roc()
+        roc_low = ta.momentum.ROCIndicator(close=data[low_col], window=self.roc_length).roc()
+        roc_close = ta.momentum.ROCIndicator(close=data[close_col], window=self.roc_length).roc()
+        
+        # Calculate smoothed ROC (average of OHLC ROC values)
+        roc_smooth = (roc_open + roc_high + roc_low + roc_close) / 4
+        
+        return rsi_smooth, roc_smooth
+
     def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
-        """Calculate the signal values.
+        """Calculate the signal values with state memory.
         
         Args:
             data (pd.DataFrame): DataFrame with price data.
@@ -235,57 +294,57 @@ class RSIBullishBase(RSISignalBase):
         Returns:
             pd.Series: Series with signal values (1 or 0) indexed by date.
                        1 when RSI > 50 AND RoC > 0 (bullish)
-                       0 otherwise (not bullish)
+                       0 when RSI < 50 AND RoC < 0 (bearish)
+                       Previous state otherwise (mixed conditions)
         """
         if not self.validate(data, asset_id):
             # Return empty series with same index as data
-            return pd.Series(index=data.index)
+            return pd.Series(0, index=data.index)
         
         # Store the asset_id in params for later use
         self.params['asset_id'] = asset_id
         
-        # Get the appropriate price column
-        price_col = self.get_price_column(data)
-        if price_col is None:
-            return pd.Series(index=data.index)
-        
         try:
-            # Use the existing smooth RSI calculation which also calculates RoC
-            result_df = self.rsi_calculator.calculate_smooth_rsi(
-                data, price_col, rsi_length=self.rsi_length, roc_length=self.roc_length
-            )
+            # Determine if we need BTC suffix
+            price_suffix = ''
+            if self.quote_type == 'BTC' and asset_id != 'bitcoin':
+                price_suffix = '_btc'
+                # Check if the BTC price column exists
+                btc_col = f'{asset_id}_btc'
+                if btc_col not in data.columns:
+                    self.logger.warning(f"Missing required BTC column '{btc_col}' for {asset_id}")
+                    return pd.Series(0, index=data.index)
             
-            # Get RSI Signal column (already defined in calculator)
-            signal_col = f'RSI_Signal_{price_col}'
+            # Calculate smoothed RSI and ROC from OHLC data
+            rsi_smooth, roc_smooth = self.calculate_ohlc_rsi_roc(data, price_suffix)
             
-            if signal_col in result_df.columns:
-                # The RSI calculator already creates a combined RSI+RoC signal
-                # Convert to our binary signal format (1/0)
-                signal = result_df[signal_col].apply(
-                    lambda x: 1 if pd.notna(x) and x > 0 else 0
-                )
-                return signal
-            else:
-                # If the signal column doesn't exist, calculate manually
-                rsi_col = f'RSI_{price_col}'
-                roc_col = f'RoC_{price_col}'
-                
-                if rsi_col in result_df.columns and roc_col in result_df.columns:
-                    # Both RSI and RoC are available, create combined signal
-                    # Signal is bullish if RSI > 50 AND RoC > 0
-                    signal = result_df.apply(
-                        lambda row: 1 if pd.notna(row[rsi_col]) and pd.notna(row[roc_col]) and 
-                                        row[rsi_col] > 50 and row[roc_col] > 0 else 0,
-                        axis=1
-                    )
-                    return signal
+            # Initialize signal series and state tracking
+            signal = pd.Series(0, index=data.index)
+            last_active_mode = 0  # Track the last active signal state
+            
+            # Process each row with state memory
+            for idx in data.index:
+                if pd.isna(rsi_smooth.loc[idx]) or pd.isna(roc_smooth.loc[idx]):
+                    signal.loc[idx] = last_active_mode
+                    continue
+                    
+                # Bullish condition: RSI smooth > 50 AND smooth ROC > 0
+                if rsi_smooth.loc[idx] > 50 and roc_smooth.loc[idx] > 0:
+                    signal.loc[idx] = 1
+                    last_active_mode = 1
+                # Bearish condition: RSI smooth < 50 AND smooth ROC < 0  
+                elif rsi_smooth.loc[idx] < 50 and roc_smooth.loc[idx] < 0:
+                    signal.loc[idx] = 0
+                    last_active_mode = 0
+                # Mixed conditions: keep the last active mode
                 else:
-                    self.logger.warning(f"Required columns {rsi_col} and/or {roc_col} not found for {asset_id}")
-                    return pd.Series(index=data.index)
-        
+                    signal.loc[idx] = last_active_mode
+            
+            return signal
+            
         except Exception as e:
             self.logger.error(f"Error calculating RSI Bullish signal for {asset_id}: {str(e)}")
-            return pd.Series(index=data.index)
+            return pd.Series(0, index=data.index)
 
 
 # Base class for RSI Bearish signals (RSI < 50 and falling)
@@ -295,16 +354,75 @@ class RSIBearishBase(RSISignalBase):
     def __init__(self, params: Optional[Dict[str, Any]] = None):
         """Initialize the signal."""
         super().__init__(params)
-        self.rsi_length = self.params.get('rsi_length', 28)
-        self.roc_length = self.params.get('roc_length', 28)
+        self.rsi_length = self.params.get('rsi_length', 28)  # Changed back to 28
+        self.roc_length = self.params.get('roc_length', 28)  # Changed back to 28
         self._warned_insufficient = False
+    
+    def get_required_columns(self) -> List[str]:
+        """Get required columns for the signal calculation."""
+        if self.quote_type == 'USD':
+            return ['open', 'high', 'low', 'close']  # Need all OHLC columns
+        else:  # BTC quote type
+            # Skip BTC signals for bitcoin itself
+            asset_id = self._get_asset_id()
+            if asset_id == 'bitcoin':
+                return ['open', 'high', 'low', 'close']
+            # For other assets, we still need OHLC for the asset but BTC price for comparison
+            return ['open', 'high', 'low', 'close', f'{asset_id}_btc'] if asset_id else ['open', 'high', 'low', 'close']
     
     def get_min_required_samples(self) -> int:
         """Get minimum required samples for the signal calculation."""
         return max(self.rsi_length, self.roc_length) + 10
     
+    def calculate_ohlc_rsi_roc(self, data: pd.DataFrame, price_suffix: str = '') -> Tuple[pd.Series, pd.Series]:
+        """Calculate smoothed RSI and ROC from OHLC data.
+        
+        Args:
+            data: DataFrame with OHLC data
+            price_suffix: Suffix for column names (e.g., '_btc' for BTC quotes)
+            
+        Returns:
+            Tuple of (smoothed_rsi, smoothed_roc)
+        """
+        import ta
+        
+        # Define column names
+        open_col = f'open{price_suffix}'
+        high_col = f'high{price_suffix}'
+        low_col = f'low{price_suffix}'
+        close_col = f'close{price_suffix}'
+        
+        # For BTC quotes of non-bitcoin assets, we use the asset's USD OHLC data
+        # but calculate signals based on the BTC price column
+        if price_suffix == '_btc':
+            # Use the asset's OHLC data in USD terms
+            open_col = 'open'
+            high_col = 'high' 
+            low_col = 'low'
+            close_col = 'close'
+        
+        # Calculate RSI for each OHLC component
+        rsi_open = ta.momentum.RSIIndicator(close=data[open_col], window=self.rsi_length).rsi()
+        rsi_high = ta.momentum.RSIIndicator(close=data[high_col], window=self.rsi_length).rsi()
+        rsi_low = ta.momentum.RSIIndicator(close=data[low_col], window=self.rsi_length).rsi()
+        rsi_close = ta.momentum.RSIIndicator(close=data[close_col], window=self.rsi_length).rsi()
+        
+        # Calculate smoothed RSI (average of OHLC RSI values)
+        rsi_smooth = (rsi_open + rsi_high + rsi_low + rsi_close) / 4
+        
+        # Calculate ROC for each OHLC component
+        roc_open = ta.momentum.ROCIndicator(close=data[open_col], window=self.roc_length).roc()
+        roc_high = ta.momentum.ROCIndicator(close=data[high_col], window=self.roc_length).roc()
+        roc_low = ta.momentum.ROCIndicator(close=data[low_col], window=self.roc_length).roc()
+        roc_close = ta.momentum.ROCIndicator(close=data[close_col], window=self.roc_length).roc()
+        
+        # Calculate smoothed ROC (average of OHLC ROC values)
+        roc_smooth = (roc_open + roc_high + roc_low + roc_close) / 4
+        
+        return rsi_smooth, roc_smooth
+
     def calculate(self, data: pd.DataFrame, asset_id: str) -> pd.Series:
-        """Calculate the signal values.
+        """Calculate the signal values with state memory.
         
         Args:
             data (pd.DataFrame): DataFrame with price data.
@@ -313,57 +431,57 @@ class RSIBearishBase(RSISignalBase):
         Returns:
             pd.Series: Series with signal values (1 or 0) indexed by date.
                        1 when RSI < 50 AND RoC < 0 (bearish)
-                       0 otherwise (not bearish)
+                       0 when RSI > 50 AND RoC > 0 (bullish)
+                       Previous state otherwise (mixed conditions)
         """
         if not self.validate(data, asset_id):
             # Return empty series with same index as data
-            return pd.Series(index=data.index)
+            return pd.Series(0, index=data.index)
         
         # Store the asset_id in params for later use
         self.params['asset_id'] = asset_id
         
-        # Get the appropriate price column
-        price_col = self.get_price_column(data)
-        if price_col is None:
-            return pd.Series(index=data.index)
-        
         try:
-            # Use the existing smooth RSI calculation which also calculates RoC
-            result_df = self.rsi_calculator.calculate_smooth_rsi(
-                data, price_col, rsi_length=self.rsi_length, roc_length=self.roc_length
-            )
+            # Determine if we need BTC suffix
+            price_suffix = ''
+            if self.quote_type == 'BTC' and asset_id != 'bitcoin':
+                price_suffix = '_btc'
+                # Check if the BTC price column exists
+                btc_col = f'{asset_id}_btc'
+                if btc_col not in data.columns:
+                    self.logger.warning(f"Missing required BTC column '{btc_col}' for {asset_id}")
+                    return pd.Series(0, index=data.index)
             
-            # Get RSI Signal column (already defined in calculator)
-            signal_col = f'RSI_Signal_{price_col}'
+            # Calculate smoothed RSI and ROC from OHLC data
+            rsi_smooth, roc_smooth = self.calculate_ohlc_rsi_roc(data, price_suffix)
             
-            if signal_col in result_df.columns:
-                # The RSI calculator already creates a combined RSI+RoC signal
-                # Convert to our binary signal format (1/0)
-                signal = result_df[signal_col].apply(
-                    lambda x: 1 if pd.notna(x) and x < 0 else 0
-                )
-                return signal
-            else:
-                # If the signal column doesn't exist, calculate manually
-                rsi_col = f'RSI_{price_col}'
-                roc_col = f'RoC_{price_col}'
-                
-                if rsi_col in result_df.columns and roc_col in result_df.columns:
-                    # Both RSI and RoC are available, create combined signal
-                    # Signal is bearish if RSI < 50 AND RoC < 0
-                    signal = result_df.apply(
-                        lambda row: 1 if pd.notna(row[rsi_col]) and pd.notna(row[roc_col]) and 
-                                        row[rsi_col] < 50 and row[roc_col] < 0 else 0,
-                        axis=1
-                    )
-                    return signal
+            # Initialize signal series and state tracking
+            signal = pd.Series(0, index=data.index)
+            last_active_mode = 0  # Track the last active signal state
+            
+            # Process each row with state memory
+            for idx in data.index:
+                if pd.isna(rsi_smooth.loc[idx]) or pd.isna(roc_smooth.loc[idx]):
+                    signal.loc[idx] = last_active_mode
+                    continue
+                    
+                # Bearish condition: RSI smooth < 50 AND smooth ROC < 0
+                if rsi_smooth.loc[idx] < 50 and roc_smooth.loc[idx] < 0:
+                    signal.loc[idx] = 1
+                    last_active_mode = 1
+                # Bullish condition: RSI smooth > 50 AND smooth ROC > 0  
+                elif rsi_smooth.loc[idx] > 50 and roc_smooth.loc[idx] > 0:
+                    signal.loc[idx] = 0
+                    last_active_mode = 0
+                # Mixed conditions: keep the last active mode
                 else:
-                    self.logger.warning(f"Required columns {rsi_col} and/or {roc_col} not found for {asset_id}")
-                    return pd.Series(index=data.index)
-        
+                    signal.loc[idx] = last_active_mode
+            
+            return signal
+            
         except Exception as e:
             self.logger.error(f"Error calculating RSI Bearish signal for {asset_id}: {str(e)}")
-            return pd.Series(index=data.index)
+            return pd.Series(0, index=data.index)
 
 
 # ========== USD QUOTE SIGNALS ==========

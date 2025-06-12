@@ -293,6 +293,22 @@ Below is a grounded, chronological approach for building the *MISSIONCONTROL* sy
 
 **Outcome**: A sophisticated regime detection system that classifies market conditions into four distinct regimes based on momentum and volatility, providing valuable context for trading decisions and risk management. The system now supports both USD-quoted and BTC-quoted assets, enabling relative performance analysis across different quote currencies.
 
+### **Step 3.7: RSI Signal Enhancement**
+
+**Enhanced RSI Signal Implementation**:
+- Modified RSI Bullish and Bearish base classes to implement OHLC smoothing (averaging RSI and ROC across Open, High, Low, Close components)
+- Changed default RSI and ROC calculation window from 28 to 20 days, then back to 28 days per user preference
+- Implemented state memory logic to maintain signal persistence during mixed market conditions
+- Updated required columns to include all OHLC data instead of just close price
+
+**Signal Improvements**:
+- Enhanced signal persistence and stability through OHLC smoothing
+- Reduced signal noise and improved market momentum capture
+- Maintained backward compatibility with existing RSI signal classes
+- Comprehensive documentation and error handling
+
+**Outcome**: More robust and stable RSI signals that better capture market momentum with reduced noise and improved persistence during mixed conditions. The existing RSI Bullish/Bearish signals for both USD and BTC now incorporate the user's superior `rsi_momentum` implementation approach.
+
 ---
 
 ## **Phase 4: Streamlit UI & Backtesting**

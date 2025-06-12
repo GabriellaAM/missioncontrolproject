@@ -41,7 +41,11 @@ others = ['fartcoin', 'raydium', 'aixbt', 'griffain', 'orbit-3', 'hyperliquid', 
           'euler', 'grass', 'solayer', 'worldcoin-wld', 'fetch-ai', 'sei-network', 'story-2', 'aioz-network',
           'plume', 'axelar', 'kaspa', 'quant-network', 'venice-token', 'sturdy', 'verasity', 'y', 'metacade', 
           'alchemist-ai', 'anzen-finance', 'bertram-the-pomeranian', 'fwog', 'paal-ai', 'power-ledger', 'neiro-3',
-          'mog-coin', 'tokenbot-2']
+          'mog-coin', 'tokenbot-2', 'cookie', 'kaito', 'eigenlayer', 'spx6900', 'grok-2', 'mamo', 'goatseus-maximus', 
+          'coredaoorg', 'hypercycle', 'equilibria-finance', 'ava-ai', 'zeus-network', 'evan-2', 'alchemy-pay',
+          'arbdoge-ai', 'arkham', 'arpa', 'clearpool', 'dusk-network', 'new-xai-gork', 'floki', 'jasmycoin', 'pudgy-penguins',
+          'mubarak', 'bubblemaps', 'baby-doge-coin', 'chill-guy', 'liquity', 'book-of-meme', 'prometeus', 'myria',
+          'slerf', 'zebec-network', 'lagrange'] 
 
 combo = carteira_AC + carteira_EXC + carteira_HB + carteira_LC + others
 
