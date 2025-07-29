@@ -32,9 +32,11 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from assetsRoster import ROSTER
 from utils import parse_gecko_ohlcv, parse_gecko_prices
+from assetCategoryManagerParquet import AssetCategoryManagerParquet
+from marketDataParquet import MarketDominanceManager
 
 # Output folder
-PARQUET_DATA_FOLDER = "./data_parquet/raw"
+PARQUET_DATA_FOLDER = "./data_parquet/crypto_data"
 
 # Assets to process - use the full ROSTER
 ASSETS = ROSTER  # Full roster (215 assets)
@@ -369,13 +371,57 @@ def update_assets_parallel(btc_df, max_workers=4):
     return results
 
 
+def update_asset_categories():
+    """Update asset categories for any new assets in the roster."""
+    logger.info("Checking for new assets that need category data...")
+    
+    try:
+        category_manager = AssetCategoryManagerParquet()
+        missing_categories = category_manager._get_existing_assets()
+        new_assets = [asset for asset in ASSETS if asset not in missing_categories]
+        
+        if new_assets:
+            logger.info(f"Found {len(new_assets)} assets needing category updates: {new_assets}")
+            updated_count = category_manager.update_missing_categories(new_assets)
+            logger.info(f"✅ Updated categories for {updated_count} assets")
+        else:
+            logger.info("All assets already have category data")
+            
+    except Exception as e:
+        logger.error(f"Error updating asset categories: {e}")
+        # Don't fail the entire update if categories fail
+        pass
+
+
+def update_market_dominance():
+    """Update market dominance metrics."""
+    logger.info("Updating market dominance data...")
+    
+    try:
+        dominance_manager = MarketDominanceManager()
+        success = dominance_manager.update_dominance_data()
+        
+        if success:
+            logger.info("✅ Market dominance data updated successfully")
+        else:
+            logger.error("❌ Failed to update market dominance data")
+            
+    except Exception as e:
+        logger.error(f"Error updating market dominance: {e}")
+        # Don't fail the entire update if dominance fails
+        pass
+
+
 def main():
     """Main function to update all assets."""
     start_time = datetime.now()
     logger.info(f"Starting crypto data update to Parquet at {start_time}")
     logger.info(f"Processing {len(ASSETS)} assets...")
     
-    # First, fetch coin tickers
+    # First, update asset categories for any new assets
+    update_asset_categories()
+    
+    # Then, fetch coin tickers
     fetch_coin_tickers()
     
     # First, update Bitcoin data (needed for BTC ratios)
@@ -403,6 +449,9 @@ def main():
             logger.error("Failed assets:")
             for asset, _, error in failed:
                 logger.error(f"  - {asset}: {error}")
+    
+    # Update market dominance data (after all asset data is updated)
+    update_market_dominance()
     
     end_time = datetime.now()
     duration = end_time - start_time
