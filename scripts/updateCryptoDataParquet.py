@@ -35,8 +35,8 @@ from utils import parse_gecko_ohlcv, parse_gecko_prices
 from assetCategoryManagerParquet import AssetCategoryManagerParquet
 from marketDataParquet import MarketDominanceManager
 
-# Output folder
-PARQUET_DATA_FOLDER = "./data_parquet/crypto_data"
+# Output folder - using coingecko subfolder for future provider flexibility  
+PARQUET_DATA_FOLDER = "./data_parquet/crypto_data/coingecko"
 
 # Assets to process - use the full ROSTER
 ASSETS = ROSTER  # Full roster (215 assets)

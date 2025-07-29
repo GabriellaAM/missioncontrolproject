@@ -67,7 +67,7 @@ series_mapping = {
     'GFDEBTN': 'usTotalDebt',
     'GFDEGDQ188S' : 'usTotalDebt_GDP', # monthly
     'WTREGEN': 'tga', # monthly
-    'VIXCLS': 'vix', # daily
+    #'VIXCLS': 'vix', # daily
     'JPNASSETS': 'bojAssets', # monthly
     'ECBASSETSW': 'ecbAssets',
     'PSAVERT': 'personalSavingsRate',
@@ -163,7 +163,15 @@ def fetch_yfinance_data():
             "DX-Y.NYB": "dxy",
             "JPY=X": "usdjpy",
             "EUR=X": "usdeur",
-            "^MOVE": "move"  # Adding MOVE index
+            "^MOVE": "move",
+            "^VIX": "vix",
+            "HYG": "hyg",
+            "RTY=F": "rty",
+            "YM=F": "ym",
+            "ES=F": "es",
+            "GC=F": "gold",
+            "HG=F": "copper",
+            "CL=F": "oil"
         }
         
         for symbol, name in tickers.items():

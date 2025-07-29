@@ -15,17 +15,17 @@ This module defines the basic cryptocurrency market data features including:
 - BTC-relative pricing features
 
 The data source points to the partitioned parquet files structure:
-data_parquet/crypto_data/{asset_id}/data.parquet
+data_parquet/crypto_data/coingecko/{asset_id}/data.parquet
 """
 
 # Get the project root directory (assuming this file is in soros_features/features/)
 FEATURES_DIR = Path(__file__).parent
 PROJECT_ROOT = FEATURES_DIR.parent.parent
 
-# Build the relative path to the data directory
+# Build the relative path to the coingecko crypto data directory
 # This will work regardless of where the project is cloned
 # Using single * instead of ** for better DuckDB compatibility
-DATA_PATH = str(PROJECT_ROOT / "data_parquet" / "crypto_data" / "*" / "data.parquet")
+DATA_PATH = str(PROJECT_ROOT / "data_parquet" / "crypto_data" / "coingecko" / "*" / "data.parquet")
 
 # Alternative: Use environment variable if set, otherwise use relative path
 # DATA_PATH = os.getenv("CRYPTO_DATA_PATH", DATA_PATH)
