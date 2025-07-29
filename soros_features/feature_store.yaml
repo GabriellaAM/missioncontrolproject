@@ -1,0 +1,5 @@
+project: soros_features
+registry: registry.db
+provider: local
+offline_store:
+  type: duckdb

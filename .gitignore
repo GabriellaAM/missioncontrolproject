@@ -34,6 +34,8 @@ data/macro/fredData/*.csv
 data/macro/fredChanges/*.csv
 data/micro/assetData/*.csv
 data/micro/candleData/*.csv
+# Ignore parquet data files (too large for git)
+data_parquet/
 .cursorrules 
 # If you'd rather ignore all CSVs in the entire repo, you could use:
 # *.csv

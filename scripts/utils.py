@@ -1,5 +1,6 @@
 from datetime import datetime
 import pandas as pd
+from pycoingecko import CoinGeckoAPI
 
 def datetime_to_unix(dt_str, dt_format="%Y-%m-%d"):
     """
