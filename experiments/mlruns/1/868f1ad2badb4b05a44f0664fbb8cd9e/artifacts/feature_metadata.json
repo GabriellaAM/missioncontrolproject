@@ -1,0 +1,233 @@
+{
+  "config": {
+    "base_path": "../data_parquet",
+    "start_date": "2020-01-01",
+    "end_date": "2024-01-01",
+    "load_timestamp": "2025-08-01T19:24:16.209043"
+  },
+  "features_loaded": {},
+  "data_quality": {
+    "final_shape": [
+      1362,
+      36
+    ],
+    "final_date_range": [
+      "2020-04-10 00:00:00",
+      "2024-01-01 00:00:00"
+    ],
+    "rows_before_cleaning": 1462,
+    "rows_after_cleaning": 1362,
+    "rows_dropped": 100,
+    "missing_data_before_cleaning": {
+      "timestamp": 0,
+      "ethereum_open": 0,
+      "ethereum_close": 0,
+      "ethereum_high": 0,
+      "ethereum_low": 0,
+      "ethereum_total_volume": 0,
+      "ethereum_market_cap": 0,
+      "ethereum_open_btc": 0,
+      "ethereum_high_btc": 0,
+      "ethereum_low_btc": 0,
+      "ethereum_close_btc": 0,
+      "ethereum_volume_btc": 0,
+      "bitcoin_open": 0,
+      "bitcoin_close": 0,
+      "bitcoin_high": 0,
+      "bitcoin_low": 0,
+      "bitcoin_total_volume": 0,
+      "bitcoin_market_cap": 0,
+      "solana_open": 100,
+      "solana_close": 100,
+      "solana_high": 100,
+      "solana_low": 100,
+      "solana_total_volume": 100,
+      "solana_market_cap": 100,
+      "solana_open_btc": 100,
+      "solana_high_btc": 100,
+      "solana_low_btc": 100,
+      "solana_close_btc": 100,
+      "solana_volume_btc": 100,
+      "credit_spread": 1,
+      "vix_open": 1,
+      "vix_close": 1,
+      "vix_high": 1,
+      "vix_low": 1,
+      "vix_volume": 1,
+      "rty_ym_ratio": 1
+    },
+    "final_columns": [
+      "timestamp",
+      "ethereum_open",
+      "ethereum_close",
+      "ethereum_high",
+      "ethereum_low",
+      "ethereum_total_volume",
+      "ethereum_market_cap",
+      "ethereum_open_btc",
+      "ethereum_high_btc",
+      "ethereum_low_btc",
+      "ethereum_close_btc",
+      "ethereum_volume_btc",
+      "bitcoin_open",
+      "bitcoin_close",
+      "bitcoin_high",
+      "bitcoin_low",
+      "bitcoin_total_volume",
+      "bitcoin_market_cap",
+      "solana_open",
+      "solana_close",
+      "solana_high",
+      "solana_low",
+      "solana_total_volume",
+      "solana_market_cap",
+      "solana_open_btc",
+      "solana_high_btc",
+      "solana_low_btc",
+      "solana_close_btc",
+      "solana_volume_btc",
+      "credit_spread",
+      "vix_open",
+      "vix_close",
+      "vix_high",
+      "vix_low",
+      "vix_volume",
+      "rty_ym_ratio"
+    ]
+  },
+  "sources": [
+    {
+      "type": "crypto",
+      "asset": "ethereum",
+      "path": "../data_parquet/crypto_data/coingecko/ethereum/data.parquet",
+      "columns": [
+        "timestamp",
+        "open",
+        "close",
+        "high",
+        "low",
+        "total_volume",
+        "market_cap",
+        "open_btc",
+        "high_btc",
+        "low_btc",
+        "close_btc",
+        "volume_btc"
+      ],
+      "shape": [
+        3641,
+        12
+      ],
+      "date_range": [
+        "2015-08-07 00:00:00",
+        "2025-07-28 00:00:00"
+      ]
+    },
+    {
+      "type": "crypto",
+      "asset": "bitcoin",
+      "path": "../data_parquet/crypto_data/coingecko/bitcoin/data.parquet",
+      "columns": [
+        "timestamp",
+        "open",
+        "close",
+        "high",
+        "low",
+        "total_volume",
+        "market_cap"
+      ],
+      "shape": [
+        4470,
+        7
+      ],
+      "date_range": [
+        "2013-04-28 00:00:00",
+        "2025-07-28 00:00:00"
+      ]
+    },
+    {
+      "type": "crypto",
+      "asset": "solana",
+      "path": "../data_parquet/crypto_data/coingecko/solana/data.parquet",
+      "columns": [
+        "timestamp",
+        "open",
+        "close",
+        "high",
+        "low",
+        "total_volume",
+        "market_cap",
+        "open_btc",
+        "high_btc",
+        "low_btc",
+        "close_btc",
+        "volume_btc"
+      ],
+      "shape": [
+        1935,
+        12
+      ],
+      "date_range": [
+        "2020-04-10 00:00:00",
+        "2025-07-28 00:00:00"
+      ]
+    },
+    {
+      "type": "fred",
+      "indicator": "creditSpreads",
+      "renamed_as": "credit_spread",
+      "path": "../data_parquet/macro_data/fred/creditSpreads/data.parquet",
+      "shape": [
+        6675,
+        2
+      ],
+      "date_range": [
+        "2000-01-03 00:00:00",
+        "2025-07-28 00:00:00"
+      ]
+    },
+    {
+      "type": "yahoo",
+      "ticker": "vix",
+      "prefix": "vix",
+      "path": "../data_parquet/macro_data/yahoo/vix/data.parquet",
+      "columns": [
+        "timestamp",
+        "open",
+        "close",
+        "high",
+        "low",
+        "volume"
+      ],
+      "renamed_columns": [
+        "vix_open",
+        "vix_close",
+        "vix_high",
+        "vix_low",
+        "vix_volume"
+      ],
+      "shape": [
+        8958,
+        6
+      ],
+      "date_range": [
+        "1990-01-02 00:00:00",
+        "2025-07-28 00:00:00"
+      ]
+    },
+    {
+      "type": "calculated",
+      "feature_name": "rty_ym_ratio",
+      "renamed_as": "rty_ym_ratio",
+      "path": "../data_parquet/macro_data/calculated/rty_ym_ratio/data.parquet",
+      "shape": [
+        2027,
+        2
+      ],
+      "date_range": [
+        "2017-07-10 00:00:00",
+        "2025-07-28 00:00:00"
+      ]
+    }
+  ]
+}

@@ -24,8 +24,8 @@ PROJECT_ROOT = FEATURES_DIR.parent.parent
 
 # Build the relative path to the coingecko crypto data directory
 # This will work regardless of where the project is cloned
-# Using single * instead of ** for better DuckDB compatibility
-DATA_PATH = str(PROJECT_ROOT / "data_parquet" / "crypto_data" / "coingecko" / "*" / "data.parquet")
+# Using glob pattern that DuckDB can handle
+DATA_PATH = str(PROJECT_ROOT / "data_parquet" / "crypto_data" / "coingecko" / "**" / "data.parquet")
 
 # Alternative: Use environment variable if set, otherwise use relative path
 # DATA_PATH = os.getenv("CRYPTO_DATA_PATH", DATA_PATH)
