@@ -8,9 +8,11 @@ cats = pd.read_parquet('/Users/valter.rebelo/MissionControl/data_parquet/asset_c
 dom = pd.read_parquet('/Users/valter.rebelo/MissionControl/data_parquet/market_data/dominance/data.parquet')
 
 # %%
-df
+dom
 # %%
 cats
+
+
 # %%
 
 dt = yf.download('DX-Y.NYB', start='2025-01-01', end='2025-07-29')
