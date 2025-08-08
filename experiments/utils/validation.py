@@ -185,7 +185,7 @@ def validate_ohlc_permutation_quality(original_ohlc: pd.DataFrame,
     }
 
 
-def strategy_permutation_test(features_df: pd.DataFrame,
+def in_sample_permutation_test(features_df: pd.DataFrame,
                              strategy_func: Callable,
                              strategy_params: Dict[str, Any],
                              price_col: str,
