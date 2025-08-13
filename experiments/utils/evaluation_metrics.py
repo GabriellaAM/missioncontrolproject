@@ -14,7 +14,7 @@ def calculate_sharpe_ratio(returns: np.ndarray,
     
     Args:
         returns: Array of returns
-        risk_free_rate: Annual risk-free rate (default 2%)
+        risk_free_rate: Annual risk-free rate 
         periods_per_year: Number of periods in a year (365 for daily)
     
     Returns:

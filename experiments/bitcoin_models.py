@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List
 from utils.evaluation_metrics import calculate_profit_factor, calculate_sharpe_ratio, calculate_max_drawdown, calculate_sortino_ratio, calculate_calmar_ratio
-from utils.validation import permutation_test, walk_forward_validation, permuted_walk_forward_test
+from utils.validation import in_sample_permutation_test
 from utils.feature_loader import FeatureLoader
 from utils.feature_engineering import calculate_log_returns, shift_features_for_prediction
 from sklearn.model_selection import train_test_split
@@ -32,8 +32,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Setup MLflow
 setup_mlflow()
-create_experiment("bitcoin-models")
-mlflow.set_experiment("bitcoin-models")
+#create_experiment("bitcoin-models")
+#mlflow.set_experiment("bitcoin-models")
 
 # %%
 
@@ -42,14 +42,14 @@ mlflow.set_experiment("bitcoin-models")
 ########################################################
 
 # You can change this to any asset(s) supported by your FeatureLoader
-assets = ['ethereum']  # e.g., ['ethereum'], ['aapl'], ['gold'], etc.
+assets = ['chainlink']  # e.g., ['ethereum'], ['aapl'], ['gold'], etc.
 
 # Helper: get the asset prefix for column names (assume first asset for single-asset analysis)
 asset = assets[0]
 prefix = f"{asset}_"  # e.g., 'bitcoin_', 'ethereum_', etc.
 
 # Initialize feature loader with global date range
-loader = FeatureLoader(start_date='2020-01-01', end_date='2025-08-04')
+loader = FeatureLoader(start_date='2020-01-01', end_date='2025-08-10')
 
 # Build feature set with selected asset(s) + macro features
 features_df = loader.build_feature_set(

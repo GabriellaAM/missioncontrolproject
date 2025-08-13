@@ -1,0 +1,67 @@
+{
+  "run_info": {
+    "run_id": "d54b5670363b42f59f3ef6b716b6a7a9",
+    "experiment_name": "ema_crossover",
+    "strategy_type": "rules_based",
+    "asset": "bitcoin",
+    "start_date": "2023-06-01",
+    "end_date": "2024-06-30",
+    "train_test_split": 0.75
+  },
+  "optimization": {
+    "best_params": {
+      "fast_period": 13,
+      "slow_period": 14
+    },
+    "optimization_score": 1.638311045321621
+  },
+  "validation": {
+    "permutation_results": {
+      "profit_factor": {
+        "original_value": 1.649769176203555,
+        "permuted_values": "[1.37212957 1.36739459 1.18935925 1.37535453 1.10685638 1.13965607\n 0.98419079 1.32506483 1.62619714 1.44693365]",
+        "p_value": 0.0,
+        "percentile": 100.0,
+        "passes_test": "True",
+        "n_permutations": 10,
+        "permuted_mean": 1.2933136792164064,
+        "permuted_std": 0.17849082021004198
+      },
+      "sharpe_ratio": {
+        "original_value": 2.677939973493658,
+        "permuted_values": "[ 1.69553349  1.77063813  0.89538541  1.75154882  0.57616901  0.66877646\n -0.08117955  1.53518214  2.63525843  1.99128484]",
+        "p_value": 0.0,
+        "percentile": 100.0,
+        "passes_test": "True",
+        "n_permutations": 10,
+        "permuted_mean": 1.3438597180410174,
+        "permuted_std": 0.7663192141718594
+      }
+    },
+    "walk_forward_permutation": {
+      "sharpe": {
+        "original": 0.1499441077441738,
+        "permuted_mean": 0.1499441077441738,
+        "permuted_std": 0.0,
+        "p_value": 1.0,
+        "passes_test": "False",
+        "n_permutations": 5
+      },
+      "profit_factor": {
+        "original": 1.029551901775444,
+        "permuted_mean": 1.029551901775444,
+        "permuted_std": 0.0,
+        "p_value": 1.0,
+        "passes_test": "False",
+        "n_permutations": 5
+      }
+    }
+  },
+  "test_performance": {
+    "sharpe": 0.1499441077441738,
+    "profit_factor": 1.029551901775444,
+    "total_return": -0.0011316425280288867,
+    "max_drawdown": -0.1032040827520356,
+    "excess_return": 0.05130872045140733
+  }
+}

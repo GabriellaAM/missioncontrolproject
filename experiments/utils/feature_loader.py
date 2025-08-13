@@ -12,9 +12,15 @@ from datetime import datetime
 class FeatureLoader:
     """Lightweight feature loading system for crypto and macro data"""
     
-    def __init__(self, base_path: str = "../data_parquet", 
+    def __init__(self, base_path: str = None, 
                  start_date: Optional[Union[str, datetime]] = None, 
                  end_date: Optional[Union[str, datetime]] = None):
+        # Use absolute path resolution to ensure consistent behavior
+        if base_path is None:
+            # Default to project root's data_parquet directory
+            current_file = Path(__file__).resolve()  # Get absolute path of this file
+            project_root = current_file.parent.parent.parent  # Go up three levels: utils -> experiments -> project_root
+            base_path = project_root / "data_parquet"
         self.base_path = Path(base_path)
         self.start_date = start_date
         self.end_date = end_date

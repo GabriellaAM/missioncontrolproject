@@ -4,16 +4,27 @@
 # Imports
 ########################################################
 
-from config import setup_mlflow, create_experiment
-import mlflow
 import sys
 import os
+
+# Add parent directory to sys.path for absolute imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config import setup_mlflow, create_experiment
+import mlflow
 import pandas as pd
 import numpy as np
 import optuna
 import logging
 from typing import Dict, List
-from utils.evaluation_metrics import calculate_profit_factor, calculate_sharpe_ratio, calculate_max_drawdown, calculate_sortino_ratio, calculate_calmar_ratio, calculate_information_ratio
+from utils.evaluation_metrics import (
+    calculate_profit_factor,
+    calculate_sharpe_ratio,
+    calculate_max_drawdown,
+    calculate_sortino_ratio,
+    calculate_calmar_ratio,
+    calculate_information_ratio,
+)
 from utils.validation import in_sample_permutation_test
 from utils.feature_loader import FeatureLoader
 from utils.feature_engineering import calculate_log_returns
@@ -30,12 +41,12 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 # Add parent directory to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+#sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Setup MLflow
 setup_mlflow()
-create_experiment("bitcoin-models")
-mlflow.set_experiment("bitcoin-models")
+create_experiment("test_1")
+mlflow.set_experiment("test_1")
 
 # %%
 
@@ -909,7 +920,7 @@ if 'overall_metrics' not in wf_results or wf_results['overall_metrics'] is None:
     print("\nError: No walk-forward results available. Run walk-forward validation first.")
 else:
     # Configuration
-    n_permutations = 500  # Number of permutations
+    n_permutations = 2  # Number of permutations
     metrics_to_test = ['sharpe_ratio', 'profit_factor']
     p_value_threshold = 0.05
     

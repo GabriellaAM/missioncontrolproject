@@ -5,7 +5,7 @@ Validation Utilities for Time Series Models
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, Optional, Callable
-from .evaluation_metrics import calculate_sharpe_ratio, calculate_profit_factor, calculate_information_ratio
+from .evaluation_metrics import calculate_sharpe_ratio, calculate_profit_factor, calculate_information_ratio, calculate_max_drawdown
 
 
 def create_ohlc_permutation(ohlc_df: pd.DataFrame, start_index: int = 0, seed: Optional[int] = None) -> pd.DataFrame:
@@ -377,3 +377,236 @@ def in_sample_permutation_test(features_df: pd.DataFrame,
         results['original_returns'] = original_strategy_returns
     
     return results
+
+
+def walk_forward_validation(features_df: pd.DataFrame,
+                           strategy_func: Callable,
+                           optimize_func: Callable,
+                           train_test_split: float = 0.75,
+                           n_folds: int = 12,
+                           reoptimize_every: int = 3) -> Dict:
+    """
+    Perform walk-forward validation with automatic configuration based on train/test split.
+    
+    Args:
+        features_df: Full dataset with features
+        strategy_func: Function to calculate signals (signature: func(data, params) -> DataFrame)
+        optimize_func: Function to optimize parameters (signature: func(data, train_start, train_end) -> Dict)
+        train_test_split: Ratio of data to use for initial training (e.g., 0.75)
+        n_folds: Number of folds to create in the test period (default: 12)
+        reoptimize_every: Re-optimize every N folds (default: 3)
+    
+    Returns:
+        Dict with walk-forward results including metrics and fold details
+    """
+    
+    # Calculate split point based on train_test_split
+    total_days = len(features_df)
+    train_days = int(total_days * train_test_split)
+    test_days = total_days - train_days
+    
+    # Derive dates from split
+    train_end_date = features_df.index[train_days - 1]
+    test_start_date = features_df.index[train_days]
+    test_end_date = features_df.index[-1]
+    
+    # Calculate fold size
+    test_window_days = test_days // n_folds
+    
+    # Initial optimization on training data
+    train_start = features_df.index[0].strftime('%Y-%m-%d')
+    train_end = train_end_date.strftime('%Y-%m-%d')
+    
+    initial_opt = optimize_func(features_df, train_start, train_end)
+    current_params = initial_opt.get('best_params', {})
+    
+    # Initialize results
+    wf_results = {
+        'fold_dates': [],
+        'fold_params': [],
+        'fold_returns': [],
+        'fold_metrics': [],
+        'all_returns': [],
+        'all_signals': [],
+        'reoptimization_dates': [],
+        'train_test_split': train_test_split,
+        'n_folds': n_folds,
+        'overall_metrics': None
+    }
+    
+    # Walk-forward loop through test period
+    current_idx = train_days
+    fold_number = 0
+    
+    while current_idx < total_days:
+        fold_number += 1
+        
+        # Define test window for this fold
+        fold_start_idx = current_idx
+        fold_end_idx = min(current_idx + test_window_days, total_days - 1)
+        fold_start = features_df.index[fold_start_idx]
+        fold_end = features_df.index[fold_end_idx]
+        
+        # Re-optimize if needed
+        if fold_number % reoptimize_every == 1 and fold_number > 1:
+            # Expanding window: use all data up to current fold
+            retrain_end = features_df.index[fold_start_idx - 1].strftime('%Y-%m-%d')
+            opt_result = optimize_func(features_df, train_start, retrain_end)
+            current_params = opt_result.get('best_params', current_params)
+            wf_results['reoptimization_dates'].append(fold_start)
+        
+        # Apply strategy to this fold
+        strategy_data = strategy_func(features_df, **current_params)
+        fold_data = strategy_data.iloc[fold_start_idx:fold_end_idx + 1].dropna()
+        
+        if len(fold_data) > 0:
+            # Extract returns and signals
+            fold_returns = fold_data.get('strategy_returns', pd.Series()).values
+            fold_signals = fold_data.get('signal', pd.Series()).values
+            
+            # Store results
+            wf_results['fold_dates'].append((fold_start, fold_end))
+            wf_results['fold_params'].append(current_params.copy())
+            wf_results['fold_returns'].append(fold_returns)
+            wf_results['all_returns'].extend(fold_returns)
+            wf_results['all_signals'].extend(fold_signals)
+            
+            # Calculate metrics for this fold
+            if len(fold_returns) > 1:
+                fold_metric = {
+                    'fold': fold_number,
+                    'sharpe': calculate_sharpe_ratio(fold_returns),
+                    'profit_factor': calculate_profit_factor(fold_returns),
+                    'total_return': (1 + fold_returns).prod() - 1,
+                    'n_days': len(fold_returns)
+                }
+                wf_results['fold_metrics'].append(fold_metric)
+        
+        # Move to next fold
+        current_idx = fold_end_idx + 1
+    
+    # Calculate overall metrics
+    if len(wf_results['all_returns']) > 0:
+        all_returns = np.array(wf_results['all_returns'])
+        wf_results['overall_metrics'] = {
+            'sharpe': calculate_sharpe_ratio(all_returns),
+            'profit_factor': calculate_profit_factor(all_returns),
+            'max_drawdown': calculate_max_drawdown(all_returns),
+            'total_return': (1 + all_returns).prod() - 1,
+            'n_days': len(all_returns),
+            'n_folds': len(wf_results['fold_metrics'])
+        }
+    
+    return wf_results
+
+
+def walk_forward_permutation_test(features_df: pd.DataFrame,
+                                 strategy_func: Callable,
+                                 optimize_func: Callable,
+                                 wf_results: Dict,
+                                 n_permutations: int = 100,
+                                 p_value_threshold: float = 0.05) -> Dict:
+    """
+    Test if walk-forward results are statistically significant using permutation.
+    
+    Args:
+        features_df: Full dataset with features
+        strategy_func: Function to calculate signals
+        optimize_func: Function to optimize parameters
+        wf_results: Results from walk_forward_validation to compare against
+        n_permutations: Number of permutations to test
+        p_value_threshold: Significance threshold
+    
+    Returns:
+        Dict with permutation test results
+    """
+    
+    if 'overall_metrics' not in wf_results or wf_results['overall_metrics'] is None:
+        raise ValueError("No walk-forward results to test against")
+    
+    # Get original metrics
+    original_sharpe = wf_results['overall_metrics']['sharpe']
+    original_pf = wf_results['overall_metrics']['profit_factor']
+    
+    # Get configuration from original results
+    train_test_split = wf_results.get('train_test_split', 0.75)
+    n_folds = wf_results.get('n_folds', 12)
+    
+    # Run permutations
+    permuted_sharpes = []
+    permuted_pfs = []
+    
+    print(f"Running {n_permutations} walk-forward permutation tests...")
+    
+    for i in range(n_permutations):
+        if (i + 1) % 5 == 0 or i == 0:
+            print(f"  🎲 Running permutation {i + 1}/{n_permutations}...")
+        # Create permuted OHLC data
+        price_cols = [col for col in features_df.columns if any(x in col for x in ['open', 'high', 'low', 'close'])]
+        
+        if price_cols:
+            # Use OHLC permutation if available
+            ohlc_cols = ['open', 'high', 'low', 'close']
+            asset_prefix = price_cols[0].split('_')[0] if '_' in price_cols[0] else ''
+            
+            ohlc_df = features_df[[f'{asset_prefix}_{col}' if asset_prefix else col for col in ohlc_cols]].copy()
+            ohlc_df.columns = ohlc_cols
+            
+            permuted_ohlc = create_ohlc_permutation(ohlc_df, seed=42 + i)
+            
+            # Replace in features_df
+            permuted_df = features_df.copy()
+            for col in ohlc_cols:
+                full_col = f'{asset_prefix}_{col}' if asset_prefix else col
+                if full_col in permuted_df.columns:
+                    permuted_df[full_col] = permuted_ohlc[col]
+        else:
+            # Simple return permutation as fallback
+            permuted_df = features_df.copy()
+        
+        # Run walk-forward on permuted data (simplified, fewer folds)
+        try:
+            perm_wf = walk_forward_validation(
+                permuted_df,
+                strategy_func,
+                optimize_func,
+                train_test_split=train_test_split,
+                n_folds=min(n_folds, 4),  # Fewer folds for speed
+                reoptimize_every=999  # No re-optimization for speed
+            )
+            
+            if perm_wf['overall_metrics']:
+                permuted_sharpes.append(perm_wf['overall_metrics']['sharpe'])
+                permuted_pfs.append(perm_wf['overall_metrics']['profit_factor'])
+        except:
+            continue
+    
+    print(f"✅ Completed {len(permuted_sharpes)} valid walk-forward permutations")
+    
+    # Calculate p-values
+    permuted_sharpes = np.array([s for s in permuted_sharpes if np.isfinite(s)])
+    permuted_pfs = np.array([pf for pf in permuted_pfs if np.isfinite(pf)])
+    
+    sharpe_p_value = np.mean(permuted_sharpes >= original_sharpe) if len(permuted_sharpes) > 0 else 1.0
+    pf_p_value = np.mean(permuted_pfs >= original_pf) if len(permuted_pfs) > 0 else 1.0
+    
+    return {
+        'sharpe': {
+            'original': original_sharpe,
+            'permuted_values': permuted_sharpes,  # Store full distribution for histogram
+            'permuted_mean': np.mean(permuted_sharpes) if len(permuted_sharpes) > 0 else 0,
+            'permuted_std': np.std(permuted_sharpes) if len(permuted_sharpes) > 0 else 0,
+            'p_value': sharpe_p_value,
+            'passes_test': sharpe_p_value < p_value_threshold,
+            'n_permutations': len(permuted_sharpes)
+        },
+        'profit_factor': {
+            'original': original_pf,
+            'permuted_values': permuted_pfs,  # Store full distribution for histogram
+            'permuted_mean': np.mean(permuted_pfs) if len(permuted_pfs) > 0 else 0,
+            'permuted_std': np.std(permuted_pfs) if len(permuted_pfs) > 0 else 0,
+            'p_value': pf_p_value,
+            'passes_test': pf_p_value < p_value_threshold,
+            'n_permutations': len(permuted_pfs)
+        }
+    }

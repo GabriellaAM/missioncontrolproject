@@ -1,0 +1,67 @@
+{
+  "run_info": {
+    "run_id": "f23e731089a646a9ab85be5fa9dbb485",
+    "experiment_name": "ema_crossover",
+    "strategy_type": "rules_based",
+    "asset": "bitcoin",
+    "start_date": "2023-01-01",
+    "end_date": "2024-06-30",
+    "train_test_split": 0.75
+  },
+  "optimization": {
+    "best_params": {
+      "fast_period": 14,
+      "slow_period": 16
+    },
+    "optimization_score": 1.6082775477856432
+  },
+  "validation": {
+    "permutation_results": {
+      "profit_factor": {
+        "original_value": 1.6102941729582825,
+        "permuted_values": "[1.25590261 1.12598086 1.18150853 1.13981994 1.35911421 1.37881049\n 1.43493161 1.25821188 1.20502184 1.59862262]",
+        "p_value": 0.0,
+        "percentile": 100.0,
+        "passes_test": "True",
+        "n_permutations": 10,
+        "permuted_mean": 1.2937924582837201,
+        "permuted_std": 0.1412071081381071
+      },
+      "sharpe_ratio": {
+        "original_value": 2.5795148200152966,
+        "permuted_values": "[1.24768574 0.61825403 0.91797916 0.75348832 1.57210467 1.87035799\n 1.88833101 1.34559697 1.07552509 2.46083913]",
+        "p_value": 0.0,
+        "percentile": 100.0,
+        "passes_test": "True",
+        "n_permutations": 10,
+        "permuted_mean": 1.3750162098432628,
+        "permuted_std": 0.5478460628656422
+      }
+    },
+    "walk_forward_permutation": {
+      "sharpe": {
+        "original": 1.422331793768432,
+        "permuted_mean": 1.422331793768432,
+        "permuted_std": 0.0,
+        "p_value": 1.0,
+        "passes_test": "False",
+        "n_permutations": 5
+      },
+      "profit_factor": {
+        "original": 1.2898412985505487,
+        "permuted_mean": 1.2898412985505487,
+        "permuted_std": 0.0,
+        "p_value": 1.0,
+        "passes_test": "False",
+        "n_permutations": 5
+      }
+    }
+  },
+  "test_performance": {
+    "sharpe": 1.422331793768432,
+    "profit_factor": 1.2898412985505487,
+    "total_return": 0.23256374200355823,
+    "max_drawdown": -0.15654654880231722,
+    "excess_return": 0.08704129949336936
+  }
+}
