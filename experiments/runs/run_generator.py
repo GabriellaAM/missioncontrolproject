@@ -96,7 +96,9 @@ class RunGenerator:
             train_test_split: float = 0.75,
             n_optimization_trials: int = 1000,
             n_insample_permutations: int = 100,
-            n_walkforward_permutations: int = 20):
+            n_walkforward_permutations: int = 20,
+            wf_n_folds: int = None,
+            wf_reoptimize_every: int = None):
         """
         Execute the full training and validation pipeline.
         
@@ -269,7 +271,42 @@ class RunGenerator:
             # Step 6: Walk-Forward Validation
             print(f"\n--- Step 6: Walk-Forward Validation ---")
             print(f"🚶 Testing strategy on out-of-sample data with periodic re-optimization...")
-            print(f"⏳ Running 12-fold walk-forward validation...")
+            
+            # Walk-forward parameters: use provided values or adaptive approach
+            test_days = len(test_data)
+            
+            if wf_n_folds is not None and wf_reoptimize_every is not None:
+                # Use user-provided values
+                n_folds = wf_n_folds
+                reoptimize_every = wf_reoptimize_every
+                print(f"📊 Using user-specified walk-forward parameters")
+            else:
+                # Adaptive approach: aim for ~30-90 day folds based on test period
+                if test_days <= 180:  # Less than 6 months of test data
+                    n_folds = max(3, test_days // 30)  # Monthly folds, minimum 3
+                    reoptimize_every = 1  # Reoptimize every fold for short periods
+                elif test_days <= 365:  # 6-12 months of test data
+                    n_folds = max(6, test_days // 45)  # ~45 day folds
+                    reoptimize_every = 2  # Reoptimize every 2 folds (~3 months)
+                elif test_days <= 730:  # 1-2 years of test data
+                    n_folds = max(8, test_days // 60)  # ~2 month folds
+                    reoptimize_every = 3  # Reoptimize quarterly
+                else:  # More than 2 years
+                    n_folds = max(12, test_days // 90)  # Quarterly folds
+                    reoptimize_every = 4  # Reoptimize yearly
+                
+                # Override individual parameters if provided
+                if wf_n_folds is not None:
+                    n_folds = wf_n_folds
+                if wf_reoptimize_every is not None:
+                    reoptimize_every = wf_reoptimize_every
+                
+                # Cap at reasonable limits
+                n_folds = min(n_folds, 24)  # Maximum 24 folds
+                print(f"📊 Using adaptive walk-forward parameters based on {test_days} test days")
+            
+            print(f"⏳ Running {n_folds}-fold walk-forward validation (reoptimize every {reoptimize_every} folds)...")
+            print(f"📊 Test period: {test_days} days, ~{test_days//n_folds} days per fold")
             
             def optimize_func(data, train_start, train_end):
                 return self.strategy.optimize(data, train_start, train_end, n_trials=200)
@@ -279,28 +316,45 @@ class RunGenerator:
                 strategy_func=strategy_func,
                 optimize_func=optimize_func,
                 train_test_split=train_test_split,
-                n_folds=12,
-                reoptimize_every=1
+                n_folds=n_folds,
+                reoptimize_every=reoptimize_every
             )
             
             if wf_results['overall_metrics']:
                 # Calculate comprehensive walk-forward metrics for strategy
                 wf_strategy_returns = np.array(wf_results['all_returns'])
                 if len(wf_strategy_returns) > 0:
-                    # Get benchmark returns from the same period
-                    test_strategy_data = strategy_data.iloc[split_idx:].dropna()
-                    wf_benchmark_returns = test_strategy_data[return_col].values
+                    # Get benchmark returns from the same periods as strategy returns
+                    # We need to extract benchmark returns corresponding to the same dates/periods
+                    # that were used in walk-forward validation
                     
-                    # Calculate strategy metrics
-                    strategy_metrics = calculate_all_metrics(wf_strategy_returns, benchmark_returns=wf_benchmark_returns)
+                    # Get the fold dates and extract benchmark returns for those exact periods
+                    wf_benchmark_returns = []
+                    for fold_start, fold_end in wf_results['fold_dates']:
+                        fold_data = strategy_data.loc[fold_start:fold_end]
+                        fold_benchmark = fold_data[return_col].dropna().values
+                        wf_benchmark_returns.extend(fold_benchmark)
+                    
+                    wf_benchmark_returns = np.array(wf_benchmark_returns)
+                    
+                    # Only calculate IR if lengths match (they should now)
+                    if len(wf_strategy_returns) == len(wf_benchmark_returns):
+                        strategy_metrics = calculate_all_metrics(wf_strategy_returns, benchmark_returns=wf_benchmark_returns)
+                    else:
+                        # Fallback without IR if there's still a mismatch
+                        strategy_metrics = calculate_all_metrics(wf_strategy_returns, benchmark_returns=None)
+                        print(f"  Warning: Return length mismatch - strategy: {len(wf_strategy_returns)}, benchmark: {len(wf_benchmark_returns)}")
                     for metric, value in strategy_metrics.items():
                         mlflow.log_metric(f"wf_{metric}", round(value, 4))
                     
-                    # Calculate benchmark metrics
-                    benchmark_metrics = calculate_all_metrics(wf_benchmark_returns)
-                    for metric, value in benchmark_metrics.items():
-                        if metric != 'information_ratio':  # Skip IR for benchmark vs itself
-                            mlflow.log_metric(f"wf_benchmark_{metric}", round(value, 4))
+                    # Calculate benchmark metrics from test period
+                    test_strategy_data = strategy_data.iloc[split_idx:]
+                    test_benchmark = test_strategy_data[return_col].dropna().values
+                    if len(test_benchmark) > 0:
+                        benchmark_metrics = calculate_all_metrics(test_benchmark)
+                        for metric, value in benchmark_metrics.items():
+                            if metric != 'information_ratio':  # Skip IR for benchmark vs itself
+                                mlflow.log_metric(f"wf_benchmark_{metric}", round(value, 4))
                     
                     print(f"Walk-forward results:")
                     print(f"  Sharpe Ratio: {strategy_metrics['sharpe_ratio']:.3f}")
@@ -314,7 +368,7 @@ class RunGenerator:
             print(f"⏳ Running {n_walkforward_permutations} walk-forward permutation tests...")
             
             wf_perm_results = walk_forward_permutation_test(
-                features_df=strategy_data,
+                features_df=self.features_df,  # Use raw features, not strategy_data with pre-calculated signals
                 strategy_func=strategy_func,
                 optimize_func=optimize_func,
                 wf_results=wf_results,
@@ -440,6 +494,8 @@ def main():
     parser.add_argument('--n-optimization-trials', type=int, default=1000, help='Number of optimization trials (default: 1000)')
     parser.add_argument('--n-insample-permutations', type=int, default=100, help='Number of in-sample permutation tests (default: 100)')
     parser.add_argument('--n-walkforward-permutations', type=int, default=20, help='Number of walk-forward permutation tests (default: 20)')
+    parser.add_argument('--wf-n-folds', type=int, default=None, help='Number of walk-forward folds (default: adaptive based on data length)')
+    parser.add_argument('--wf-reoptimize-every', type=int, default=None, help='Reoptimize every N folds (default: adaptive based on data length)')
     parser.add_argument('--list-strategies', action='store_true', help='List all available strategies')
     
     args = parser.parse_args()
@@ -466,7 +522,9 @@ def main():
         train_test_split=args.train_test_split,
         n_optimization_trials=args.n_optimization_trials,
         n_insample_permutations=args.n_insample_permutations,
-        n_walkforward_permutations=args.n_walkforward_permutations
+        n_walkforward_permutations=args.n_walkforward_permutations,
+        wf_n_folds=args.wf_n_folds,
+        wf_reoptimize_every=args.wf_reoptimize_every
     )
 
 

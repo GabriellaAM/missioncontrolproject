@@ -448,7 +448,16 @@ def walk_forward_validation(features_df: pd.DataFrame,
         fold_end = features_df.index[fold_end_idx]
         
         # Re-optimize if needed
-        if fold_number % reoptimize_every == 1 and fold_number > 1:
+        # For reoptimize_every=1: reoptimize before every fold after the first
+        # For reoptimize_every=N: reoptimize before fold N+1, 2N+1, 3N+1, etc.
+        should_reoptimize = False
+        if fold_number > 1:  # Never reoptimize on first fold
+            if reoptimize_every == 1:
+                should_reoptimize = True  # Reoptimize before every fold after first
+            elif (fold_number - 1) % reoptimize_every == 0:
+                should_reoptimize = True  # Reoptimize every N folds
+        
+        if should_reoptimize:
             # Expanding window: use all data up to current fold
             retrain_end = features_df.index[fold_start_idx - 1].strftime('%Y-%m-%d')
             opt_result = optimize_func(features_df, train_start, retrain_end)
@@ -510,7 +519,7 @@ def walk_forward_permutation_test(features_df: pd.DataFrame,
     Test if walk-forward results are statistically significant using permutation.
     
     Args:
-        features_df: Full dataset with features
+        features_df: Full dataset with features (could be strategy_data with signals)
         strategy_func: Function to calculate signals
         optimize_func: Function to optimize parameters
         wf_results: Results from walk_forward_validation to compare against
@@ -528,57 +537,97 @@ def walk_forward_permutation_test(features_df: pd.DataFrame,
     original_sharpe = wf_results['overall_metrics']['sharpe']
     original_pf = wf_results['overall_metrics']['profit_factor']
     
+    print(f"Original walk-forward metrics - Sharpe: {original_sharpe:.3f}, PF: {original_pf:.3f}")
+    
     # Get configuration from original results
     train_test_split = wf_results.get('train_test_split', 0.75)
     n_folds = wf_results.get('n_folds', 12)
+    
+    # Use fewer folds for speed, but not too few
+    perm_n_folds = max(3, n_folds // 3)  # At least 3 folds, but reduce for speed
     
     # Run permutations
     permuted_sharpes = []
     permuted_pfs = []
     
     print(f"Running {n_permutations} walk-forward permutation tests...")
+    print(f"Using {perm_n_folds} folds per permutation (original: {n_folds})")
     
     for i in range(n_permutations):
-        if (i + 1) % 5 == 0 or i == 0:
+        if (i + 1) % 10 == 0 or i == 0:
             print(f"  🎲 Running permutation {i + 1}/{n_permutations}...")
-        # Create permuted OHLC data
-        price_cols = [col for col in features_df.columns if any(x in col for x in ['open', 'high', 'low', 'close'])]
         
-        if price_cols:
-            # Use OHLC permutation if available
-            ohlc_cols = ['open', 'high', 'low', 'close']
-            asset_prefix = price_cols[0].split('_')[0] if '_' in price_cols[0] else ''
-            
-            ohlc_df = features_df[[f'{asset_prefix}_{col}' if asset_prefix else col for col in ohlc_cols]].copy()
-            ohlc_df.columns = ohlc_cols
-            
-            permuted_ohlc = create_ohlc_permutation(ohlc_df, seed=42 + i)
-            
-            # Replace in features_df
-            permuted_df = features_df.copy()
-            for col in ohlc_cols:
-                full_col = f'{asset_prefix}_{col}' if asset_prefix else col
-                if full_col in permuted_df.columns:
-                    permuted_df[full_col] = permuted_ohlc[col]
-        else:
-            # Simple return permutation as fallback
-            permuted_df = features_df.copy()
+        # Extract asset prefix from column names
+        price_cols = [col for col in features_df.columns if any(x in col for x in ['_close', '_open', '_high', '_low'])]
         
-        # Run walk-forward on permuted data (simplified, fewer folds)
+        if not price_cols:
+            print("Warning: No price columns found for permutation")
+            continue
+            
+        # Get asset prefix (e.g., 'bitcoin' from 'bitcoin_close')
+        asset_prefix = price_cols[0].rsplit('_', 1)[0] if '_' in price_cols[0] else ''
+        
+        # Define OHLC column names
+        ohlc_mapping = {
+            'open': f'{asset_prefix}_open',
+            'high': f'{asset_prefix}_high',
+            'low': f'{asset_prefix}_low',
+            'close': f'{asset_prefix}_close'
+        }
+        
+        # Check if all OHLC columns exist
+        if not all(col in features_df.columns for col in ohlc_mapping.values()):
+            print(f"Warning: Missing OHLC columns for permutation. Found: {[c for c in ohlc_mapping.values() if c in features_df.columns]}")
+            continue
+        
+        # Extract OHLC data
+        ohlc_df = features_df[list(ohlc_mapping.values())].copy()
+        ohlc_df.columns = ['open', 'high', 'low', 'close']
+        
+        # Create permuted OHLC
+        permuted_ohlc = create_ohlc_permutation(ohlc_df, seed=42 + i)
+        
+        # Create permuted features dataframe
+        permuted_df = features_df.copy()
+        
+        # Replace OHLC columns with permuted values
+        for std_col, full_col in ohlc_mapping.items():
+            permuted_df[full_col] = permuted_ohlc[std_col].values
+        
+        # Recalculate log returns from permuted close prices
+        log_return_col = f'{asset_prefix}_log_return_1'
+        if log_return_col in permuted_df.columns:
+            permuted_df[log_return_col] = np.log(
+                permuted_df[ohlc_mapping['close']] / permuted_df[ohlc_mapping['close']].shift(1)
+            )
+        
+        # Run walk-forward on permuted data
         try:
             perm_wf = walk_forward_validation(
                 permuted_df,
                 strategy_func,
                 optimize_func,
                 train_test_split=train_test_split,
-                n_folds=min(n_folds, 4),  # Fewer folds for speed
+                n_folds=perm_n_folds,
                 reoptimize_every=999  # No re-optimization for speed
             )
             
             if perm_wf['overall_metrics']:
-                permuted_sharpes.append(perm_wf['overall_metrics']['sharpe'])
-                permuted_pfs.append(perm_wf['overall_metrics']['profit_factor'])
-        except:
+                perm_sharpe = perm_wf['overall_metrics']['sharpe']
+                perm_pf = perm_wf['overall_metrics']['profit_factor']
+                
+                # Only add finite values
+                if np.isfinite(perm_sharpe):
+                    permuted_sharpes.append(perm_sharpe)
+                if np.isfinite(perm_pf):
+                    permuted_pfs.append(perm_pf)
+                
+                # Debug output for first few permutations
+                if i < 3:
+                    print(f"    Permutation {i+1}: Sharpe={perm_sharpe:.3f}, PF={perm_pf:.3f}")
+        except Exception as e:
+            if i < 3:  # Only show first few errors
+                print(f"    Warning: Permutation {i+1} failed: {str(e)}")
             continue
     
     print(f"✅ Completed {len(permuted_sharpes)} valid walk-forward permutations")
@@ -586,6 +635,19 @@ def walk_forward_permutation_test(features_df: pd.DataFrame,
     # Calculate p-values
     permuted_sharpes = np.array([s for s in permuted_sharpes if np.isfinite(s)])
     permuted_pfs = np.array([pf for pf in permuted_pfs if np.isfinite(pf)])
+    
+    # Debug: Show distribution statistics
+    if len(permuted_sharpes) > 0:
+        print(f"Permuted Sharpe distribution: mean={np.mean(permuted_sharpes):.3f}, "
+              f"std={np.std(permuted_sharpes):.3f}, min={np.min(permuted_sharpes):.3f}, "
+              f"max={np.max(permuted_sharpes):.3f}")
+        print(f"Original Sharpe ({original_sharpe:.3f}) vs Permuted mean ({np.mean(permuted_sharpes):.3f})")
+    
+    if len(permuted_pfs) > 0:
+        print(f"Permuted PF distribution: mean={np.mean(permuted_pfs):.3f}, "
+              f"std={np.std(permuted_pfs):.3f}, min={np.min(permuted_pfs):.3f}, "
+              f"max={np.max(permuted_pfs):.3f}")
+        print(f"Original PF ({original_pf:.3f}) vs Permuted mean ({np.mean(permuted_pfs):.3f})")
     
     sharpe_p_value = np.mean(permuted_sharpes >= original_sharpe) if len(permuted_sharpes) > 0 else 1.0
     pf_p_value = np.mean(permuted_pfs >= original_pf) if len(permuted_pfs) > 0 else 1.0
