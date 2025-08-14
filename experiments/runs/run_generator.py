@@ -14,6 +14,7 @@ from utils.feature_engineering import calculate_log_returns
 from utils.validation import in_sample_permutation_test, walk_forward_validation, walk_forward_permutation_test
 from utils.evaluation_metrics import calculate_all_metrics
 from utils.plotting import save_plots_for_mlflow
+from utils.transaction_costs import apply_transaction_costs, adjust_strategy_returns_for_costs
 import mlflow
 import numpy as np
 from datetime import datetime
@@ -202,16 +203,57 @@ class RunGenerator:
                     strategy_data[return_col] * strategy_data['signal'].shift(1)
                 )
             
+            # Apply transaction costs
+            strategy_data = apply_transaction_costs(strategy_data, 'signal', self.asset_name)
+            
+            # Calculate transaction cost rate and log to MLflow
+            tx_cost_rate = 0.001 if self.asset_name.lower() == 'bitcoin' else 0.005
+            mlflow.log_param("transaction_cost_rate", tx_cost_rate)
+            
+            # Keep gross returns and create net returns
+            strategy_data['strategy_returns_gross'] = strategy_data['strategy_returns'].copy()
+            strategy_data['strategy_returns'] = adjust_strategy_returns_for_costs(
+                strategy_data['strategy_returns_gross'], 
+                strategy_data['transaction_cost']
+            )
+            
             # Calculate in-sample performance metrics
             train_strategy_data = strategy_data.iloc[:split_idx].dropna()
             if len(train_strategy_data) > 0:
                 train_returns = train_strategy_data['strategy_returns'].values
+                train_signals = train_strategy_data['signal'].values
                 train_benchmark = train_strategy_data[return_col].values
                 
-                # Calculate strategy metrics
-                strategy_metrics = calculate_all_metrics(train_returns, benchmark_returns=train_benchmark)
+                # Calculate strategy metrics (including position-based classification metrics)
+                strategy_metrics = calculate_all_metrics(train_returns, signals=train_signals, benchmark_returns=train_benchmark)
+                
+                # Also calculate and log total gross return for comparison
+                train_returns_gross = train_strategy_data['strategy_returns_gross'].values
+                total_gross_return = (1 + train_returns_gross).prod() - 1 if len(train_returns_gross) > 0 else 0.0
+                mlflow.log_metric("insample_total_return_gross", round(float(total_gross_return), 4))
+                
                 for metric, value in strategy_metrics.items():
-                    mlflow.log_metric(f"insample_{metric}", round(value, 4))
+                    if isinstance(value, (np.ndarray, list)):
+                        # Handle arrays/lists - log as string or skip
+                        if metric == 'position_confusion_matrix':
+                            mlflow.log_text(str(value), f"insample_{metric}.txt")
+                        elif metric == 'position_position_returns':
+                            # Skip logging individual position returns 
+                            continue
+                        else:
+                            # Skip other array/list values
+                            continue
+                    elif isinstance(value, str) and metric == 'position_confusion_matrix_plot':
+                        # Log confusion matrix plot as artifact
+                        mlflow.log_artifact(value, f"insample_{metric}.png")
+                        # Clean up temp file
+                        try:
+                            import os
+                            os.remove(value)
+                        except:
+                            pass
+                    else:
+                        mlflow.log_metric(f"insample_{metric}", round(float(value), 4))
                 
                 # Calculate benchmark metrics
                 benchmark_metrics = calculate_all_metrics(train_benchmark)
@@ -238,6 +280,14 @@ class RunGenerator:
                     result['strategy_returns'] = (
                         result[return_col] * result['signal'].shift(1)
                     )
+                
+                # Apply transaction costs
+                result = apply_transaction_costs(result, 'signal', self.asset_name)
+                result['strategy_returns_gross'] = result['strategy_returns'].copy()
+                result['strategy_returns'] = adjust_strategy_returns_for_costs(
+                    result['strategy_returns_gross'], 
+                    result['transaction_cost']
+                )
                 
                 return result
             
@@ -337,15 +387,52 @@ class RunGenerator:
                     
                     wf_benchmark_returns = np.array(wf_benchmark_returns)
                     
+                    # Extract walk-forward signals and gross returns for classification metrics
+                    wf_signals = []
+                    wf_gross_returns = []
+                    for fold_start, fold_end in wf_results['fold_dates']:
+                        fold_data = strategy_data.loc[fold_start:fold_end]
+                        fold_signals = fold_data['signal'].dropna().values
+                        fold_gross = fold_data['strategy_returns_gross'].dropna().values
+                        wf_signals.extend(fold_signals)
+                        wf_gross_returns.extend(fold_gross)
+                    wf_signals = np.array(wf_signals)
+                    wf_gross_returns = np.array(wf_gross_returns)
+                    
+                    # Calculate and log total gross return for walk-forward
+                    wf_total_gross_return = (1 + wf_gross_returns).prod() - 1 if len(wf_gross_returns) > 0 else 0.0
+                    mlflow.log_metric("wf_total_return_gross", round(float(wf_total_gross_return), 4))
+                    
                     # Only calculate IR if lengths match (they should now)
                     if len(wf_strategy_returns) == len(wf_benchmark_returns):
-                        strategy_metrics = calculate_all_metrics(wf_strategy_returns, benchmark_returns=wf_benchmark_returns)
+                        strategy_metrics = calculate_all_metrics(wf_strategy_returns, signals=wf_signals, benchmark_returns=wf_benchmark_returns)
                     else:
                         # Fallback without IR if there's still a mismatch
-                        strategy_metrics = calculate_all_metrics(wf_strategy_returns, benchmark_returns=None)
+                        strategy_metrics = calculate_all_metrics(wf_strategy_returns, signals=wf_signals, benchmark_returns=None)
                         print(f"  Warning: Return length mismatch - strategy: {len(wf_strategy_returns)}, benchmark: {len(wf_benchmark_returns)}")
+                    
                     for metric, value in strategy_metrics.items():
-                        mlflow.log_metric(f"wf_{metric}", round(value, 4))
+                        if isinstance(value, (np.ndarray, list)):
+                            # Handle arrays/lists - log as string or skip
+                            if metric == 'position_confusion_matrix':
+                                mlflow.log_text(str(value), f"wf_{metric}.txt")
+                            elif metric == 'position_position_returns':
+                                # Skip logging individual position returns 
+                                continue
+                            else:
+                                # Skip other array/list values
+                                continue
+                        elif isinstance(value, str) and metric == 'position_confusion_matrix_plot':
+                            # Log confusion matrix plot as artifact
+                            mlflow.log_artifact(value, f"wf_{metric}.png")
+                            # Clean up temp file
+                            try:
+                                import os
+                                os.remove(value)
+                            except:
+                                pass
+                        else:
+                            mlflow.log_metric(f"wf_{metric}", round(float(value), 4))
                     
                     # Calculate benchmark metrics from test period
                     test_strategy_data = strategy_data.iloc[split_idx:]
@@ -492,10 +579,10 @@ def main():
     parser.add_argument('--end-date', help='End date (YYYY-MM-DD)')
     parser.add_argument('--train-test-split', type=float, default=0.75, help='Train/test split')
     parser.add_argument('--n-optimization-trials', type=int, default=1000, help='Number of optimization trials (default: 1000)')
-    parser.add_argument('--n-insample-permutations', type=int, default=100, help='Number of in-sample permutation tests (default: 100)')
-    parser.add_argument('--n-walkforward-permutations', type=int, default=20, help='Number of walk-forward permutation tests (default: 20)')
+    parser.add_argument('--n-insample-permutations', type=int, default=1000, help='Number of in-sample permutation tests (default: 100)')
+    parser.add_argument('--n-walkforward-permutations', type=int, default=50, help='Number of walk-forward permutation tests (default: 20)')
     parser.add_argument('--wf-n-folds', type=int, default=None, help='Number of walk-forward folds (default: adaptive based on data length)')
-    parser.add_argument('--wf-reoptimize-every', type=int, default=None, help='Reoptimize every N folds (default: adaptive based on data length)')
+    parser.add_argument('--wf-reoptimize-every', type=int, default=1, help='Reoptimize every N folds (default: adaptive based on data length)')
     parser.add_argument('--list-strategies', action='store_true', help='List all available strategies')
     
     args = parser.parse_args()

@@ -3,7 +3,10 @@ Evaluation Metrics for Trading Strategies
 """
 
 import numpy as np
-from typing import Union, Optional
+from typing import Union, Optional, Dict, List, Tuple
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 def calculate_sharpe_ratio(returns: np.ndarray, 
@@ -221,6 +224,162 @@ def calculate_avg_time_underwater(returns: np.ndarray) -> float:
     return np.mean(underwater_periods)
 
 
+def extract_positions(signals: np.ndarray, returns: np.ndarray) -> List[Dict]:
+    """
+    Extract individual trading positions from signals and calculate their returns.
+    
+    Args:
+        signals: Array of trading signals (1 for long, 0 for flat/cash)
+        returns: Array of period returns
+        
+    Returns:
+        List of position dictionaries with start, end, and total_return
+    """
+    if len(signals) != len(returns):
+        raise ValueError("Signals and returns must have the same length")
+    
+    positions = []
+    current_position = None
+    
+    for i in range(len(signals)):
+        if signals[i] == 1 and (i == 0 or signals[i-1] == 0):
+            # Position start - entering long position
+            current_position = {'start': i}
+            
+        elif signals[i] == 0 and current_position is not None:
+            # Position end - exiting position
+            current_position['end'] = i - 1
+            # Calculate cumulative return during position
+            position_returns = returns[current_position['start']:i]
+            current_position['total_return'] = np.sum(position_returns)
+            current_position['periods'] = len(position_returns)
+            positions.append(current_position)
+            current_position = None
+    
+    # Handle case where strategy ends while in position
+    if current_position is not None:
+        current_position['end'] = len(signals) - 1
+        position_returns = returns[current_position['start']:]
+        current_position['total_return'] = np.sum(position_returns)
+        current_position['periods'] = len(position_returns)
+        positions.append(current_position)
+    
+    return positions
+
+
+def create_confusion_matrix_plot(y_true: List[int], y_pred: List[int], 
+                                title: str = "Position Profitability Confusion Matrix",
+                                filename: str = "confusion_matrix.png") -> str:
+    """
+    Create a matplotlib confusion matrix visualization and save to file.
+    
+    Args:
+        y_true: True labels (0=unprofitable, 1=profitable)
+        y_pred: Predicted labels (0=unprofitable, 1=profitable)
+        title: Plot title
+        filename: Output filename
+        
+    Returns:
+        Path to saved plot file
+    """
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    
+    # Create the plot
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=['Predicted\nUnprofitable', 'Predicted\nProfitable'],
+                yticklabels=['Actual\nUnprofitable', 'Actual\nProfitable'],
+                cbar_kws={'label': 'Number of Positions'})
+    
+    plt.title(title, fontsize=14, fontweight='bold')
+    plt.xlabel('Predicted', fontsize=12)
+    plt.ylabel('Actual', fontsize=12)
+    
+    # Add text annotations explaining the quadrants
+    plt.text(0.5, -0.15, 
+             f"Total Positions: {cm.sum()}\n"
+             f"Accurate Predictions: {cm[0,0] + cm[1,1]} ({(cm[0,0] + cm[1,1])/cm.sum()*100:.1f}%)",
+             transform=plt.gca().transAxes, ha='center', fontsize=10)
+    
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    return filename
+
+
+def calculate_position_based_classification_metrics(signals: np.ndarray, 
+                                                   returns: np.ndarray,
+                                                   threshold: float = 0.0) -> Dict:
+    """
+    Calculate classification metrics based on position-level profitability.
+    
+    Args:
+        signals: Array of trading signals (1 for long, 0 for flat)
+        returns: Array of period returns 
+        threshold: Threshold for defining profitable positions (default: 0.0)
+        
+    Returns:
+        Dictionary containing classification metrics
+    """
+    positions = extract_positions(signals, returns)
+    
+    if len(positions) == 0:
+        return {
+            'num_positions': 0,
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1_score': 0.0,
+            'profitable_positions': 0,
+            'unprofitable_positions': 0,
+            'confusion_matrix': np.array([[0, 0], [0, 0]])
+        }
+    
+    # Ground truth: 1 if position was profitable, 0 otherwise
+    y_true = [1 if pos['total_return'] > threshold else 0 for pos in positions]
+    
+    # Predictions: All positions were "predicted" to be profitable (signal = 1 means we went long)
+    y_pred = [1] * len(positions)
+    
+    # Handle edge case where all positions are unprofitable
+    if sum(y_true) == 0:
+        # All positions were unprofitable, but we predicted all would be profitable
+        accuracy = 0.0
+        precision = 0.0
+        recall = 0.0  # No actual positives to recall
+        f1 = 0.0
+    else:
+        accuracy = accuracy_score(y_true, y_pred)
+        precision = precision_score(y_true, y_pred, zero_division=0)
+        recall = recall_score(y_true, y_pred, zero_division=0)
+        f1 = f1_score(y_true, y_pred, zero_division=0)
+    
+    # Confusion matrix
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    
+    # Create confusion matrix plot
+    import tempfile
+    import os
+    temp_dir = tempfile.gettempdir()
+    cm_filename = os.path.join(temp_dir, f"confusion_matrix_{hash(str(y_true))}.png")
+    cm_plot_path = create_confusion_matrix_plot(y_true, y_pred, filename=cm_filename)
+    
+    return {
+        'num_positions': len(positions),
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'profitable_positions': sum(y_true),
+        'unprofitable_positions': len(y_true) - sum(y_true),
+        'confusion_matrix': cm,
+        'confusion_matrix_plot': cm_plot_path,
+        'avg_position_periods': np.mean([pos['periods'] for pos in positions]) if positions else 0,
+        'position_returns': [pos['total_return'] for pos in positions]
+    }
+
+
 def calculate_all_metrics(returns: np.ndarray,
                          signals: Optional[np.ndarray] = None,
                          benchmark_returns: Optional[np.ndarray] = None,
@@ -254,5 +413,12 @@ def calculate_all_metrics(returns: np.ndarray,
     # Add Information Ratio if benchmark returns are provided
     if benchmark_returns is not None:
         metrics['information_ratio'] = calculate_information_ratio(returns, benchmark_returns, periods_per_year)
+    
+    # Add position-based classification metrics if signals are provided
+    if signals is not None:
+        classification_metrics = calculate_position_based_classification_metrics(signals, returns)
+        # Add classification metrics with 'position_' prefix to avoid naming conflicts
+        for key, value in classification_metrics.items():
+            metrics[f'position_{key}'] = value
     
     return metrics
