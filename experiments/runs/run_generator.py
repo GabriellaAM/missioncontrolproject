@@ -15,6 +15,7 @@ from utils.validation import in_sample_permutation_test, walk_forward_validation
 from utils.evaluation_metrics import calculate_all_metrics
 from utils.plotting import save_plots_for_mlflow
 from utils.transaction_costs import apply_transaction_costs, adjust_strategy_returns_for_costs
+from utils.triple_barrier import add_triple_barrier_labels, calculate_metrics_with_labels
 import mlflow
 import numpy as np
 from datetime import datetime
@@ -153,12 +154,20 @@ class RunGenerator:
             mlflow.log_metric("n_features", len(self.features_df.columns))
             mlflow.log_metric("n_samples", len(self.features_df))
             
-            # Step 2: Train/Test Split
-            print(f"\n--- Step 2: Train/Test Split ---")
+            # Step 2: Train/Test Split with Embargo
+            print(f"\n--- Step 2: Train/Test Split with Embargo ---")
             print(f"🔪 Splitting data at {train_test_split:.1%}...")
+            
+            # Apply embargo: training data ends 7 days before test to prevent label leakage
+            embargo_days = 7  # 5 days for triple barrier + 2 days buffer
             split_idx = int(len(self.features_df) * train_test_split)
-            train_data = self.features_df.iloc[:split_idx]
-            test_data = self.features_df.iloc[split_idx:]
+            
+            # Adjust split for embargo
+            train_split_idx = split_idx - embargo_days
+            test_split_idx = split_idx
+            
+            train_data = self.features_df.iloc[:train_split_idx]
+            test_data = self.features_df.iloc[test_split_idx:]
             
             train_start = train_data.index[0].strftime('%Y-%m-%d')
             train_end = train_data.index[-1].strftime('%Y-%m-%d')
@@ -218,7 +227,7 @@ class RunGenerator:
             )
             
             # Calculate in-sample performance metrics
-            train_strategy_data = strategy_data.iloc[:split_idx].dropna()
+            train_strategy_data = strategy_data.iloc[:train_split_idx].dropna()
             if len(train_strategy_data) > 0:
                 train_returns = train_strategy_data['strategy_returns'].values
                 train_signals = train_strategy_data['signal'].values
@@ -227,31 +236,62 @@ class RunGenerator:
                 # Calculate strategy metrics (including position-based classification metrics)
                 strategy_metrics = calculate_all_metrics(train_returns, signals=train_signals, benchmark_returns=train_benchmark)
                 
+                # Calculate triple barrier labels ONLY for training data
+                print(f"🎯 Generating triple barrier labels for training data...")
+                price_col = f"{self.asset_name}_close"
+                
+                # Get training data up to embargo point
+                train_features = self.features_df.iloc[:train_split_idx].copy()
+                train_features_labeled = add_triple_barrier_labels(
+                    train_features,
+                    price_col=price_col,
+                    volatility_span=20,
+                    time_barrier_days=5,
+                    upper_barrier_mult=2.0,
+                    lower_barrier_mult=2.0
+                )
+                
+                # Align labels with strategy data
+                if 'label' in train_features_labeled.columns:
+                    # Get labels for the same indices as train_strategy_data
+                    common_idx = train_strategy_data.index.intersection(train_features_labeled.index)
+                    labels = train_features_labeled.loc[common_idx, 'label'].values
+                    aligned_signals = train_strategy_data.loc[common_idx, 'signal'].values
+                    aligned_returns = train_strategy_data.loc[common_idx, 'strategy_returns'].values
+                    
+                    label_metrics = calculate_metrics_with_labels(
+                        predictions=aligned_signals,
+                        labels=labels,
+                        returns=aligned_returns
+                    )
+                    
+                    # Log label-based metrics
+                    for metric, value in label_metrics.items():
+                        if isinstance(value, np.ndarray):
+                            # Skip confusion matrix arrays
+                            continue
+                        elif isinstance(value, str) and metric == 'confusion_matrix_plot':
+                            # Log confusion matrix plot artifact
+                            if value:  # Only if plot was created
+                                mlflow.log_artifact(value)
+                                # Clean up temp file
+                                try:
+                                    import os
+                                    os.remove(value)
+                                except:
+                                    pass
+                        elif not isinstance(value, str):
+                            mlflow.log_metric(f"insample_label_{metric}", round(float(value), 4))
+                
                 # Also calculate and log total gross return for comparison
                 train_returns_gross = train_strategy_data['strategy_returns_gross'].values
                 total_gross_return = (1 + train_returns_gross).prod() - 1 if len(train_returns_gross) > 0 else 0.0
                 mlflow.log_metric("insample_total_return_gross", round(float(total_gross_return), 4))
                 
                 for metric, value in strategy_metrics.items():
-                    if isinstance(value, (np.ndarray, list)):
-                        # Handle arrays/lists - log as string or skip
-                        if metric == 'position_confusion_matrix':
-                            mlflow.log_text(str(value), f"insample_{metric}.txt")
-                        elif metric == 'position_position_returns':
-                            # Skip logging individual position returns 
-                            continue
-                        else:
-                            # Skip other array/list values
-                            continue
-                    elif isinstance(value, str) and metric == 'position_confusion_matrix_plot':
-                        # Log confusion matrix plot as artifact
-                        mlflow.log_artifact(value, f"insample_{metric}.png")
-                        # Clean up temp file
-                        try:
-                            import os
-                            os.remove(value)
-                        except:
-                            pass
+                    if isinstance(value, (np.ndarray, list, str)):
+                        # Skip arrays, lists, and string values (no position-based plots anymore)
+                        continue
                     else:
                         mlflow.log_metric(f"insample_{metric}", round(float(value), 4))
                 
@@ -367,7 +407,8 @@ class RunGenerator:
                 optimize_func=optimize_func,
                 train_test_split=train_test_split,
                 n_folds=n_folds,
-                reoptimize_every=reoptimize_every
+                reoptimize_every=reoptimize_every,
+                embargo_days=7  # 5 days for triple barrier + 2 days buffer
             )
             
             if wf_results['overall_metrics']:
@@ -411,26 +452,12 @@ class RunGenerator:
                         strategy_metrics = calculate_all_metrics(wf_strategy_returns, signals=wf_signals, benchmark_returns=None)
                         print(f"  Warning: Return length mismatch - strategy: {len(wf_strategy_returns)}, benchmark: {len(wf_benchmark_returns)}")
                     
+                    # No label metrics for walk-forward (test data) - labels are only for training
+                    
                     for metric, value in strategy_metrics.items():
-                        if isinstance(value, (np.ndarray, list)):
-                            # Handle arrays/lists - log as string or skip
-                            if metric == 'position_confusion_matrix':
-                                mlflow.log_text(str(value), f"wf_{metric}.txt")
-                            elif metric == 'position_position_returns':
-                                # Skip logging individual position returns 
-                                continue
-                            else:
-                                # Skip other array/list values
-                                continue
-                        elif isinstance(value, str) and metric == 'position_confusion_matrix_plot':
-                            # Log confusion matrix plot as artifact
-                            mlflow.log_artifact(value, f"wf_{metric}.png")
-                            # Clean up temp file
-                            try:
-                                import os
-                                os.remove(value)
-                            except:
-                                pass
+                        if isinstance(value, (np.ndarray, list, str)):
+                            # Skip arrays, lists, and string values (no position-based plots anymore)
+                            continue
                         else:
                             mlflow.log_metric(f"wf_{metric}", round(float(value), 4))
                     

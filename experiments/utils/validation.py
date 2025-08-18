@@ -384,7 +384,8 @@ def walk_forward_validation(features_df: pd.DataFrame,
                            optimize_func: Callable,
                            train_test_split: float = 0.75,
                            n_folds: int = 12,
-                           reoptimize_every: int = 3) -> Dict:
+                           reoptimize_every: int = 3,
+                           embargo_days: int = 7) -> Dict:
     """
     Perform walk-forward validation with automatic configuration based on train/test split.
     
@@ -395,6 +396,8 @@ def walk_forward_validation(features_df: pd.DataFrame,
         train_test_split: Ratio of data to use for initial training (e.g., 0.75)
         n_folds: Number of folds to create in the test period (default: 12)
         reoptimize_every: Re-optimize every N folds (default: 3)
+        embargo_days: Days to embargo after training to avoid label leakage (default: 7)
+                     This accounts for triple barrier time horizon plus buffer
     
     Returns:
         Dict with walk-forward results including metrics and fold details
@@ -458,8 +461,10 @@ def walk_forward_validation(features_df: pd.DataFrame,
                 should_reoptimize = True  # Reoptimize every N folds
         
         if should_reoptimize:
-            # Expanding window: use all data up to current fold
-            retrain_end = features_df.index[fold_start_idx - 1].strftime('%Y-%m-%d')
+            # Expanding window: use all data up to current fold minus embargo period
+            # This ensures we don't use labels that would look into the test period
+            embargo_idx = max(0, fold_start_idx - embargo_days - 1)
+            retrain_end = features_df.index[embargo_idx].strftime('%Y-%m-%d')
             opt_result = optimize_func(features_df, train_start, retrain_end)
             current_params = opt_result.get('best_params', current_params)
             wf_results['reoptimization_dates'].append(fold_start)

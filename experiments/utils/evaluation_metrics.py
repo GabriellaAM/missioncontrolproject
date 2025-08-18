@@ -312,48 +312,48 @@ def calculate_position_based_classification_metrics(signals: np.ndarray,
                                                    returns: np.ndarray,
                                                    threshold: float = 0.0) -> Dict:
     """
-    Calculate classification metrics based on position-level profitability.
+    Calculate classification metrics based on period-level predictions.
+    
+    For long-short strategies:
+    - Signal 1 = predicting positive returns
+    - Signal -1 or 0 = predicting negative returns
     
     Args:
-        signals: Array of trading signals (1 for long, 0 for flat)
+        signals: Array of trading signals (1 for long, -1 for short, 0 for cash)
         returns: Array of period returns 
-        threshold: Threshold for defining profitable positions (default: 0.0)
+        threshold: Threshold for defining profitable periods (default: 0.0)
         
     Returns:
         Dictionary containing classification metrics
     """
-    positions = extract_positions(signals, returns)
+    # Filter out NaN values
+    mask = ~(np.isnan(signals) | np.isnan(returns))
+    clean_signals = signals[mask]
+    clean_returns = returns[mask]
     
-    if len(positions) == 0:
+    if len(clean_signals) == 0:
         return {
-            'num_positions': 0,
+            'num_periods': 0,
             'accuracy': 0.0,
             'precision': 0.0,
             'recall': 0.0,
             'f1_score': 0.0,
-            'profitable_positions': 0,
-            'unprofitable_positions': 0,
+            'profitable_periods': 0,
+            'unprofitable_periods': 0,
             'confusion_matrix': np.array([[0, 0], [0, 0]])
         }
     
-    # Ground truth: 1 if position was profitable, 0 otherwise
-    y_true = [1 if pos['total_return'] > threshold else 0 for pos in positions]
+    # Ground truth: 1 if return was positive, 0 if negative
+    y_true = (clean_returns > threshold).astype(int)
     
-    # Predictions: All positions were "predicted" to be profitable (signal = 1 means we went long)
-    y_pred = [1] * len(positions)
+    # Predictions: 1 if signal is long (1), 0 if signal is short (-1) or cash (0)
+    y_pred = (clean_signals == 1).astype(int)
     
-    # Handle edge case where all positions are unprofitable
-    if sum(y_true) == 0:
-        # All positions were unprofitable, but we predicted all would be profitable
-        accuracy = 0.0
-        precision = 0.0
-        recall = 0.0  # No actual positives to recall
-        f1 = 0.0
-    else:
-        accuracy = accuracy_score(y_true, y_pred)
-        precision = precision_score(y_true, y_pred, zero_division=0)
-        recall = recall_score(y_true, y_pred, zero_division=0)
-        f1 = f1_score(y_true, y_pred, zero_division=0)
+    # Calculate metrics
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, zero_division=0)
+    recall = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
     
     # Confusion matrix
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
@@ -366,17 +366,17 @@ def calculate_position_based_classification_metrics(signals: np.ndarray,
     cm_plot_path = create_confusion_matrix_plot(y_true, y_pred, filename=cm_filename)
     
     return {
-        'num_positions': len(positions),
+        'num_periods': len(clean_signals),
         'accuracy': accuracy,
         'precision': precision,
         'recall': recall,
         'f1_score': f1,
-        'profitable_positions': sum(y_true),
-        'unprofitable_positions': len(y_true) - sum(y_true),
+        'profitable_periods': sum(y_true),
+        'unprofitable_periods': len(y_true) - sum(y_true),
+        'long_predictions': sum(y_pred),
+        'short_predictions': len(y_pred) - sum(y_pred),
         'confusion_matrix': cm,
-        'confusion_matrix_plot': cm_plot_path,
-        'avg_position_periods': np.mean([pos['periods'] for pos in positions]) if positions else 0,
-        'position_returns': [pos['total_return'] for pos in positions]
+        'confusion_matrix_plot': cm_plot_path
     }
 
 
@@ -414,11 +414,6 @@ def calculate_all_metrics(returns: np.ndarray,
     if benchmark_returns is not None:
         metrics['information_ratio'] = calculate_information_ratio(returns, benchmark_returns, periods_per_year)
     
-    # Add position-based classification metrics if signals are provided
-    if signals is not None:
-        classification_metrics = calculate_position_based_classification_metrics(signals, returns)
-        # Add classification metrics with 'position_' prefix to avoid naming conflicts
-        for key, value in classification_metrics.items():
-            metrics[f'position_{key}'] = value
+    # Position-based classification removed - use triple barrier labels for ground truth instead
     
     return metrics

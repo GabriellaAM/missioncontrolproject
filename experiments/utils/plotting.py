@@ -388,7 +388,7 @@ def plot_walk_forward_analysis(strategy_data: pd.DataFrame,
         ax.set_title(title, fontsize=14)
         return fig
     
-    fig, axes = plt.subplots(3, 1, figsize=figsize, height_ratios=[2, 1, 1])
+    fig, axes = plt.subplots(4, 1, figsize=(15, 16), height_ratios=[2, 1, 1, 1])
     
     # Extract data from walk-forward results
     fold_dates = wf_results['fold_dates']
@@ -433,8 +433,39 @@ def plot_walk_forward_analysis(strategy_data: pd.DataFrame,
     ax1.grid(True, alpha=0.3)
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
     
-    # 2. Parameter Evolution
+    # 2. Drawdown Analysis
     ax2 = axes[1]
+    if len(test_data) > 0:
+        # Calculate and plot strategy drawdown
+        strategy_cumulative = (1 + strategy_returns).cumprod()
+        strategy_running_max = strategy_cumulative.cummax()
+        strategy_drawdown = (strategy_cumulative - strategy_running_max) / strategy_running_max
+        
+        ax2.fill_between(strategy_drawdown.index, 0, strategy_drawdown, 
+                        color='blue', alpha=0.3, label='Strategy Drawdown')
+        ax2.plot(strategy_drawdown.index, strategy_drawdown, color='blue', linewidth=1)
+        
+        # Benchmark drawdown if available
+        if benchmark_col in test_data.columns:
+            benchmark_cumulative = (1 + benchmark_returns).cumprod()
+            benchmark_running_max = benchmark_cumulative.cummax()
+            benchmark_drawdown = (benchmark_cumulative - benchmark_running_max) / benchmark_running_max
+            ax2.fill_between(benchmark_drawdown.index, 0, benchmark_drawdown, 
+                            color='gray', alpha=0.2, label='Benchmark Drawdown')
+            ax2.plot(benchmark_drawdown.index, benchmark_drawdown, color='gray', linewidth=1, linestyle='--')
+        
+        # Add reoptimization markers
+        for reopt_date in reopt_dates:
+            ax2.axvline(x=reopt_date, color='red', linestyle=':', alpha=0.7, linewidth=1)
+    
+    ax2.set_title('Walk-Forward Drawdown', fontsize=12)
+    ax2.set_ylabel('Drawdown', fontsize=10)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    
+    # 3. Parameter Evolution
+    ax3 = axes[2]
     if fold_params and len(fold_params) > 0:
         # Extract parameter names dynamically (avoid hardcoding to EMA)
         param_names = list(fold_params[0].keys()) if fold_params else []
@@ -448,22 +479,22 @@ def plot_walk_forward_analysis(strategy_data: pd.DataFrame,
             
             # Only plot if parameter values are numeric
             if all(isinstance(v, (int, float)) and not np.isnan(v) for v in param_values):
-                ax2.plot(fold_numbers, param_values, 
+                ax3.plot(fold_numbers, param_values, 
                         marker='o', color=colors[i], linewidth=2, 
                         label=param_name, markersize=6)
         
-        ax2.set_title('Parameter Evolution', fontsize=12)
-        ax2.set_xlabel('Fold Number', fontsize=10)
-        ax2.set_ylabel('Parameter Value', fontsize=10)
-        ax2.legend(fontsize=9)
-        ax2.grid(True, alpha=0.3)
+        ax3.set_title('Parameter Evolution', fontsize=12)
+        ax3.set_xlabel('Fold Number', fontsize=10)
+        ax3.set_ylabel('Parameter Value', fontsize=10)
+        ax3.legend(fontsize=9)
+        ax3.grid(True, alpha=0.3)
     else:
-        ax2.text(0.5, 0.5, 'No parameter data available', 
-                ha='center', va='center', transform=ax2.transAxes)
-        ax2.set_title('Parameter Evolution', fontsize=12)
+        ax3.text(0.5, 0.5, 'No parameter data available', 
+                ha='center', va='center', transform=ax3.transAxes)
+        ax3.set_title('Parameter Evolution', fontsize=12)
     
-    # 3. Individual Fold Returns
-    ax3 = axes[2]
+    # 4. Individual Fold Returns
+    ax4 = axes[3]
     if fold_metrics and len(fold_metrics) > 0:
         fold_numbers = [metric['fold'] for metric in fold_metrics]
         fold_returns = [metric.get('total_return', 0) for metric in fold_metrics]
@@ -471,20 +502,20 @@ def plot_walk_forward_analysis(strategy_data: pd.DataFrame,
         # Color bars based on positive/negative returns
         colors = ['green' if ret >= 0 else 'red' for ret in fold_returns]
         
-        bars = ax3.bar(fold_numbers, fold_returns, color=colors, alpha=0.7)
-        ax3.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+        bars = ax4.bar(fold_numbers, fold_returns, color=colors, alpha=0.7)
+        ax4.axhline(y=0, color='black', linestyle='-', alpha=0.5)
         
-        ax3.set_title('Individual Fold Returns', fontsize=12)
-        ax3.set_xlabel('Fold Number', fontsize=10)
-        ax3.set_ylabel('Total Return', fontsize=10)
-        ax3.grid(True, alpha=0.3, axis='y')
+        ax4.set_title('Individual Fold Returns', fontsize=12)
+        ax4.set_xlabel('Fold Number', fontsize=10)
+        ax4.set_ylabel('Total Return', fontsize=10)
+        ax4.grid(True, alpha=0.3, axis='y')
         
         # Format y-axis as percentage
-        ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.1%}'))
+        ax4.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.1%}'))
     else:
-        ax3.text(0.5, 0.5, 'No fold metrics available', 
-                ha='center', va='center', transform=ax3.transAxes)
-        ax3.set_title('Individual Fold Returns', fontsize=12)
+        ax4.text(0.5, 0.5, 'No fold metrics available', 
+                ha='center', va='center', transform=ax4.transAxes)
+        ax4.set_title('Individual Fold Returns', fontsize=12)
     
     plt.suptitle(title, fontsize=14, y=0.98)
     plt.tight_layout()
@@ -517,15 +548,15 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
     """
     saved_files = []
     
-    # Cumulative returns plot (better than price signals)
+    # Cumulative returns plot with drawdown
     try:
-        # Create a cumulative returns plot similar to ema_crossover_bitcoin.py
-        fig, ax = plt.subplots(figsize=(12, 6))
+        # Create cumulative returns plot with drawdown subplot
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), height_ratios=[2, 1])
         
         # Strategy cumulative returns
         strategy_returns = strategy_data['strategy_returns'].fillna(0)
         strategy_cum_returns = (1 + strategy_returns).cumprod() - 1
-        ax.plot(strategy_cum_returns.index, strategy_cum_returns, 
+        ax1.plot(strategy_cum_returns.index, strategy_cum_returns, 
                label="Strategy Cumulative Return", color='blue', linewidth=2)
         
         # Benchmark cumulative returns
@@ -533,15 +564,40 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
         if benchmark_col in strategy_data.columns:
             benchmark_returns = strategy_data[benchmark_col].fillna(0)
             benchmark_cum_returns = (1 + benchmark_returns).cumprod() - 1
-            ax.plot(benchmark_cum_returns.index, benchmark_cum_returns, 
+            ax1.plot(benchmark_cum_returns.index, benchmark_cum_returns, 
                    label="Benchmark Cumulative Return", linestyle="--", color='gray', linewidth=2)
         
-        ax.set_title(f'{strategy_name} - {asset_name} Cumulative Returns', fontsize=14)
-        ax.set_xlabel("Time", fontsize=12)
-        ax.set_ylabel("Cumulative Return", fontsize=12)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        ax1.set_title(f'{strategy_name} - {asset_name} Cumulative Returns', fontsize=14)
+        ax1.set_ylabel("Cumulative Return", fontsize=12)
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        
+        # Calculate and plot drawdowns
+        strategy_cumulative = (1 + strategy_returns).cumprod()
+        strategy_running_max = strategy_cumulative.cummax()
+        strategy_drawdown = (strategy_cumulative - strategy_running_max) / strategy_running_max
+        
+        ax2.fill_between(strategy_drawdown.index, 0, strategy_drawdown, 
+                        color='blue', alpha=0.3, label='Strategy Drawdown')
+        ax2.plot(strategy_drawdown.index, strategy_drawdown, color='blue', linewidth=1)
+        
+        # Benchmark drawdown if available
+        if benchmark_col in strategy_data.columns:
+            benchmark_cumulative = (1 + benchmark_returns).cumprod()
+            benchmark_running_max = benchmark_cumulative.cummax()
+            benchmark_drawdown = (benchmark_cumulative - benchmark_running_max) / benchmark_running_max
+            ax2.fill_between(benchmark_drawdown.index, 0, benchmark_drawdown, 
+                            color='gray', alpha=0.2, label='Benchmark Drawdown')
+            ax2.plot(benchmark_drawdown.index, benchmark_drawdown, color='gray', linewidth=1, linestyle='--')
+        
+        ax2.set_title('Drawdown', fontsize=12)
+        ax2.set_xlabel("Time", fontsize=12)
+        ax2.set_ylabel("Drawdown", fontsize=12)
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        
         plt.xticks(rotation=45)
         plt.tight_layout()
         
