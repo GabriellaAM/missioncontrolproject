@@ -4,6 +4,9 @@ import sys
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
+import warnings
+
+warnings.filterwarnings('ignore')
 
 # Set up logging
 logging.basicConfig(
@@ -21,7 +24,7 @@ if project_root not in sys.path:
 load_dotenv()
 
 # Import our parquet managers
-from macroDataParquet import (
+from scripts.macroDataParquet import (
     YahooDataManager, 
     FredDataManager, 
     MacroCalculationsManager,
@@ -96,8 +99,8 @@ def main():
             try:
                 # Import and run dependent scripts
                 # Note: These scripts may need to be updated to read from parquet instead of CSV
-                from computeFredChanges import main as compute_changes_main
-                from computeYieldCurveRegime import compute_regime, compute_and_save_yield_curve_regime_plot
+                from scripts.computeFredChanges import main as compute_changes_main
+                from scripts.computeYieldCurveRegime import compute_regime, compute_and_save_yield_curve_regime_plot
                 
                 logger.info("Computing yield curve regime...")
                 compute_regime()

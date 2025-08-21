@@ -109,9 +109,10 @@ def plot_returns_analysis(strategy_data: pd.DataFrame,
     
     fig, axes = plt.subplots(2, 2, figsize=figsize)
     
-    # Calculate cumulative returns
+    # Calculate cumulative returns (convert log returns to simple returns first)
     strategy_returns = strategy_data[strategy_returns_col].fillna(0)
-    strategy_cum_returns = (1 + strategy_returns).cumprod()
+    strategy_simple_returns = np.exp(strategy_returns) - 1
+    strategy_cum_returns = (1 + strategy_simple_returns).cumprod()
     
     # Cumulative returns plot
     ax = axes[0, 0]
@@ -120,7 +121,8 @@ def plot_returns_analysis(strategy_data: pd.DataFrame,
     
     if benchmark_returns_col and benchmark_returns_col in strategy_data.columns:
         benchmark_returns = strategy_data[benchmark_returns_col].fillna(0)
-        benchmark_cum_returns = (1 + benchmark_returns).cumprod()
+        benchmark_simple_returns = np.exp(benchmark_returns) - 1
+        benchmark_cum_returns = (1 + benchmark_simple_returns).cumprod()
         ax.plot(benchmark_cum_returns.index, benchmark_cum_returns, 
                 color='gray', linewidth=2, label='Benchmark', alpha=0.7)
     
@@ -142,9 +144,9 @@ def plot_returns_analysis(strategy_data: pd.DataFrame,
     ax.grid(True, alpha=0.3)
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
     
-    # Returns distribution
+    # Returns distribution (use simple returns for histogram)
     ax = axes[1, 0]
-    returns_clean = strategy_returns.dropna()
+    returns_clean = strategy_simple_returns.dropna()
     ax.hist(returns_clean, bins=50, alpha=0.7, color='blue', density=True)
     ax.axvline(returns_clean.mean(), color='red', linestyle='--', 
                label=f'Mean: {returns_clean.mean():.4f}')
@@ -158,8 +160,8 @@ def plot_returns_analysis(strategy_data: pd.DataFrame,
     ax = axes[1, 1]
     if len(strategy_returns) > 30:  # Only if we have enough data
         try:
-            # Convert to monthly returns
-            monthly_returns = strategy_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
+            # Convert to monthly returns (use simple returns)
+            monthly_returns = strategy_simple_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
             monthly_returns.index = monthly_returns.index.to_period('M')
             
             # Create pivot table for heatmap
@@ -404,16 +406,18 @@ def plot_walk_forward_analysis(strategy_data: pd.DataFrame,
     # 1. Cumulative Returns with Reoptimization Markers
     ax1 = axes[0]
     if len(test_data) > 0:
-        # Strategy cumulative returns
-        strategy_returns = test_data['strategy_returns'].fillna(0)
+        # Strategy cumulative returns (convert log returns to simple returns first)
+        strategy_log_returns = test_data['strategy_returns'].fillna(0)
+        strategy_returns = np.exp(strategy_log_returns) - 1
         strategy_cum_returns = (1 + strategy_returns).cumprod() - 1
         ax1.plot(strategy_cum_returns.index, strategy_cum_returns, 
                 label="Strategy", color='blue', linewidth=2)
         
-        # Benchmark cumulative returns
+        # Benchmark cumulative returns (convert log returns to simple returns first)
         benchmark_col = f"{asset_name}_log_return_1"
         if benchmark_col in test_data.columns:
-            benchmark_returns = test_data[benchmark_col].fillna(0)
+            benchmark_log_returns = test_data[benchmark_col].fillna(0)
+            benchmark_returns = np.exp(benchmark_log_returns) - 1
             benchmark_cum_returns = (1 + benchmark_returns).cumprod() - 1
             ax1.plot(benchmark_cum_returns.index, benchmark_cum_returns, 
                     label="Benchmark", linestyle="--", color='gray', linewidth=2)
@@ -436,7 +440,7 @@ def plot_walk_forward_analysis(strategy_data: pd.DataFrame,
     # 2. Drawdown Analysis
     ax2 = axes[1]
     if len(test_data) > 0:
-        # Calculate and plot strategy drawdown
+        # Calculate and plot strategy drawdown (already have simple returns)
         strategy_cumulative = (1 + strategy_returns).cumprod()
         strategy_running_max = strategy_cumulative.cummax()
         strategy_drawdown = (strategy_cumulative - strategy_running_max) / strategy_running_max
@@ -445,7 +449,7 @@ def plot_walk_forward_analysis(strategy_data: pd.DataFrame,
                         color='blue', alpha=0.3, label='Strategy Drawdown')
         ax2.plot(strategy_drawdown.index, strategy_drawdown, color='blue', linewidth=1)
         
-        # Benchmark drawdown if available
+        # Benchmark drawdown if available (already have simple returns)
         if benchmark_col in test_data.columns:
             benchmark_cumulative = (1 + benchmark_returns).cumprod()
             benchmark_running_max = benchmark_cumulative.cummax()
@@ -553,16 +557,18 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
         # Create cumulative returns plot with drawdown subplot
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), height_ratios=[2, 1])
         
-        # Strategy cumulative returns
-        strategy_returns = strategy_data['strategy_returns'].fillna(0)
+        # Strategy cumulative returns (convert log returns to simple returns first)
+        strategy_log_returns = strategy_data['strategy_returns'].fillna(0)
+        strategy_returns = np.exp(strategy_log_returns) - 1
         strategy_cum_returns = (1 + strategy_returns).cumprod() - 1
         ax1.plot(strategy_cum_returns.index, strategy_cum_returns, 
                label="Strategy Cumulative Return", color='blue', linewidth=2)
         
-        # Benchmark cumulative returns
+        # Benchmark cumulative returns (convert log returns to simple returns first)
         benchmark_col = f"{asset_name}_log_return_1"
         if benchmark_col in strategy_data.columns:
-            benchmark_returns = strategy_data[benchmark_col].fillna(0)
+            benchmark_log_returns = strategy_data[benchmark_col].fillna(0)
+            benchmark_returns = np.exp(benchmark_log_returns) - 1
             benchmark_cum_returns = (1 + benchmark_returns).cumprod() - 1
             ax1.plot(benchmark_cum_returns.index, benchmark_cum_returns, 
                    label="Benchmark Cumulative Return", linestyle="--", color='gray', linewidth=2)

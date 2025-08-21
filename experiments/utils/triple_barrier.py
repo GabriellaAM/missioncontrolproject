@@ -48,9 +48,11 @@ def triple_barrier_label(
     Apply triple barrier labeling method for establishing ground truth.
     
     The triple barrier method labels each observation based on which barrier is touched first:
-    - Upper barrier (profit target): Label = 1
-    - Lower barrier (stop loss): Label = -1  
-    - Time barrier (max holding period): Label based on return sign (1 if positive, -1 if negative, 0 if no move)
+    - Upper barrier (profit target): Label = 1 (profitable)
+    - Lower barrier (stop loss): Label = 0 (unprofitable)
+    - Time barrier (max holding period): Label = 1 if positive return, 0 otherwise (unprofitable)
+    
+    Note: Labels are binary (0/1) to avoid directional bias for meta-model training.
     
     Parameters
     ----------
@@ -72,7 +74,7 @@ def triple_barrier_label(
     -------
     pd.DataFrame
         DataFrame with columns:
-        - label: Triple barrier label (-1, 0, 1)
+        - label: Binary profitability label (0=unprofitable, 1=profitable)
         - barrier_touched: Which barrier was touched ('upper', 'lower', 'time')
         - days_to_barrier: Number of days until barrier was touched
         - return_at_barrier: Return at the point barrier was touched
@@ -120,7 +122,7 @@ def triple_barrier_label(
                 
             # Check lower barrier  
             elif future_price <= lower_barrier:
-                labels[i] = -1
+                labels[i] = 0
                 barrier_touched[i] = 'lower'
                 days_to_barrier[i] = j
                 return_at_barrier[i] = np.log(future_price / current_price)
@@ -137,15 +139,11 @@ def triple_barrier_label(
                 if min_pct_move is not None:
                     if ret > min_pct_move / 100:
                         labels[i] = 1
-                    elif ret < -min_pct_move / 100:
-                        labels[i] = -1
                     else:
                         labels[i] = 0
                 else:
                     if ret > 0:
                         labels[i] = 1
-                    elif ret < 0:
-                        labels[i] = -1
                     else:
                         labels[i] = 0
     
@@ -276,9 +274,7 @@ def create_confusion_matrix_plot(
     # Save plot
     if save_path is None:
         temp_dir = tempfile.gettempdir()
-        import time
-        timestamp = int(time.time() * 1000)
-        save_path = os.path.join(temp_dir, f"confusion_matrix_{timestamp}.png")
+        save_path = os.path.join(temp_dir, "insample_label_confusion_matrix.png")
     
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
@@ -291,7 +287,8 @@ def create_confusion_matrix_plot(
 def calculate_metrics_with_labels(
     predictions: np.ndarray,
     labels: np.ndarray,
-    returns: Optional[np.ndarray] = None
+    returns: Optional[np.ndarray] = None,
+    plot_filename: str = "insample_label_confusion_matrix.png"
 ) -> dict:
     """
     Calculate classification metrics using triple barrier labels as ground truth.
@@ -345,8 +342,10 @@ def calculate_metrics_with_labels(
     f1 = f1_score(binary_labels, binary_predictions, zero_division=0)
     mcc = matthews_corrcoef(binary_labels, binary_predictions)
     
-    # Create confusion matrix plot
-    cm_plot_path = create_confusion_matrix_plot(clean_predictions, clean_labels)
+    # Create confusion matrix plot with custom filename
+    temp_dir = tempfile.gettempdir()
+    save_path = os.path.join(temp_dir, plot_filename)
+    cm_plot_path = create_confusion_matrix_plot(clean_predictions, clean_labels, save_path=save_path)
     
     metrics = {
         'accuracy': accuracy,

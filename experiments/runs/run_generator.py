@@ -229,9 +229,24 @@ class RunGenerator:
             # Calculate in-sample performance metrics
             train_strategy_data = strategy_data.iloc[:train_split_idx].dropna()
             if len(train_strategy_data) > 0:
-                train_returns = train_strategy_data['strategy_returns'].values
+                # Get strategy returns and signals from cleaned strategy data
+                train_log_returns = train_strategy_data['strategy_returns'].values
                 train_signals = train_strategy_data['signal'].values
-                train_benchmark = train_strategy_data[return_col].values
+                
+                # Get benchmark returns from consistent raw data, then align lengths
+                train_raw_data = self.features_df.iloc[:train_split_idx]
+                train_raw_benchmark = train_raw_data[return_col].dropna()
+                
+                # Align benchmark with strategy data by taking the same number of most recent returns
+                if len(train_raw_benchmark) >= len(train_log_returns):
+                    train_log_benchmark = train_raw_benchmark.tail(len(train_log_returns)).values
+                else:
+                    # If somehow strategy has more data, take what we have from benchmark
+                    train_log_benchmark = train_raw_benchmark.values
+                
+                # Convert log returns to simple returns for accurate metric calculation
+                train_returns = np.exp(train_log_returns) - 1
+                train_benchmark = np.exp(train_log_benchmark) - 1
                 
                 # Calculate strategy metrics (including position-based classification metrics)
                 strategy_metrics = calculate_all_metrics(train_returns, signals=train_signals, benchmark_returns=train_benchmark)
@@ -250,6 +265,18 @@ class RunGenerator:
                     upper_barrier_mult=2.0,
                     lower_barrier_mult=2.0
                 )
+                
+                # Save triple barrier labels as CSV artifact
+                if 'label' in train_features_labeled.columns:
+                    labels_csv_path = 'triple_barrier_labels.csv'
+                    train_features_labeled.to_csv(labels_csv_path, index_label='timestamp')
+                    mlflow.log_artifact(labels_csv_path)
+                    
+                    # Clean up temporary file
+                    try:
+                        os.remove(labels_csv_path)
+                    except:
+                        pass
                 
                 # Align labels with strategy data
                 if 'label' in train_features_labeled.columns:
@@ -285,7 +312,7 @@ class RunGenerator:
                 
                 # Also calculate and log total gross return for comparison
                 train_returns_gross = train_strategy_data['strategy_returns_gross'].values
-                total_gross_return = (1 + train_returns_gross).prod() - 1 if len(train_returns_gross) > 0 else 0.0
+                total_gross_return = np.exp(np.sum(train_returns_gross)) - 1 if len(train_returns_gross) > 0 else 0.0
                 mlflow.log_metric("insample_total_return_gross", round(float(total_gross_return), 4))
                 
                 for metric, value in strategy_metrics.items():
@@ -413,20 +440,24 @@ class RunGenerator:
             
             if wf_results['overall_metrics']:
                 # Calculate comprehensive walk-forward metrics for strategy
-                wf_strategy_returns = np.array(wf_results['all_returns'])
-                if len(wf_strategy_returns) > 0:
+                wf_log_returns = np.array(wf_results['all_returns'])
+                if len(wf_log_returns) > 0:
                     # Get benchmark returns from the same periods as strategy returns
                     # We need to extract benchmark returns corresponding to the same dates/periods
                     # that were used in walk-forward validation
                     
                     # Get the fold dates and extract benchmark returns for those exact periods
-                    wf_benchmark_returns = []
+                    wf_log_benchmark = []
                     for fold_start, fold_end in wf_results['fold_dates']:
                         fold_data = strategy_data.loc[fold_start:fold_end]
                         fold_benchmark = fold_data[return_col].dropna().values
-                        wf_benchmark_returns.extend(fold_benchmark)
+                        wf_log_benchmark.extend(fold_benchmark)
                     
-                    wf_benchmark_returns = np.array(wf_benchmark_returns)
+                    wf_log_benchmark = np.array(wf_log_benchmark)
+                    
+                    # Convert log returns to simple returns for accurate metric calculation
+                    wf_strategy_returns = np.exp(wf_log_returns) - 1
+                    wf_benchmark_returns = np.exp(wf_log_benchmark) - 1
                     
                     # Extract walk-forward signals and gross returns for classification metrics
                     wf_signals = []
@@ -440,8 +471,8 @@ class RunGenerator:
                     wf_signals = np.array(wf_signals)
                     wf_gross_returns = np.array(wf_gross_returns)
                     
-                    # Calculate and log total gross return for walk-forward
-                    wf_total_gross_return = (1 + wf_gross_returns).prod() - 1 if len(wf_gross_returns) > 0 else 0.0
+                    # Calculate and log total gross return for walk-forward (convert log returns to simple)
+                    wf_total_gross_return = np.exp(np.sum(wf_gross_returns)) - 1 if len(wf_gross_returns) > 0 else 0.0
                     mlflow.log_metric("wf_total_return_gross", round(float(wf_total_gross_return), 4))
                     
                     # Only calculate IR if lengths match (they should now)
@@ -452,8 +483,7 @@ class RunGenerator:
                         strategy_metrics = calculate_all_metrics(wf_strategy_returns, signals=wf_signals, benchmark_returns=None)
                         print(f"  Warning: Return length mismatch - strategy: {len(wf_strategy_returns)}, benchmark: {len(wf_benchmark_returns)}")
                     
-                    # No label metrics for walk-forward (test data) - labels are only for training
-                    
+                    # No out-of-sample labeling - we don't have ground truth in real trading
                     for metric, value in strategy_metrics.items():
                         if isinstance(value, (np.ndarray, list, str)):
                             # Skip arrays, lists, and string values (no position-based plots anymore)
@@ -461,10 +491,12 @@ class RunGenerator:
                         else:
                             mlflow.log_metric(f"wf_{metric}", round(float(value), 4))
                     
-                    # Calculate benchmark metrics from test period
-                    test_strategy_data = strategy_data.iloc[split_idx:]
-                    test_benchmark = test_strategy_data[return_col].dropna().values
-                    if len(test_benchmark) > 0:
+                    # Calculate benchmark metrics from test period (respecting embargo)
+                    test_strategy_data = strategy_data.iloc[test_split_idx:]
+                    test_log_benchmark = test_strategy_data[return_col].dropna().values
+                    if len(test_log_benchmark) > 0:
+                        # Convert log returns to simple returns for accurate metric calculation
+                        test_benchmark = np.exp(test_log_benchmark) - 1
                         benchmark_metrics = calculate_all_metrics(test_benchmark)
                         for metric, value in benchmark_metrics.items():
                             if metric != 'information_ratio':  # Skip IR for benchmark vs itself

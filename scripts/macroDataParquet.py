@@ -539,6 +539,29 @@ class MacroCalculationsManager(MacroDataManager):
     def __init__(self, base_path=None):
         super().__init__(base_path, source_type='calculated')
     
+    def _load_source_data(self, asset_id, source_type):
+        """
+        Load data from a specific source directory (yahoo, fred, etc).
+        
+        Args:
+            asset_id: The macro asset identifier
+            source_type: The source type ('yahoo', 'fred', 'calculated')
+            
+        Returns:
+            DataFrame with the data or empty DataFrame if not found
+        """
+        try:
+            # Use parent directory to access other source types
+            macro_data_path = self.base_path.parent
+            data_path = macro_data_path / source_type / asset_id / 'data.parquet'
+            if data_path.exists():
+                return pd.read_parquet(data_path)
+            else:
+                return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Error loading {asset_id} from {source_type}: {e}")
+            return pd.DataFrame()
+    
     def calculate_rty_ym_ratio(self):
         """
         Calculate RTY/YM ratio from existing parquet data.
@@ -549,9 +572,9 @@ class MacroCalculationsManager(MacroDataManager):
         logger.info("Calculating RTY/YM ratio...")
         
         try:
-            # Load RTY and YM data
-            rty_data = self._get_existing_data('rty')
-            ym_data = self._get_existing_data('ym')
+            # Load RTY and YM data from Yahoo source
+            rty_data = self._load_source_data('rty', 'yahoo')
+            ym_data = self._load_source_data('ym', 'yahoo')
             
             if rty_data.empty or ym_data.empty:
                 logger.error("RTY or YM data not available for ratio calculation")
@@ -600,10 +623,10 @@ class MacroCalculationsManager(MacroDataManager):
         logger.info("Calculating US Net Liquidity...")
         
         try:
-            # Load required components
-            fed_assets = self._get_existing_data('fedTotalAssets')
-            repo = self._get_existing_data('repoAgreements') 
-            tga = self._get_existing_data('tga')
+            # Load required components from FRED source
+            fed_assets = self._load_source_data('fedTotalAssets', 'fred')
+            repo = self._load_source_data('repoAgreements', 'fred') 
+            tga = self._load_source_data('tga', 'fred')
             
             if fed_assets.empty or repo.empty or tga.empty:
                 logger.error("Required data not available for net liquidity calculation")
@@ -660,12 +683,12 @@ class MacroCalculationsManager(MacroDataManager):
         logger.info("Calculating Global CB Liquidity...")
         
         try:
-            # Load required components
-            us_liq = self._get_existing_data('usNetLiquidity')
-            boj = self._get_existing_data('bojAssets')
-            ecb = self._get_existing_data('ecbAssets')
-            usdjpy = self._get_existing_data('usdjpy')
-            usdeur = self._get_existing_data('usdeur')
+            # Load required components from appropriate sources
+            us_liq = self._load_source_data('usNetLiquidity', 'calculated')
+            boj = self._load_source_data('bojAssets', 'fred')
+            ecb = self._load_source_data('ecbAssets', 'fred')
+            usdjpy = self._load_source_data('usdjpy', 'yahoo')
+            usdeur = self._load_source_data('usdeur', 'yahoo')
             
             if any(df.empty for df in [us_liq, boj, ecb, usdjpy, usdeur]):
                 logger.error("Required data not available for global CB liquidity calculation")
@@ -754,9 +777,9 @@ class MacroCalculationsManager(MacroDataManager):
         logger.info("Calculating yield curve regime...")
         
         try:
-            # Load treasury data
-            treasury_2y = self._get_existing_data('treasury2Y')
-            treasury_10y = self._get_existing_data('treasury10Y')
+            # Load treasury data from FRED source
+            treasury_2y = self._load_source_data('treasury2Y', 'fred')
+            treasury_10y = self._load_source_data('treasury10Y', 'fred')
             
             if treasury_2y.empty or treasury_10y.empty:
                 logger.error("Treasury 2Y or 10Y data not available for regime calculation")
