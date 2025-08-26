@@ -121,7 +121,7 @@ class RunGenerator:
         with mlflow.start_run(run_name=unique_run_name):
             
             # Set strategy type and asset as MLflow tags
-            mlflow.set_tag("strategy_type", self.strategy_type)
+            mlflow.set_tag("strategy_type", self.strategy.strategy_type)
             mlflow.set_tag("asset", self.asset_name)
             
             print(f"\n{'='*60}")
@@ -251,25 +251,32 @@ class RunGenerator:
                 # Calculate strategy metrics (including position-based classification metrics)
                 strategy_metrics = calculate_all_metrics(train_returns, signals=train_signals, benchmark_returns=train_benchmark)
                 
-                # Calculate triple barrier labels ONLY for training data
+                # Calculate triple barrier labels ONLY for training data and ONLY for strategy events
                 print(f"🎯 Generating triple barrier labels for training data...")
                 price_col = f"{self.asset_name}_close"
                 
-                # Get training data up to embargo point
-                train_features = self.features_df.iloc[:train_split_idx].copy()
-                train_features_labeled = add_triple_barrier_labels(
-                    train_features,
+                # CRITICAL: Use the actual strategy data that already has signals calculated
+                # train_strategy_data already contains the correct signals from line 230
+                # Extract event timestamps where strategy actually trades (signal != 0)
+                trading_events = train_strategy_data[train_strategy_data['signal'] != 0].index
+                print(f"🎯 Found {len(trading_events)} trading events in training data")
+                
+                # Apply triple barrier labeling to the strategy data (which has signals)
+                # This ensures labels are aligned with actual strategy decisions
+                train_strategy_labeled = add_triple_barrier_labels(
+                    train_strategy_data,  # Use strategy data with signals, not raw features!
                     price_col=price_col,
+                    events=trading_events,  # Pass the actual trading events!
                     volatility_span=20,
                     time_barrier_days=5,
                     upper_barrier_mult=2.0,
                     lower_barrier_mult=2.0
                 )
                 
-                # Save triple barrier labels as CSV artifact
-                if 'label' in train_features_labeled.columns:
+                # Save triple barrier labels as CSV artifact (includes strategy signals + labels)
+                if 'label' in train_strategy_labeled.columns:
                     labels_csv_path = 'triple_barrier_labels.csv'
-                    train_features_labeled.to_csv(labels_csv_path, index_label='timestamp')
+                    train_strategy_labeled.to_csv(labels_csv_path, index_label='timestamp')
                     mlflow.log_artifact(labels_csv_path)
                     
                     # Clean up temporary file
@@ -278,37 +285,43 @@ class RunGenerator:
                     except:
                         pass
                 
-                # Align labels with strategy data
-                if 'label' in train_features_labeled.columns:
-                    # Get labels for the same indices as train_strategy_data
-                    common_idx = train_strategy_data.index.intersection(train_features_labeled.index)
-                    labels = train_features_labeled.loc[common_idx, 'label'].values
-                    aligned_signals = train_strategy_data.loc[common_idx, 'signal'].values
-                    aligned_returns = train_strategy_data.loc[common_idx, 'strategy_returns'].values
+                # Align labels with strategy data - ONLY for labeled events
+                if 'label' in train_strategy_labeled.columns:
+                    # Filter out NaN labels (only keep actual trading events with labels)
+                    labeled_events = train_strategy_labeled.dropna(subset=['label'])
+                    print(f"🏷️  Found {len(labeled_events)} labeled trading events")
                     
-                    label_metrics = calculate_metrics_with_labels(
-                        predictions=aligned_signals,
-                        labels=labels,
-                        returns=aligned_returns
-                    )
-                    
-                    # Log label-based metrics
-                    for metric, value in label_metrics.items():
-                        if isinstance(value, np.ndarray):
-                            # Skip confusion matrix arrays
-                            continue
-                        elif isinstance(value, str) and metric == 'confusion_matrix_plot':
-                            # Log confusion matrix plot artifact
-                            if value:  # Only if plot was created
-                                mlflow.log_artifact(value)
-                                # Clean up temp file
-                                try:
-                                    import os
-                                    os.remove(value)
-                                except:
-                                    pass
-                        elif not isinstance(value, str):
-                            mlflow.log_metric(f"insample_label_{metric}", round(float(value), 4))
+                    if len(labeled_events) > 0:
+                        # All data is now aligned since we used train_strategy_data throughout
+                        labels = labeled_events['label'].values
+                        aligned_signals = labeled_events['signal'].values
+                        aligned_returns = labeled_events['strategy_returns'].values
+                        
+                        label_metrics = calculate_metrics_with_labels(
+                            predictions=aligned_signals,
+                            labels=labels,
+                            returns=aligned_returns
+                        )
+                        
+                        # Log label-based metrics
+                        for metric, value in label_metrics.items():
+                            if isinstance(value, np.ndarray):
+                                # Skip confusion matrix arrays
+                                continue
+                            elif isinstance(value, str) and metric == 'confusion_matrix_plot':
+                                # Log confusion matrix plot artifact
+                                if value:  # Only if plot was created
+                                    mlflow.log_artifact(value)
+                                    # Clean up temp file
+                                    try:
+                                        import os
+                                        os.remove(value)
+                                    except:
+                                        pass
+                            elif not isinstance(value, str):
+                                mlflow.log_metric(f"insample_label_{metric}", round(float(value), 4))
+                    else:
+                        print("⚠️  No labeled events found after filtering NaN")
                 
                 # Also calculate and log total gross return for comparison
                 train_returns_gross = train_strategy_data['strategy_returns_gross'].values

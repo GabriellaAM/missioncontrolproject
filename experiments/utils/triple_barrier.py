@@ -38,6 +38,7 @@ def calculate_ewma_volatility(
 
 def triple_barrier_label(
     prices: pd.Series,
+    events: Optional[pd.DatetimeIndex] = None,
     volatility_span: int = 20,
     time_barrier_days: int = 5,
     upper_barrier_mult: float = 2.0,
@@ -47,17 +48,20 @@ def triple_barrier_label(
     """
     Apply triple barrier labeling method for establishing ground truth.
     
-    The triple barrier method labels each observation based on which barrier is touched first:
+    The triple barrier method labels events based on which barrier is touched first:
     - Upper barrier (profit target): Label = 1 (profitable)
     - Lower barrier (stop loss): Label = 0 (unprofitable)
     - Time barrier (max holding period): Label = 1 if positive return, 0 otherwise (unprofitable)
     
     Note: Labels are binary (0/1) to avoid directional bias for meta-model training.
+    IMPORTANT: Only applies labeling to specified events, not every price point.
     
     Parameters
     ----------
     prices : pd.Series
         Price series (typically close prices)
+    events : pd.DatetimeIndex, optional
+        Timestamps where strategy signals occur. If None, uses all price timestamps.
     volatility_span : int, default 20
         Span for EWMA volatility calculation
     time_barrier_days : int, default 5
@@ -80,81 +84,101 @@ def triple_barrier_label(
         - return_at_barrier: Return at the point barrier was touched
         - volatility: EWMA volatility used for barriers
     """
+    # If no events specified, use all price timestamps (backward compatibility)
+    if events is None:
+        events = prices.index[:-1]  # Exclude last point as we need future prices
+    
     # Calculate log returns
     log_returns = np.log(prices / prices.shift(1))
     
     # Calculate EWMA volatility
     volatility = calculate_ewma_volatility(log_returns, span=volatility_span)
     
-    # Initialize result arrays
-    n = len(prices)
-    labels = np.zeros(n)
-    barrier_touched = [''] * n
-    days_to_barrier = np.zeros(n)
-    return_at_barrier = np.zeros(n)
+    # Initialize result lists
+    event_labels = []
+    event_barriers = []
+    event_days = []
+    event_returns = []
+    event_volatilities = []
+    valid_events = []
     
-    # Process each observation
-    for i in range(n - 1):
-        if pd.isna(volatility.iloc[i]):
+    # Process each event timestamp
+    for event_time in events:
+        if event_time not in prices.index:
             continue
             
-        # Current price and volatility
-        current_price = prices.iloc[i]
-        current_vol = volatility.iloc[i]
+        event_idx = prices.index.get_loc(event_time)
+        
+        # Skip if volatility is NaN or if we're at the end of the series
+        if pd.isna(volatility.iloc[event_idx]) or event_idx >= len(prices) - 1:
+            continue
+            
+        # Current price and volatility at event
+        current_price = prices.iloc[event_idx]
+        current_vol = volatility.iloc[event_idx]
         
         # Calculate barrier levels
         upper_barrier = current_price * np.exp(upper_barrier_mult * current_vol)
         lower_barrier = current_price * np.exp(-lower_barrier_mult * current_vol)
         
         # Check each future price up to time barrier
-        max_days = min(time_barrier_days, n - i - 1)
+        max_days = min(time_barrier_days, len(prices) - event_idx - 1)
+        label_assigned = False
         
         for j in range(1, max_days + 1):
-            future_price = prices.iloc[i + j]
+            if event_idx + j >= len(prices):
+                break
+                
+            future_price = prices.iloc[event_idx + j]
             
             # Check upper barrier
             if future_price >= upper_barrier:
-                labels[i] = 1
-                barrier_touched[i] = 'upper'
-                days_to_barrier[i] = j
-                return_at_barrier[i] = np.log(future_price / current_price)
+                event_labels.append(1)
+                event_barriers.append('upper')
+                event_days.append(j)
+                event_returns.append(np.log(future_price / current_price))
+                event_volatilities.append(current_vol)
+                valid_events.append(event_time)
+                label_assigned = True
                 break
                 
             # Check lower barrier  
             elif future_price <= lower_barrier:
-                labels[i] = 0
-                barrier_touched[i] = 'lower'
-                days_to_barrier[i] = j
-                return_at_barrier[i] = np.log(future_price / current_price)
+                event_labels.append(0)
+                event_barriers.append('lower')
+                event_days.append(j)
+                event_returns.append(np.log(future_price / current_price))
+                event_volatilities.append(current_vol)
+                valid_events.append(event_time)
+                label_assigned = True
                 break
+        
+        # If no barrier hit and we have future prices, assign time barrier label
+        if not label_assigned and max_days > 0:
+            future_price = prices.iloc[event_idx + max_days]
+            ret = np.log(future_price / current_price)
+            
+            # Assign label based on return at time barrier
+            if min_pct_move is not None:
+                label = 1 if ret > min_pct_move / 100 else 0
+            else:
+                label = 1 if ret > 0 else 0
                 
-            # Time barrier reached
-            elif j == max_days:
-                ret = np.log(future_price / current_price)
-                return_at_barrier[i] = ret
-                days_to_barrier[i] = j
-                barrier_touched[i] = 'time'
-                
-                # Assign label based on return at time barrier
-                if min_pct_move is not None:
-                    if ret > min_pct_move / 100:
-                        labels[i] = 1
-                    else:
-                        labels[i] = 0
-                else:
-                    if ret > 0:
-                        labels[i] = 1
-                    else:
-                        labels[i] = 0
+            event_labels.append(label)
+            event_barriers.append('time')
+            event_days.append(max_days)
+            event_returns.append(ret)
+            event_volatilities.append(current_vol)
+            valid_events.append(event_time)
     
-    # Create result DataFrame with rounded returns
+    # Create result DataFrame with only labeled events
     result = pd.DataFrame({
-        'label': labels,
-        'barrier_touched': barrier_touched,
-        'days_to_barrier': days_to_barrier,
-        'return_at_barrier': np.round(return_at_barrier, 4),
-        'volatility': np.round(volatility, 4)
-    }, index=prices.index)
+        'label': event_labels,
+        'barrier_touched': event_barriers,
+        'days_to_barrier': event_days,
+        'return_at_barrier': np.round(event_returns, 4),
+        'volatility': np.round(event_volatilities, 4)
+    }, index=valid_events)
     
     return result
 
@@ -162,6 +186,7 @@ def triple_barrier_label(
 def add_triple_barrier_labels(
     data: pd.DataFrame,
     price_col: str,
+    events: Optional[pd.DatetimeIndex] = None,
     volatility_span: int = 20,
     time_barrier_days: int = 5,
     upper_barrier_mult: float = 2.0,
@@ -177,6 +202,9 @@ def add_triple_barrier_labels(
         DataFrame containing price data
     price_col : str
         Name of the price column
+    events : pd.DatetimeIndex, optional
+        Timestamps where strategy signals occur. If None, attempts to extract
+        from 'signal' column in data, or uses all timestamps.
     volatility_span : int, default 20
         Span for EWMA volatility calculation
     time_barrier_days : int, default 5
@@ -191,11 +219,18 @@ def add_triple_barrier_labels(
     Returns
     -------
     pd.DataFrame
-        Original DataFrame with added triple barrier columns
+        Original DataFrame with added triple barrier columns (only for event timestamps)
     """
-    # Apply triple barrier labeling
+    # If events not provided, try to extract from signal column
+    if events is None and 'signal' in data.columns:
+        # Extract timestamps where signal is non-zero (actual trading events)
+        events = data[data['signal'] != 0].index
+        print(f"Extracted {len(events)} strategy events from signal column")
+    
+    # Apply triple barrier labeling to events only
     barrier_results = triple_barrier_label(
         prices=data[price_col],
+        events=events,
         volatility_span=volatility_span,
         time_barrier_days=time_barrier_days,
         upper_barrier_mult=upper_barrier_mult,
@@ -203,13 +238,28 @@ def add_triple_barrier_labels(
         min_pct_move=min_pct_move
     )
     
-    # Add results to original DataFrame
+    # Create result DataFrame - start with original data
     result = data.copy()
-    result['label'] = barrier_results['label']
-    result['barrier_touched'] = barrier_results['barrier_touched']
-    result['days_to_barrier'] = barrier_results['days_to_barrier']
-    result['return_at_barrier'] = barrier_results['return_at_barrier']
-    result['volatility'] = barrier_results['volatility']
+    
+    # Initialize label columns with NaN for all rows
+    result['label'] = np.nan
+    result['barrier_touched'] = ''
+    result['days_to_barrier'] = np.nan
+    result['return_at_barrier'] = np.nan
+    result['volatility'] = np.nan
+    
+    # Only fill in labels for the events that were processed
+    if len(barrier_results) > 0:
+        common_idx = result.index.intersection(barrier_results.index)
+        result.loc[common_idx, 'label'] = barrier_results.loc[common_idx, 'label']
+        result.loc[common_idx, 'barrier_touched'] = barrier_results.loc[common_idx, 'barrier_touched']
+        result.loc[common_idx, 'days_to_barrier'] = barrier_results.loc[common_idx, 'days_to_barrier']
+        result.loc[common_idx, 'return_at_barrier'] = barrier_results.loc[common_idx, 'return_at_barrier']
+        result.loc[common_idx, 'volatility'] = barrier_results.loc[common_idx, 'volatility']
+        
+        print(f"Applied triple barrier labels to {len(common_idx)} events")
+    else:
+        print("No events were labeled (empty barrier results)")
     
     return result
 

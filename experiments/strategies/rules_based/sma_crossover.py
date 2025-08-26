@@ -17,6 +17,11 @@ class SMACrossoverStrategy(BaseStrategy):
         self.slow_period_range = [21, 100]
         self.default_params = {'fast_period': 10, 'slow_period': 30}
     
+    @property
+    def strategy_type(self) -> str:
+        """SMA Crossover is a trend-following strategy"""
+        return "trend_following"
+    
     def get_required_features(self) -> Dict[str, Any]:
         """SMA crossover only needs crypto asset price data."""
         return {
@@ -40,7 +45,7 @@ class SMACrossoverStrategy(BaseStrategy):
         df['sma_slow'] = df[close_col].rolling(window=params['slow_period']).mean()
         
         # Generate signals: 1 when fast > slow, 0 otherwise
-        df['signal'] = (df['sma_fast'] >= df['sma_slow']).astype(int)
+        df['signal'] =np.where(df['sma_fast'] >= df['sma_slow'], 1, -1)
         
         return df
     

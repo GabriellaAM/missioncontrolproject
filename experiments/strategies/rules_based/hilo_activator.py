@@ -32,6 +32,11 @@ class HiloActivatorStrategy(BaseStrategy):
             'ma_type': 'sma'  # 'sma' or 'ema'
         }
 
+    @property
+    def strategy_type(self) -> str:
+        """Hilo Activator is a trend-following strategy"""
+        return "trend_following"
+
     def get_required_features(self) -> Dict[str, Any]:
         """Hilo Activator needs OHLC data for the specified asset."""
         return {

@@ -8,6 +8,12 @@ class BaseStrategy(ABC):
     def __init__(self, name: str):
         self.name = name
     
+    @property
+    @abstractmethod
+    def strategy_type(self) -> str:
+        """Return strategy type: 'mean_reversion' or 'trend_following'"""
+        pass
+    
     @abstractmethod
     def get_required_features(self) -> Dict[str, Any]:
         """

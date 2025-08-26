@@ -17,6 +17,11 @@ class EMACrossoverStrategy(BaseStrategy):
         self.slow_period_range = [21, 100]
         self.default_params = {'fast_period': 10, 'slow_period': 30}
     
+    @property
+    def strategy_type(self) -> str:
+        """EMA Crossover is a trend-following strategy"""
+        return "trend_following"
+    
     def get_required_features(self) -> Dict[str, Any]:
         """EMA crossover only needs crypto asset price data."""
         return {
