@@ -1,0 +1,32 @@
+artifact_path: /Users/valter.rebelo/MissionControl/experiments/mlruns/21/models/m-48cb7e7d6a0c40dfa32f4b6b09507e26/artifacts
+flavors:
+  python_function:
+    cloudpickle_version: 3.1.1
+    code: null
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pyfunc.model
+    python_model: python_model.pkl
+    python_version: 3.11.5
+    streamable: false
+is_signature_from_type_hint: false
+mlflow_version: 3.1.4
+model_id: m-48cb7e7d6a0c40dfa32f4b6b09507e26
+model_size_bytes: 2953
+model_uuid: m-48cb7e7d6a0c40dfa32f4b6b09507e26
+prompts: null
+run_id: c1fc39a9496f4b8b8ad03cfc7fb2320f
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+signature:
+  inputs: '[{"type": "long", "name": "bitcoin_high", "required": true}, {"type": "long",
+    "name": "bitcoin_low", "required": true}, {"type": "long", "name": "bitcoin_close",
+    "required": true}]'
+  outputs: '[{"type": "long", "name": "signal", "required": true}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2025-08-27 22:56:33.551571'

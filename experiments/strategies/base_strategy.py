@@ -40,6 +40,45 @@ class BaseStrategy(ABC):
         """Optimize strategy parameters."""
         pass
     
+    def get_input_example(self) -> pd.DataFrame:
+        """Automatically generate sample input based on strategy requirements."""
+        asset = getattr(self, 'asset', 'bitcoin')
+        
+        # Start with basic price data (most strategies need this)
+        sample_data = {f"{asset}_close": [50000, 51000, 49000]}
+        
+        # Detect if strategy needs OHLC data
+        if self._needs_ohlc_data():
+            sample_data[f"{asset}_high"] = [51000, 52000, 50000]
+            sample_data[f"{asset}_low"] = [49000, 50000, 48000]
+        
+        # Detect if strategy needs volume data
+        if self._needs_volume_data():
+            sample_data[f"{asset}_total_volume"] = [1000, 1100, 900]
+        
+        return pd.DataFrame(sample_data)
+    
+    def _needs_ohlc_data(self) -> bool:
+        """Check if strategy needs high/low data."""
+        # Check class name and strategy name for indicators
+        class_name = self.__class__.__name__.lower()
+        strategy_name = getattr(self, 'name', '').lower()
+        
+        ohlc_indicators = ['hilo', 'bollinger', 'donchian', 'high', 'low']
+        return any(indicator in class_name or indicator in strategy_name for indicator in ohlc_indicators)
+    
+    def _needs_volume_data(self) -> bool:
+        """Check if strategy needs volume data."""
+        # Check if calculate_signals method references volume
+        if hasattr(self, 'calculate_signals'):
+            import inspect
+            try:
+                source = inspect.getsource(self.calculate_signals)
+                return 'volume' in source.lower()
+            except:
+                return False
+        return False
+    
     def save_model(self, params: Dict) -> str:
         """Save model using the most appropriate MLflow flavor."""
         
