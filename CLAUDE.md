@@ -1,0 +1,1 @@
+- When implementing any function, module, class, or anything, focus on the most basic and needed functionalities first, before adding too much complexity, detail and flexibility.

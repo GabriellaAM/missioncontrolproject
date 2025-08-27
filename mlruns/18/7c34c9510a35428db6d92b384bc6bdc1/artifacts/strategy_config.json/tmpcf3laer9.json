@@ -1,0 +1,21 @@
+{
+  "strategy_name": "simple_catboost_bitcoin",
+  "strategy_type": "trend_following",
+  "implementation_type": "ml_based",
+  "asset": "bitcoin",
+  "model_parameters": {
+    "iterations": 500,
+    "learning_rate": 0.1,
+    "depth": 4,
+    "random_seed": 42
+  },
+  "feature_cols": [
+    "returns_1d",
+    "returns_7d",
+    "price_vs_sma7",
+    "price_vs_sma21",
+    "volume_ratio",
+    "volatility_7d"
+  ],
+  "strategy_class": "experiments.strategies.ml_based.simple_catboost.SimpleCatBoostStrategy"
+}

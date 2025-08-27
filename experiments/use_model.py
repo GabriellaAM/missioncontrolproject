@@ -1,408 +1,259 @@
-# %%
+#!/usr/bin/env python
 """
-Model Usage Script
-
-This script helps you load registered models and use them for predictions/diagnosis
-on historical data, particularly yesterday's market data.
-
-Usage:
-1. Load a registered model by asset-strategy combination
-2. Get yesterday's (or any historical) data
-3. Run diagnosis/predictions
-4. Analyze signals
+Unified model consumption script for all registered strategies.
+Works with rules-based, ML-based, and hybrid models.
 """
+
+import sys
+import os
+import argparse
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import mlflow
 import mlflow.pyfunc
 import pandas as pd
-import numpy as np
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
-import warnings
-warnings.filterwarnings('ignore')
-
 from config import setup_mlflow
-from utils.feature_loader import FeatureLoader
 
-# %%
-########################################################
-# Setup and Configuration
-########################################################
 
-# Setup MLflow
-setup_mlflow()
-client = mlflow.MlflowClient()
-
-print("✅ MLflow setup complete")
-print(f"MLflow tracking URI: {mlflow.get_tracking_uri()}")
-
-# %%
-########################################################
-# Model Loading Class
-########################################################
-
-class ModelUser:
-    """Class for loading and using registered MLflow models"""
+class StrategyPredictor:
+    """Unified interface for loading and using any registered strategy model."""
     
-    def __init__(self):
-        self.client = mlflow.MlflowClient()
-        
-    def list_registered_models(self) -> pd.DataFrame:
-        """List all registered models with their info"""
-        try:
-            models = self.client.search_registered_models()
-            
-            model_data = []
-            for model in models:
-                # Get latest version
-                latest_versions = self.client.get_latest_versions(model.name, stages=["None"])
-                if latest_versions:
-                    version = latest_versions[0]
-                    model_data.append({
-                        'name': model.name,
-                        'version': version.version,
-                        'stage': version.current_stage,
-                        'creation_time': version.creation_timestamp,
-                        'description': model.description or 'No description'
-                    })
-            
-            return pd.DataFrame(model_data)
-            
-        except Exception as e:
-            print(f"Error listing models: {e}")
-            return pd.DataFrame()
-    
-    def load_model(self, asset: str, strategy: str, version: str = "latest") -> mlflow.pyfunc.PyFuncModel:
+    def __init__(self, model_name: str, version: str = "latest"):
         """
-        Load a registered model by asset-strategy combination
+        Initialize predictor with a registered model.
         
         Args:
-            asset: Asset name (e.g., 'bitcoin')
-            strategy: Strategy name (e.g., 'sma_crossover')
-            version: Model version ('latest', 'staging', 'production', or specific number)
-        
-        Returns:
-            Loaded MLflow model
+            model_name: Name of the registered model
+            version: Version to load ("latest", "1", "2", etc.)
         """
-        model_name = f"{asset}_{strategy}"
-        
-        try:
-            if version in ['latest', 'staging', 'production']:
-                model_uri = f"models:/{model_name}/{version}"
-            else:
-                model_uri = f"models:/{model_name}/{version}"
-            
-            model = mlflow.pyfunc.load_model(model_uri)
-            print(f"✅ Loaded model: {model_name} (version: {version})")
-            
-            return model
-            
-        except Exception as e:
-            print(f"❌ Failed to load model {model_name}: {e}")
-            return None
+        self.model_name = model_name
+        self.version = version
+        self.model = None
+        self.model_info = None
+        self._load_model()
     
-    def get_model_info(self, asset: str, strategy: str) -> Dict:
-        """Get detailed information about a registered model"""
-        model_name = f"{asset}_{strategy}"
+    def _load_model(self):
+        """Load the model and its metadata."""
+        setup_mlflow()
         
-        try:
-            # Get model versions
-            versions = self.client.search_model_versions(f"name='{model_name}'")
-            
-            if not versions:
-                return {"error": f"Model {model_name} not found"}
-            
-            # Get latest version details
-            latest = versions[0]
-            
-            # Get the original run info
-            run = self.client.get_run(latest.run_id)
-            
-            return {
-                'model_name': model_name,
-                'latest_version': latest.version,
-                'current_stage': latest.current_stage,
-                'creation_time': latest.creation_timestamp,
-                'run_id': latest.run_id,
-                'metrics': dict(run.data.metrics),
-                'params': dict(run.data.params),
-                'tags': dict(run.data.tags)
-            }
-            
-        except Exception as e:
-            return {"error": str(e)}
-    
-    def get_historical_data(self, asset: str, lookback_days: int = 30, end_date: str = None) -> pd.DataFrame:
-        """
-        Get historical data for an asset
+        model_uri = f"models:/{self.model_name}/{self.version}"
+        print(f"🔄 Loading model: {model_uri}")
         
-        Args:
-            asset: Asset name
-            lookback_days: How many days back to load
-            end_date: End date (default: yesterday)
-        
-        Returns:
-            DataFrame with historical data
-        """
-        try:
-            # Default to yesterday if no end date specified
-            if end_date is None:
-                end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-            
-            # Calculate start date
-            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-            start_dt = end_dt - timedelta(days=lookback_days)
-            start_date = start_dt.strftime('%Y-%m-%d')
-            
-            # Load data using FeatureLoader
-            loader = FeatureLoader(start_date=start_date, end_date=end_date)
-            features_df = loader.build_feature_set(crypto_assets=[asset])
-            
-            print(f"✅ Loaded {len(features_df)} days of data for {asset}")
-            print(f"   Date range: {start_date} to {end_date}")
-            
-            return features_df
-            
-        except Exception as e:
-            print(f"❌ Failed to load historical data: {e}")
-            return pd.DataFrame()
-    
-    def get_yesterday_data(self, asset: str) -> pd.DataFrame:
-        """Get yesterday's data for diagnosis"""
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-        return self.get_historical_data(asset, lookback_days=100, end_date=yesterday)
-    
-    def diagnose(self, model: mlflow.pyfunc.PyFuncModel, data: pd.DataFrame, 
-                asset: str) -> Dict:
-        """
-        Run model diagnosis on historical data
-        
-        Args:
-            model: Loaded MLflow model
-            data: Historical data DataFrame
-            asset: Asset name for column identification
-        
-        Returns:
-            Dictionary with diagnosis results
-        """
-        try:
-            # Get the latest available data point
-            if data.empty:
-                return {"error": "No data available"}
-            
-            # For rule-based models, we might need to recreate the strategy signals
-            # This is a simplified approach - you may need to adapt based on your model
-            
-            # Get the last available data point(s)
-            recent_data = data.tail(50)  # Get last 50 days for signal calculation
-            
-            if hasattr(model, 'predict'):
-                # Try to get predictions
-                try:
-                    predictions = model.predict(recent_data)
-                    latest_signal = predictions[-1] if len(predictions) > 0 else None
-                except Exception as e:
-                    return {"error": f"Prediction failed: {e}"}
-            else:
-                return {"error": "Model does not support predictions"}
-            
-            # Get latest price data
-            price_col = f"{asset}_close"
-            latest_price = recent_data[price_col].iloc[-1] if price_col in recent_data.columns else None
-            latest_date = recent_data.index[-1] if hasattr(recent_data.index, '__getitem__') else None
-            
-            return {
-                'asset': asset,
-                'date': str(latest_date),
-                'price': float(latest_price) if latest_price is not None else None,
-                'signal': int(latest_signal) if latest_signal is not None else None,
-                'signal_interpretation': self._interpret_signal(latest_signal),
-                'data_points_used': len(recent_data)
-            }
-            
-        except Exception as e:
-            return {"error": str(e)}
-    
-    def _interpret_signal(self, signal) -> str:
-        """Interpret numerical signal into readable format"""
-        if signal is None:
-            return "No signal"
-        elif signal > 0:
-            return "BUY/LONG"
-        elif signal < 0:
-            return "SELL/SHORT"
-        else:
-            return "HOLD/FLAT"
-    
-    def get_signal_for_date(self, asset: str, strategy: str, date: str) -> Dict:
-        """
-        Get trading signal for a specific date
-        
-        Args:
-            asset: Asset name
-            strategy: Strategy name
-            date: Date in YYYY-MM-DD format
-        
-        Returns:
-            Dictionary with signal information
-        """
         try:
             # Load model
-            model = self.load_model(asset, strategy)
-            if model is None:
-                return {"error": "Failed to load model"}
+            self.model = mlflow.pyfunc.load_model(model_uri)
             
-            # Get historical data up to that date (with some lookback)
-            end_dt = datetime.strptime(date, '%Y-%m-%d')
-            start_dt = end_dt - timedelta(days=100)  # 100 days lookback
+            # Get model version info for metadata
+            client = mlflow.MlflowClient()
+            if self.version == "latest":
+                versions = client.search_model_versions(f"name='{self.model_name}'")
+                latest_version = max(versions, key=lambda x: int(x.version))
+                self.model_info = latest_version
+            else:
+                self.model_info = client.get_model_version(self.model_name, self.version)
             
-            data = self.get_historical_data(
-                asset, 
-                lookback_days=100, 
-                end_date=date
-            )
-            
-            # Run diagnosis
-            result = self.diagnose(model, data, asset)
-            result['requested_date'] = date
-            
-            return result
+            print(f"✅ Model loaded successfully!")
+            print(f"   Model: {self.model_name}")
+            print(f"   Version: {self.model_info.version}")
+            print(f"   Tags: {self.model_info.tags}")
             
         except Exception as e:
-            return {"error": str(e)}
-
-# %%
-########################################################
-# Usage Examples
-########################################################
-
-# Initialize the model user
-model_user = ModelUser()
-
-# Configuration - Change these as needed
-TARGET_ASSET = 'bitcoin'        # Change this
-TARGET_STRATEGY = 'sma_crossover'   # Change this
-
-print(f"🎯 Target: {TARGET_ASSET} + {TARGET_STRATEGY}")
-
-# %%
-########################################################
-# List Available Models
-########################################################
-
-print("📋 Available registered models:")
-registered_models = model_user.list_registered_models()
-
-if len(registered_models) > 0:
-    print(registered_models.to_string(index=False))
-else:
-    print("❌ No registered models found")
-
-# %%
-########################################################
-# Load and Inspect Model
-########################################################
-
-# Get model information
-model_info = model_user.get_model_info(TARGET_ASSET, TARGET_STRATEGY)
-
-if 'error' not in model_info:
-    print(f"\n📊 Model Information:")
-    print(f"Name: {model_info['model_name']}")
-    print(f"Version: {model_info['latest_version']}")
-    print(f"Stage: {model_info['current_stage']}")
-    print(f"Strategy Type: {model_info['tags'].get('strategy_type', 'Unknown')}")
+            print(f"❌ Error loading model: {e}")
+            raise
     
-    # Show key performance metrics
-    print(f"\n📈 Performance Metrics:")
-    key_metrics = ['wf_sharpe_ratio', 'wf_profit_factor', 'wf_total_return', 'wf_max_drawdown']
-    for metric in key_metrics:
-        value = model_info['metrics'].get(metric)
-        if value is not None:
-            print(f"  {metric}: {value:.4f}")
-else:
-    print(f"❌ Model info error: {model_info['error']}")
-
-# %%
-########################################################
-# Load Model and Get Yesterday's Signal
-########################################################
-
-# Load the model
-model = model_user.load_model(TARGET_ASSET, TARGET_STRATEGY)
-
-if model is not None:
-    print(f"\n🔍 Running diagnosis on yesterday's data...")
-    
-    # Get yesterday's data
-    yesterday_data = model_user.get_yesterday_data(TARGET_ASSET)
-    
-    if not yesterday_data.empty:
-        # Run diagnosis
-        diagnosis = model_user.diagnose(model, yesterday_data, TARGET_ASSET)
+    def predict(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Generate predictions from input data.
         
-        if 'error' not in diagnosis:
-            print(f"📅 Diagnosis Results:")
-            print(f"  Date: {diagnosis['date']}")
-            print(f"  Asset: {diagnosis['asset']}")
-            print(f"  Price: ${diagnosis['price']:.2f}" if diagnosis['price'] else "  Price: N/A")
-            print(f"  Signal: {diagnosis['signal']}")
-            print(f"  Interpretation: {diagnosis['signal_interpretation']}")
-            print(f"  Data points used: {diagnosis['data_points_used']}")
+        Args:
+            data: DataFrame with required features for the strategy
+            
+        Returns:
+            DataFrame with signals and predictions
+        """
+        if self.model is None:
+            raise ValueError("Model not loaded")
+        
+        print(f"📊 Making predictions on {len(data)} samples...")
+        
+        # Prepare data based on model signature
+        prepared_data = self._prepare_data_for_model(data)
+        
+        try:
+            predictions = self.model.predict(prepared_data)
+            
+            # Convert to DataFrame if numpy array
+            if hasattr(predictions, 'shape') and len(predictions.shape) == 1:
+                predictions = pd.DataFrame({'signal': predictions}, index=data.index)
+            elif isinstance(predictions, pd.DataFrame):
+                predictions.index = data.index
+            
+            print(f"✅ Generated {len(predictions)} predictions")
+            return predictions
+            
+        except Exception as e:
+            print(f"❌ Prediction error: {e}")
+            raise
+    
+    def _prepare_data_for_model(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Prepare data based on model's expected signature."""
+        
+        # Get model signature from metadata
+        signature = None
+        if hasattr(self.model, 'metadata') and hasattr(self.model.metadata, 'signature'):
+            signature = self.model.metadata.signature
+        
+        if signature is None:
+            print("⚠️  No model signature found, using data as-is")
+            return data
+        
+        # Extract column names from schema  
+        expected_columns = [col.name for col in signature.inputs.inputs]
+        print(f"📋 Model expects columns: {expected_columns}")
+        print(f"📋 Data has columns: {list(data.columns)}")
+        
+        # Check if this looks like an ML model (needs engineered features)
+        ml_features = ['returns_1d', 'returns_7d', 'price_vs_sma7', 'price_vs_sma21', 'volume_ratio', 'volatility_7d']
+        needs_feature_engineering = any(feat in expected_columns for feat in ml_features)
+        
+        if needs_feature_engineering:
+            print("🔧 Creating ML features from raw data...")
+            return self._create_ml_features(data)
         else:
-            print(f"❌ Diagnosis error: {diagnosis['error']}")
+            print("📊 Using raw OHLC data for rules-based model")
+            # Filter to only expected columns
+            available_columns = [col for col in expected_columns if col in data.columns]
+            return data[available_columns]
+    
+    def _create_ml_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Create ML features from raw OHLC data."""
+        df = data.copy()
+        
+        # Extract asset name from column names  
+        asset = None
+        for col in df.columns:
+            if '_close' in col:
+                asset = col.replace('_close', '')
+                break
+        
+        if asset is None:
+            raise ValueError("Cannot determine asset from column names")
+        
+        close_col = f"{asset}_close"
+        volume_col = f"{asset}_total_volume"
+        
+        # Basic price features
+        df['returns_1d'] = df[close_col].pct_change(1).fillna(0)
+        df['returns_7d'] = df[close_col].pct_change(7).fillna(0)
+        
+        # Moving averages  
+        df['sma_7'] = df[close_col].rolling(7, min_periods=1).mean()
+        df['sma_21'] = df[close_col].rolling(21, min_periods=1).mean()
+        
+        # Price ratios
+        df['price_vs_sma7'] = (df[close_col] / df['sma_7'] - 1).fillna(0)
+        df['price_vs_sma21'] = (df[close_col] / df['sma_21'] - 1).fillna(0)
+        
+        # Volume features
+        if volume_col in df.columns:
+            df['volume_sma_7'] = df[volume_col].rolling(7, min_periods=1).mean()
+            df['volume_ratio'] = (df[volume_col] / df['volume_sma_7']).fillna(1.0)
+        else:
+            df['volume_ratio'] = 1.0
+        
+        # Volatility
+        df['volatility_7d'] = df['returns_1d'].rolling(7, min_periods=1).std().fillna(0)
+        
+        # Return only the ML features
+        ml_features = ['returns_1d', 'returns_7d', 'price_vs_sma7', 'price_vs_sma21', 'volume_ratio', 'volatility_7d']
+        return df[ml_features]
+    
+    def get_model_info(self) -> dict:
+        """Get model metadata."""
+        if self.model_info is None:
+            return {}
+        
+        return {
+            'name': self.model_name,
+            'version': self.model_info.version,
+            'tags': self.model_info.tags,
+            'creation_timestamp': self.model_info.creation_timestamp,
+            'run_id': self.model_info.run_id
+        }
+
+
+def create_sample_data(asset: str = 'bitcoin', samples: int = 10) -> pd.DataFrame:
+    """Create sample data for testing predictions."""
+    import numpy as np
+    np.random.seed(42)
+    
+    # Create realistic sample data (using integers to match model signature)
+    base_price = 50000
+    prices_high = (base_price + np.random.uniform(0, 2000, samples)).astype(int)
+    prices_low = (base_price - np.random.uniform(0, 2000, samples)).astype(int)
+    prices_close = (base_price + np.random.uniform(-1000, 1000, samples)).astype(int)
+    
+    data = {
+        f'{asset}_high': prices_high,
+        f'{asset}_low': prices_low,
+        f'{asset}_close': prices_close,
+        f'{asset}_total_volume': np.random.uniform(800, 1500, samples).astype(int)
+    }
+    
+    dates = pd.date_range('2024-01-01', periods=samples, freq='D')
+    return pd.DataFrame(data, index=dates)
+
+
+def main():
+    """Main function for command-line usage."""
+    parser = argparse.ArgumentParser(description='Use registered MLflow models for predictions')
+    parser.add_argument('--model-name', required=True, help='Name of registered model')
+    parser.add_argument('--version', default='latest', help='Model version (default: latest)')
+    parser.add_argument('--data-file', help='Path to input data CSV file')
+    parser.add_argument('--sample-data', action='store_true', help='Use sample data for testing')
+    parser.add_argument('--asset', default='bitcoin', help='Asset for sample data')
+    parser.add_argument('--samples', type=int, default=10, help='Number of sample data points')
+    
+    args = parser.parse_args()
+    
+    print(f"🎯 Using model: {args.model_name} (version: {args.version})")
+    
+    # Initialize predictor
+    predictor = StrategyPredictor(args.model_name, args.version)
+    
+    # Load data
+    if args.data_file:
+        print(f"📂 Loading data from: {args.data_file}")
+        data = pd.read_csv(args.data_file, index_col=0, parse_dates=True)
+    elif args.sample_data:
+        print(f"🧪 Creating sample data for {args.asset}...")
+        data = create_sample_data(args.asset, args.samples)
     else:
-        print("❌ No yesterday data available")
-else:
-    print("❌ Could not load model")
-
-# %%
-########################################################
-# Historical Signal Analysis
-########################################################
-
-if model is not None:
-    print(f"\n📊 Historical Signal Analysis (Last 10 days):")
+        print("❌ Please provide --data-file or use --sample-data")
+        sys.exit(1)
     
-    # Get signals for last 10 days
-    for i in range(10):
-        days_back = i + 1
-        target_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
-        
-        result = model_user.get_signal_for_date(TARGET_ASSET, TARGET_STRATEGY, target_date)
-        
-        if 'error' not in result:
-            signal_str = f"{result['signal']} ({result['signal_interpretation']})"
-            price_str = f"${result['price']:.2f}" if result['price'] else "N/A"
-            print(f"  {target_date}: {price_str} -> {signal_str}")
-        else:
-            print(f"  {target_date}: Error - {result['error']}")
+    print(f"📊 Input data shape: {data.shape}")
+    print(f"📊 Input columns: {list(data.columns)}")
+    
+    # Make predictions
+    predictions = predictor.predict(data)
+    
+    print(f"\n📈 PREDICTIONS")
+    print("=" * 50)
+    print(predictions.tail(min(10, len(predictions))))
+    
+    # Show model info
+    info = predictor.get_model_info()
+    print(f"\n📋 MODEL INFO")
+    print("=" * 50)
+    for key, value in info.items():
+        if key != 'tags':
+            print(f"{key}: {value}")
+    
+    print(f"\n🎉 Prediction complete!")
 
-# %%
-########################################################
-# Summary and Next Steps
-########################################################
 
-print("\n" + "="*60)
-print("📋 USAGE SUMMARY")
-print("="*60)
+if __name__ == "__main__":
+    main()
 
-print(f"Target Asset: {TARGET_ASSET}")
-print(f"Target Strategy: {TARGET_STRATEGY}")
-
-if 'error' not in model_info:
-    print(f"Model Loaded: ✅ {model_info['model_name']} v{model_info['latest_version']}")
-else:
-    print(f"Model Status: ❌ {model_info['error']}")
-
-print(f"\n💡 Key Functions:")
-print(f"1. Load model: model_user.load_model('{TARGET_ASSET}', '{TARGET_STRATEGY}')")
-print(f"2. Get yesterday data: model_user.get_yesterday_data('{TARGET_ASSET}')")
-print(f"3. Run diagnosis: model_user.diagnose(model, data, '{TARGET_ASSET}')")
-print(f"4. Get specific date signal: model_user.get_signal_for_date('{TARGET_ASSET}', '{TARGET_STRATEGY}', '2024-01-15')")
-
-print(f"\n🎯 To use different models:")
-print(f"   - Change TARGET_ASSET and TARGET_STRATEGY variables")
-print(f"   - Re-run the cells")
-
-# %%

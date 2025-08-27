@@ -1,0 +1,13 @@
+{
+  "strategy_name": "hilo_activator",
+  "strategy_type": "trend_following",
+  "implementation_type": "rules_based",
+  "asset": "bitcoin",
+  "parameters": {
+    "period": 10,
+    "shift": 1,
+    "ma_type": "sma"
+  },
+  "feature_cols": [],
+  "strategy_class": "strategies.rules_based.hilo_activator.HiloActivatorStrategy"
+}

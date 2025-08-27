@@ -1,0 +1,11 @@
+{
+  "strategy_name": "bollinger_bands",
+  "strategy_type": "mean_reversion",
+  "implementation_type": "rules_based",
+  "asset": "bitcoin",
+  "optimized_parameters": {
+    "period": 20,
+    "std_multiplier": 2.0
+  },
+  "parameter_ranges": {}
+}

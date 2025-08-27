@@ -6,18 +6,33 @@ import os
 import importlib
 from pathlib import Path
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Handle both module execution (python -m experiments.generate_run) and direct execution
+if __name__ == "__main__":
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import setup_mlflow, create_experiment
-from utils.feature_loader import FeatureLoader
-from utils.feature_engineering import calculate_log_returns
-from utils.validation import in_sample_permutation_test, walk_forward_validation, walk_forward_permutation_test
-from utils.evaluation_metrics import calculate_all_metrics
-from utils.plotting import save_plots_for_mlflow
-from utils.transaction_costs import apply_transaction_costs, adjust_strategy_returns_for_costs
-from utils.triple_barrier import add_triple_barrier_labels, calculate_metrics_with_labels
+try:
+    # Try relative imports first (for module execution)
+    from .config import setup_mlflow, create_experiment
+    from .utils.feature_loader import FeatureLoader
+    from .utils.feature_engineering import calculate_log_returns
+    from .utils.validation import in_sample_permutation_test, walk_forward_validation, walk_forward_permutation_test
+    from .utils.evaluation_metrics import calculate_all_metrics
+    from .utils.plotting import save_plots_for_mlflow
+    from .utils.transaction_costs import apply_transaction_costs, adjust_strategy_returns_for_costs
+    from .utils.triple_barrier import add_triple_barrier_labels, calculate_metrics_with_labels
+except ImportError:
+    # Fall back to absolute imports (for direct execution)
+    from config import setup_mlflow, create_experiment
+    from utils.feature_loader import FeatureLoader
+    from utils.feature_engineering import calculate_log_returns
+    from utils.validation import in_sample_permutation_test, walk_forward_validation, walk_forward_permutation_test
+    from utils.evaluation_metrics import calculate_all_metrics
+    from utils.plotting import save_plots_for_mlflow
+    from utils.transaction_costs import apply_transaction_costs, adjust_strategy_returns_for_costs
+    from utils.triple_barrier import add_triple_barrier_labels, calculate_metrics_with_labels
 import mlflow
 import numpy as np
+import pandas as pd
 from datetime import datetime
 
 
@@ -43,13 +58,18 @@ class RunGenerator:
         
         strategy_type, strategy_file = self.strategy_name.split(':', 1)
         
-        # Build module path
-        module_path = f"strategies.{strategy_type}.{strategy_file}"
-        
+        # Build module path - handle both module execution and direct execution
         try:
-            module = importlib.import_module(module_path)
+            # Try relative import first (for module execution)
+            module_path = f".strategies.{strategy_type}.{strategy_file}"
+            module = importlib.import_module(module_path, package='experiments')
         except ImportError:
-            raise ValueError(f"Strategy module '{module_path}' not found")
+            try:
+                # Try absolute import (for direct execution)
+                module_path = f"strategies.{strategy_type}.{strategy_file}"
+                module = importlib.import_module(module_path)
+            except ImportError:
+                raise ValueError(f"Strategy module '{module_path}' not found")
         
         # Find strategy class in the module (look for classes ending with 'Strategy')
         strategy_class = None
@@ -120,8 +140,10 @@ class RunGenerator:
         
         with mlflow.start_run(run_name=unique_run_name):
             
-            # Set strategy type and asset as MLflow tags
-            mlflow.set_tag("strategy_type", self.strategy.strategy_type)
+            # Set strategy tags and asset as MLflow tags
+            mlflow.set_tag("strategy_type", self.strategy.strategy_type)  # Algorithmic approach (trend_following, mean_reversion)
+            mlflow.set_tag("strategy_basis", self.strategy_type)  # Implementation approach (rules_based, ml_based, meta_model)
+            mlflow.set_tag("strategy", self.clean_strategy_name)  # Strategy name (e.g., sma_crossover)
             mlflow.set_tag("asset", self.asset_name)
             
             print(f"\n{'='*60}")
@@ -204,6 +226,32 @@ class RunGenerator:
             print(f"\n--- Step 4: Calculate Strategy Signals ---")
             print(f"📈 Generating strategy signals...")
             strategy_data = self.strategy.calculate_signals(self.features_df, best_params)
+            
+            # Save strategy as MLflow model artifact
+            print(f"💾 Saving strategy as MLflow model...")
+            model_uri = self.strategy.save_model(best_params)
+            print(f"✅ Model saved: {model_uri}")
+            
+            
+            # For ML strategies, ensure model is fitted with optimized parameters
+            if self.strategy.implementation_type == 'ml_based' and hasattr(self.strategy, 'fit'):
+                print(f"🧠 Training ML model with optimized parameters...")
+                
+                # Get training data and labels for ML model fitting
+                train_strategy_data = strategy_data.iloc[:train_split_idx]
+                
+                # Use triple barrier labels if available, otherwise create simple momentum labels
+                price_col = f"{self.asset_name}_close"
+                future_returns = train_strategy_data[price_col].shift(-5) / train_strategy_data[price_col] - 1
+                ml_labels = pd.Series(0, index=train_strategy_data.index)
+                ml_labels[future_returns > 0.02] = 1  # Long if 2% gain in 5 periods
+                ml_labels[future_returns < -0.02] = -1  # Short if 2% loss in 5 periods
+                
+                # Fit the ML model with best parameters
+                self.strategy.fit(train_strategy_data, ml_labels, **best_params)
+                
+                # Regenerate signals with fitted model
+                strategy_data = self.strategy.calculate_signals(self.features_df, best_params)
             
             # Calculate strategy returns
             return_col = f"{self.asset_name}_log_return_1"
@@ -578,13 +626,15 @@ class RunGenerator:
             except Exception as e:
                 print(f"  ⚠️  Warning: Could not generate all plots: {e}")
             
+            
             # Create comprehensive summary and log as artifact
             import json
             summary = {
                 'run_info': {
                     'run_id': mlflow.active_run().info.run_id,
                     'experiment_name': self.clean_strategy_name,
-                    'strategy_type': self.strategy_type,
+                    'strategy_type': self.strategy.strategy_type,  # Algorithmic approach
+                    'strategy_basis': self.strategy_type,  # Implementation approach
                     'asset': self.asset_name,
                     'start_date': self.start_date,
                     'end_date': self.end_date,
@@ -597,6 +647,10 @@ class RunGenerator:
                 'validation': {
                     'permutation_results': {k: v for k, v in permutation_results.items() if k not in ['permuted_returns', 'original_returns']},
                     'walk_forward_permutation': wf_perm_results
+                },
+                'deployment': {
+                    'model_artifact_path': 'model',
+                    'ready_for_registration': True
                 }
             }
             
@@ -624,7 +678,15 @@ class RunGenerator:
     @staticmethod
     def discover_strategies():
         """Discover all available strategies by scanning directories."""
-        strategies_dir = Path(__file__).parent.parent / 'strategies'
+        # Handle both module execution and direct execution
+        current_file_path = Path(__file__).resolve()
+        if current_file_path.parent.name == 'experiments':
+            # Running from experiments directory
+            strategies_dir = current_file_path.parent / 'strategies'
+        else:
+            # Fallback to relative path
+            strategies_dir = current_file_path.parent.parent / 'strategies'
+        
         available_strategies = []
         
         for strategy_type_dir in strategies_dir.iterdir():

@@ -1,0 +1,22 @@
+artifact_path: /Users/valter.rebelo/MissionControl/mlruns/18/models/m-ec862def1d6a4b6b9fbb54dc68e64d8f/artifacts
+flavors:
+  catboost:
+    catboost_version: 1.2.8
+    code: null
+    data: model.cb
+    model_type: CatBoostClassifier
+    save_format: cbm
+  python_function:
+    data: model.cb
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.catboost
+    python_version: 3.11.5
+mlflow_version: 3.1.4
+model_id: m-ec862def1d6a4b6b9fbb54dc68e64d8f
+model_size_bytes: 173720
+model_uuid: m-ec862def1d6a4b6b9fbb54dc68e64d8f
+prompts: null
+run_id: b8240370219549f9bbc3bbb880e9f6fa
+utc_time_created: '2025-08-27 18:20:24.607216'

@@ -1,0 +1,12 @@
+{
+  "strategy_name": "sma_crossover",
+  "strategy_type": "trend_following",
+  "implementation_type": "rules_based",
+  "asset": "bitcoin",
+  "optimized_parameters": {
+    "short_window": 10,
+    "long_window": 30
+  },
+  "parameter_ranges": {},
+  "strategy_class": "strategies.rules_based.sma_crossover.SMACrossoverStrategy"
+}

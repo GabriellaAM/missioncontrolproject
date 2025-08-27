@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any
 import pandas as pd
+import mlflow
+import mlflow.pyfunc
 
 
 class BaseStrategy(ABC):
@@ -37,3 +39,149 @@ class BaseStrategy(ABC):
                  n_trials: int = 1000, **kwargs) -> Dict:
         """Optimize strategy parameters."""
         pass
+    
+    def save_model(self, params: Dict) -> str:
+        """Save model using the most appropriate MLflow flavor."""
+        
+        # Smart flavor selection
+        if hasattr(self, 'model') and self.model is not None:
+            model_type = str(type(self.model)).lower()
+            
+            if 'catboost' in model_type:
+                return self._save_catboost_model(params)
+            elif 'sklearn' in model_type:
+                return self._save_sklearn_model(params)
+        
+        # Default to PyFunc wrapper (for rules-based or unknown models)
+        return self._save_pyfunc_model(params)
+    
+    def _save_catboost_model(self, params: Dict) -> str:
+        """Save CatBoost model using native flavor."""
+        import mlflow.catboost
+        from mlflow.models import infer_signature
+        
+        # Get input example and signature
+        input_example = self.get_input_example() if hasattr(self, 'get_input_example') else None
+        signature = None
+        
+        if input_example is not None:
+            try:
+                predictions = self.model.predict(input_example)
+                signature = infer_signature(input_example, predictions)
+                print(f"✅ Generated MLflow signature with {len(input_example)} samples")
+            except Exception as e:
+                print(f"⚠️  Could not generate signature: {e}")
+        
+        # Save CatBoost model
+        model_info = mlflow.catboost.log_model(
+            self.model,
+            "model",
+            signature=signature,
+            input_example=input_example
+        )
+        
+        # Save strategy metadata
+        self._save_strategy_config(params)
+        
+        current_run = mlflow.active_run()
+        return f"runs:/{current_run.info.run_id}/model" if current_run else model_info.model_uri
+    
+    def _save_sklearn_model(self, params: Dict) -> str:
+        """Save sklearn model using native flavor."""
+        import mlflow.sklearn
+        from mlflow.models import infer_signature
+        
+        # Get input example and signature
+        input_example = self.get_input_example() if hasattr(self, 'get_input_example') else None
+        signature = None
+        
+        if input_example is not None:
+            try:
+                predictions = self.model.predict(input_example)
+                signature = infer_signature(input_example, predictions)
+                print(f"✅ Generated MLflow signature with {len(input_example)} samples")
+            except Exception as e:
+                print(f"⚠️  Could not generate signature: {e}")
+        
+        # Save sklearn model
+        model_info = mlflow.sklearn.log_model(
+            self.model,
+            "model",
+            signature=signature,
+            input_example=input_example
+        )
+        
+        # Save strategy metadata
+        self._save_strategy_config(params)
+        
+        current_run = mlflow.active_run()
+        return f"runs:/{current_run.info.run_id}/model" if current_run else model_info.model_uri
+    
+    def _save_pyfunc_model(self, params: Dict) -> str:
+        """Save as PyFunc model (for rules-based or fallback)."""
+        
+        class StrategyModel(mlflow.pyfunc.PythonModel):
+            def __init__(self, strategy_instance, strategy_params):
+                self.strategy = strategy_instance
+                self.strategy_params = strategy_params
+            
+            def predict(self, context, model_input):
+                # Return only the signal column for consistency
+                result = self.strategy.calculate_signals(model_input, self.strategy_params)
+                return result[['signal']] if 'signal' in result.columns else result
+        
+        # Create wrapper
+        model = StrategyModel(self, params)
+        
+        # Try to get input example for signature
+        input_example = None
+        signature = None
+        
+        if hasattr(self, 'get_input_example'):
+            try:
+                input_example = self.get_input_example()
+                sample_output = model.predict(None, input_example)
+                signature = mlflow.models.infer_signature(input_example, sample_output)
+                print(f"✅ Generated PyFunc signature")
+            except Exception as e:
+                print(f"⚠️  Could not generate signature: {e}")
+        
+        # Save PyFunc model
+        model_info = mlflow.pyfunc.log_model(
+            artifact_path="model",
+            python_model=model,
+            signature=signature,
+            input_example=input_example
+        )
+        
+        # Save strategy metadata
+        self._save_strategy_config(params)
+        
+        current_run = mlflow.active_run()
+        return f"runs:/{current_run.info.run_id}/model" if current_run else model_info.model_uri
+    
+    def _save_strategy_config(self, params: Dict):
+        """Save strategy configuration as artifact."""
+        import json
+        import tempfile
+        import os
+        
+        strategy_config = {
+            'strategy_name': self.name,
+            'strategy_type': self.strategy_type,
+            'implementation_type': getattr(self, 'implementation_type', 'unknown'),
+            'asset': getattr(self, 'asset', 'bitcoin'),
+            'parameters': params,
+            'feature_cols': getattr(self, 'feature_cols', []),
+            'strategy_class': self.__class__.__module__ + '.' + self.__class__.__name__
+        }
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(strategy_config, f, indent=2, default=str)
+            temp_path = f.name
+        
+        try:
+            # Just log the artifact without specifying artifact_path to avoid directory creation
+            mlflow.log_artifact(temp_path)
+        finally:
+            os.unlink(temp_path)

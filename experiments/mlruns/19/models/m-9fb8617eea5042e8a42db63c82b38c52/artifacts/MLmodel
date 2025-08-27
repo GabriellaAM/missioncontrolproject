@@ -1,0 +1,37 @@
+artifact_path: /Users/valter.rebelo/MissionControl/experiments/mlruns/19/models/m-9fb8617eea5042e8a42db63c82b38c52/artifacts
+flavors:
+  catboost:
+    catboost_version: 1.2.8
+    code: null
+    data: model.cb
+    model_type: CatBoostClassifier
+    save_format: cbm
+  python_function:
+    data: model.cb
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.catboost
+    python_version: 3.11.5
+is_signature_from_type_hint: false
+mlflow_version: 3.1.4
+model_id: m-9fb8617eea5042e8a42db63c82b38c52
+model_size_bytes: 174181
+model_uuid: m-9fb8617eea5042e8a42db63c82b38c52
+prompts: null
+run_id: 366c6432c885433db925b64b5a2e3ca9
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+signature:
+  inputs: '[{"type": "double", "name": "returns_1d", "required": true}, {"type": "double",
+    "name": "returns_7d", "required": true}, {"type": "double", "name": "price_vs_sma7",
+    "required": true}, {"type": "double", "name": "price_vs_sma21", "required": true},
+    {"type": "double", "name": "volume_ratio", "required": true}, {"type": "double",
+    "name": "volatility_7d", "required": true}]'
+  outputs: '[{"type": "tensor", "tensor-spec": {"dtype": "int64", "shape": [-1]}}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2025-08-27 22:24:53.776013'

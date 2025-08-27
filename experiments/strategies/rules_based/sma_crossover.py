@@ -22,6 +22,11 @@ class SMACrossoverStrategy(BaseStrategy):
         """SMA Crossover is a trend-following strategy"""
         return "trend_following"
     
+    @property
+    def implementation_type(self) -> str:
+        """SMA Crossover is a rules-based strategy"""
+        return "rules_based"
+    
     def get_required_features(self) -> Dict[str, Any]:
         """SMA crossover only needs crypto asset price data."""
         return {

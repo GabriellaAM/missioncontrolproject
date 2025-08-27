@@ -22,6 +22,11 @@ class EMACrossoverStrategy(BaseStrategy):
         """EMA Crossover is a trend-following strategy"""
         return "trend_following"
     
+    @property
+    def implementation_type(self) -> str:
+        """EMA Crossover is a rules-based strategy"""
+        return "rules_based"
+    
     def get_required_features(self) -> Dict[str, Any]:
         """EMA crossover only needs crypto asset price data."""
         return {

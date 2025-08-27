@@ -1,0 +1,64 @@
+{
+  "run_info": {
+    "run_id": "381b0a485b314b47a2986cbc41a4138a",
+    "experiment_name": "hilo_activator",
+    "strategy_type": "trend_following",
+    "strategy_basis": "rules_based",
+    "asset": "bitcoin",
+    "start_date": "2022-01-01",
+    "end_date": "2024-12-31",
+    "train_test_split": 0.8
+  },
+  "optimization": {
+    "best_params": {
+      "period": 10,
+      "shift": 3,
+      "ma_type": "sma"
+    },
+    "optimization_score": 0.07359502003267875
+  },
+  "validation": {
+    "permutation_results": {
+      "profit_factor": {
+        "original_value": 1.0041204000287467,
+        "permuted_values": "[1.05685522 0.87193575]",
+        "p_value": 0.5,
+        "percentile": 50.0,
+        "passes_test": "False",
+        "n_permutations": 2,
+        "permuted_mean": 0.9643954839332963,
+        "permuted_std": 0.09245973844165445
+      },
+      "sharpe_ratio": {
+        "original_value": 0.026169738701136543,
+        "permuted_values": "[ 0.35776834 -0.88784162]",
+        "p_value": 0.5,
+        "percentile": 50.0,
+        "passes_test": "False",
+        "n_permutations": 2,
+        "permuted_mean": -0.2650366414114925,
+        "permuted_std": 0.6228049786170151
+      }
+    },
+    "walk_forward_permutation": {
+      "sharpe": {
+        "original": 1.9131480777641132,
+        "permuted_values": "[-0.12586176  1.41092897]",
+        "permuted_mean": 0.6425336018970215,
+        "permuted_std": 0.7683953647794465,
+        "p_value": 0.0,
+        "passes_test": "True",
+        "n_permutations": 2
+      },
+      "profit_factor": {
+        "original": 1.3185569977089575,
+        "permuted_values": "[0.98072389 1.24911208]",
+        "permuted_mean": 1.1149179866387449,
+        "permuted_std": 0.1341940942082665,
+        "p_value": 0.0,
+        "passes_test": "True",
+        "n_permutations": 2
+      }
+    }
+  }
+}

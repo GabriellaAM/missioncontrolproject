@@ -10,14 +10,15 @@ import numpy as np
 
 class HiloActivatorStrategy(BaseStrategy):
     """
-    Long-only trend-following strategy using the Hilo Activator (MAs of shifted highs/lows).
+    Long/Short trend-following strategy using the Hilo Activator (MAs of shifted highs/lows).
 
     Convention:
       - +1 = long (in position)
-      -  0 = flat (no position)
+      - -1 = short (in position)
+
     Rules:
       - Enter long when close > high_ma (start of bull trend)
-      - Exit / go flat when close < low_ma (start of bear trend)
+      - Enter short when close < low_ma (start of bear trend)
       - Between the bands, maintain previous position
     """
 
@@ -36,6 +37,11 @@ class HiloActivatorStrategy(BaseStrategy):
     def strategy_type(self) -> str:
         """Hilo Activator is a trend-following strategy"""
         return "trend_following"
+    
+    @property
+    def implementation_type(self) -> str:
+        """Hilo Activator is a rules-based strategy"""
+        return "rules_based"
 
     def get_required_features(self) -> Dict[str, Any]:
         """Hilo Activator needs OHLC data for the specified asset."""
@@ -52,7 +58,7 @@ class HiloActivatorStrategy(BaseStrategy):
 
         Steps:
         1) Calculate moving averages of shifted highs and lows
-        2) Signal: +1 if close > high_ma, 0 if close < low_ma, NaN if in-between
+        2) Signal: +1 if close > high_ma, -1 if close < low_ma, NaN if in-between
         3) Forward-fill to maintain position between bands
         """
         df = data.copy()
@@ -90,7 +96,7 @@ class HiloActivatorStrategy(BaseStrategy):
         signal = pd.Series(0, index=df.index)
         
         # Track current position state
-        in_position = False
+        in_position = 0  # 0 = flat, 1 = long, -1 = short
         
         for i in range(len(df)):
             if pd.isna(high_ma.iloc[i]) or pd.isna(low_ma.iloc[i]):
@@ -99,27 +105,27 @@ class HiloActivatorStrategy(BaseStrategy):
             elif df[close_col].iloc[i] > high_ma.iloc[i]:
                 # Breakout above high MA - go long
                 signal.iloc[i] = 1
-                in_position = True
+                in_position = 1
             elif df[close_col].iloc[i] < low_ma.iloc[i]:
-                # Break below low MA - exit
-                signal.iloc[i] = 0
-                in_position = False
+                # Break below low MA - go short
+                signal.iloc[i] = -1
+                in_position = -1
             else:
                 # Between bands - maintain previous position
-                signal.iloc[i] = 1 if in_position else 0
+                signal.iloc[i] = in_position
         
         signal = signal.astype(int)
 
         # Event flags for backtesting
-        enter_long = (df[close_col] > high_ma) & (signal.shift(1).fillna(0) == 0)
-        exit_long = (df[close_col] < low_ma) & (signal.shift(1).fillna(0) == 1)
+        enter_long = (df[close_col] > high_ma) & (signal.shift(1).fillna(0) != 1)
+        enter_short = (df[close_col] < low_ma) & (signal.shift(1).fillna(0) != -1)
 
         # Store results
         df['hilo_high_ma'] = high_ma
         df['hilo_low_ma'] = low_ma
         df['signal'] = signal
         df['enter_long'] = enter_long.astype(bool)
-        df['exit_long'] = exit_long.astype(bool)
+        df['enter_short'] = enter_short.astype(bool)
 
         return df
 
@@ -170,13 +176,22 @@ class HiloActivatorStrategy(BaseStrategy):
             'ma_type': {'type': 'categorical', 'choices': ['sma', 'ema']}
         }
 
+    def get_input_example(self) -> pd.DataFrame:
+        """Return sample input for MLflow signature."""
+        sample_data = {
+            f"{self.asset}_high": [50000, 51000, 49000],
+            f"{self.asset}_low": [48000, 49500, 47500], 
+            f"{self.asset}_close": [49500, 50500, 48500]
+        }
+        return pd.DataFrame(sample_data)
+
     def describe(self) -> str:
         return f"""
-        Hilo Activator Strategy (long-only) for {self.asset}:
+        Hilo Activator Strategy (long/short) for {self.asset}:
 
         - Calculates moving averages of highs and lows shifted by N periods.
         - **Enter long** when close > high_ma (bull trend start).
-        - **Exit / go flat** when close < low_ma (bear trend start).
+        - **Enter short** when close < low_ma (bear trend start).
         - Maintain position when the price is between the bands.
 
         Parameters:

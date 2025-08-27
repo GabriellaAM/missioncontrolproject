@@ -1,343 +1,228 @@
-# %%
-"""
-Model Registration Script
+#!/usr/bin/env python
 
-This script helps you review experimental runs and register the best performing models
-with proper asset-strategy naming and classification.
+import argparse
+import sys
+import os
+from datetime import datetime
 
-Usage:
-1. Run cells sequentially to review runs
-2. Select the best run for each asset-strategy combination
-3. Register with proper naming and tags
-"""
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import mlflow
 import mlflow.sklearn
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Optional
-import warnings
-warnings.filterwarnings('ignore')
-
 from config import setup_mlflow
+import importlib.util
 
-# %%
-########################################################
-# Setup and Configuration
-########################################################
 
-# Setup MLflow
-setup_mlflow()
-client = mlflow.MlflowClient()
-
-# Strategy type classification (for backward compatibility)
-STRATEGY_TYPES = {
-    'bollinger_bands': 'mean_reversion',
-    'rsi': 'mean_reversion', 
-    'mean_reversion': 'mean_reversion',
-    'sma_crossover': 'trend_following',
-    'ema_crossover': 'trend_following',
-    'macd': 'trend_following',
-    'momentum': 'trend_following',
-    'trend_following': 'trend_following'
-}
-
-print("✅ MLflow setup complete")
-print(f"MLflow tracking URI: {mlflow.get_tracking_uri()}")
-
-# %%
-########################################################
-# Asset & Strategy Selection
-########################################################
-
-# Available assets and strategies (modify as needed)
-AVAILABLE_ASSETS = ['bitcoin', 'ethereum', 'chainlink', 'solana']
-AVAILABLE_STRATEGIES = ['sma_crossover', 'bollinger_bands', 'ema_crossover', 'rsi', 'macd']
-
-# Configuration for this registration session
-TARGET_ASSET = 'bitcoin'  # Change this
-TARGET_STRATEGY = 'sma_crossover'  # Change this
-
-print(f"🎯 Target: {TARGET_ASSET} + {TARGET_STRATEGY}")
-print(f"📊 Strategy Type: {STRATEGY_TYPES.get(TARGET_STRATEGY, 'unknown')}")
-
-# %%
-########################################################
-# Review Available Experiments
-########################################################
-
-# List all experiments
-experiments = client.search_experiments()
-print("Available Experiments:")
-for exp in experiments:
-    if exp.name != "Default":
-        runs_count = len(mlflow.search_runs([exp.experiment_id]))
-        print(f"  - {exp.name} (ID: {exp.experiment_id}, Runs: {runs_count})")
-
-# Select experiment (usually matches strategy name)
-target_experiment = TARGET_STRATEGY
-print(f"\n🔍 Looking for experiment: {target_experiment}")
-
-# %%
-########################################################
-# Advanced MLflow Querying Examples
-########################################################
-
-print("🔍 Advanced Query Examples:")
-print("="*50)
-
-# Example 1: Query by strategy type
-print("1. Query by strategy type:")
-try:
-    trend_following_runs = mlflow.search_runs(
-        filter_string="tags.strategy_type = 'trend_following'",
-        order_by=["metrics.wf_sharpe_ratio DESC"],
-        max_results=5
-    )
-    print(f"   Found {len(trend_following_runs)} trend-following strategies")
-except:
-    print("   No runs found with strategy_type tag")
-
-# Example 2: Query by performance threshold
-print("2. Query high-performing runs:")
-try:
-    high_perf_runs = mlflow.search_runs(
-        filter_string="metrics.wf_sharpe_ratio > 1.0 AND metrics.wf_perm_sharpe_pvalue < 0.05",
-        order_by=["metrics.wf_sharpe_ratio DESC"],
-        max_results=5
-    )
-    print(f"   Found {len(high_perf_runs)} high-performing runs")
-except:
-    print("   No runs found matching performance criteria")
-
-# Example 3: Cross-asset comparison
-print("3. Cross-asset comparison:")
-try:
-    multi_asset_runs = mlflow.search_runs(
-        filter_string="tags.strategy_type = 'mean_reversion'",
-        order_by=["metrics.wf_sharpe_ratio DESC"],
-        max_results=10
-    )
-    if len(multi_asset_runs) > 0:
-        asset_performance = multi_asset_runs.groupby('tags.asset')['metrics.wf_sharpe_ratio'].max()
-        print("   Best Sharpe by asset:")
-        for asset, sharpe in asset_performance.items():
-            print(f"     {asset}: {sharpe:.3f}")
-except:
-    print("   No data for cross-asset comparison")
-
-print("\n" + "="*50)
-
-# %%
-########################################################
-# Search and Filter Runs
-########################################################
-
-# Search for runs matching our target asset and strategy
-try:
-    # Basic search for target asset/strategy
-    runs = mlflow.search_runs(
-        experiment_names=[target_experiment],
-        filter_string=f"tags.asset = '{TARGET_ASSET}'",
-        order_by=["metrics.wf_sharpe_ratio DESC"],
-        max_results=20
-    )
-    
-    # Alternative: Query by strategy type instead of experiment
-    if len(runs) == 0:
-        print(f"🔄 No runs in {target_experiment}, trying strategy type search...")
-        strategy_type = STRATEGY_TYPES.get(TARGET_STRATEGY, 'unknown')
-        runs = mlflow.search_runs(
-            filter_string=f"tags.asset = '{TARGET_ASSET}' AND tags.strategy_type = '{strategy_type}'",
-            order_by=["metrics.wf_sharpe_ratio DESC"],
-            max_results=20
-        )
-    
-    if len(runs) == 0:
-        print(f"❌ No runs found for {TARGET_ASSET} with {TARGET_STRATEGY}")
-        print("Available combinations:")
-        all_runs = mlflow.search_runs(max_results=100)
-        if len(all_runs) > 0:
-            combos = all_runs[['tags.asset', 'tags.strategy_type']].value_counts()
-            print(combos.head(10))
-    else:
-        print(f"✅ Found {len(runs)} runs for {TARGET_ASSET} + {TARGET_STRATEGY}")
+def get_run_info(run_id):
+    """Get detailed information about an MLflow run."""
+    try:
+        client = mlflow.MlflowClient()
+        run = client.get_run(run_id)
+        artifacts = client.list_artifacts(run_id)
         
-except Exception as e:
-    print(f"❌ Error searching runs: {e}")
-    runs = pd.DataFrame()
+        # Check for model by trying to load it (more reliable than artifact check)
+        has_model = False
+        try:
+            mlflow.pyfunc.load_model(f"runs:/{run_id}/model")
+            has_model = True
+        except:
+            # Fallback to artifact path check
+            has_model = any(artifact.path == 'model' for artifact in artifacts)
+        
+        has_strategy_config = any('strategy_config' in artifact.path for artifact in artifacts)
+        
+        return {
+            'run': run,
+            'artifacts': artifacts,
+            'has_model': has_model,
+            'has_strategy_config': has_strategy_config
+        }
+    except Exception as e:
+        print(f"❌ Error retrieving run {run_id}: {e}")
+        return None
 
-# %%
-########################################################
-# Performance Analysis & Comparison
-########################################################
 
-if len(runs) > 0:
-    # Key performance metrics to review
+def display_run_summary(run_info):
+    """Display a summary of the run before registration."""
+    run = run_info['run']
+    
+    print(f"\n📋 RUN SUMMARY")
+    print(f"{'='*50}")
+    print(f"Run ID: {run.info.run_id}")
+    print(f"Status: {run.info.status}")
+    print(f"Start Time: {datetime.fromtimestamp(run.info.start_time/1000)}")
+    
+    # Display key tags
+    tags = run.data.tags
+    asset = tags.get('asset', 'unknown')
+    strategy_type = tags.get('strategy_type', 'unknown')  # Algorithmic approach
+    strategy_basis = tags.get('strategy_basis', 'unknown')  # Implementation approach
+    
+    print(f"Asset: {asset}")
+    print(f"Strategy Type: {strategy_type}")
+    print(f"Strategy Basis: {strategy_basis}")
+    
+    # Display key metrics
+    metrics = run.data.metrics
     key_metrics = [
         'wf_sharpe_ratio', 'wf_profit_factor', 'wf_total_return', 
-        'wf_max_drawdown', 'wf_win_rate', 
-        'wf_perm_sharpe_pvalue', 'wf_perm_profit_factor_pvalue'
+        'wf_max_drawdown', 'wf_win_rate'
     ]
     
-    # Create comparison dataframe
-    comparison_df = runs[['run_id', 'start_time'] + [f'metrics.{m}' for m in key_metrics if f'metrics.{m}' in runs.columns]].copy()
-    comparison_df.columns = ['run_id', 'start_time'] + [m.replace('metrics.', '') for m in comparison_df.columns[2:]]
-    
-    # Sort by Sharpe ratio
-    if 'wf_sharpe_ratio' in comparison_df.columns:
-        comparison_df = comparison_df.sort_values('wf_sharpe_ratio', ascending=False)
-    
-    print("🏆 Top performing runs:")
-    print("=" * 100)
-    
-    # Display top 5 runs
-    display_df = comparison_df.head(10).round(4)
-    print(display_df.to_string(index=False))
-    
-    # Show best run details
-    if len(comparison_df) > 0:
-        best_run_id = comparison_df.iloc[0]['run_id']
-        best_run = client.get_run(best_run_id)
-        
-        print(f"\n🥇 Best Run Details:")
-        print(f"Run ID: {best_run_id}")
-        print(f"Start Time: {best_run.info.start_time}")
-        print(f"Status: {best_run.info.status}")
-        
-        # Show key metrics
-        print("\n📊 Key Metrics:")
-        for metric in key_metrics:
-            value = best_run.data.metrics.get(f'wf_{metric.replace("wf_", "")}', 'N/A')
-            if value != 'N/A':
+    print(f"\n📊 Key Metrics:")
+    for metric in key_metrics:
+        if metric in metrics:
+            value = metrics[metric]
+            if 'return' in metric or 'drawdown' in metric:
+                print(f"  {metric}: {value:.1%}")
+            else:
                 print(f"  {metric}: {value:.4f}")
-else:
-    print("❌ No runs to analyze")
+    
+    if run_info['has_model']:
+        print(f"\n📁 Model Artifact: ✅ Found")
+        if run_info['has_strategy_config']:
+            print(f"📁 Strategy Config: ✅ Found")
+    else:
+        print(f"\n📁 Model Artifact: ❌ Not found")
+    
+    return asset, strategy_type, strategy_basis
 
-# %%
-########################################################
-# Model Registration
-########################################################
 
-if len(runs) > 0:
-    # Get the run to register (by default, the best one)
-    selected_run_id = comparison_df.iloc[0]['run_id']  # Change index to select different run
+def register_model(run_id, model_name=None):
+    """Register a model from an MLflow run."""
     
-    print(f"🎯 Selected run for registration: {selected_run_id}")
+    # Setup MLflow
+    setup_mlflow()
+    client = mlflow.MlflowClient()
     
-    # Confirm the run has a model artifact
-    run = client.get_run(selected_run_id)
-    artifacts = client.list_artifacts(selected_run_id)
+    # Get run information
+    print(f"🔍 Retrieving run information...")
+    run_info = get_run_info(run_id)
     
-    has_model = any('model' in artifact.path for artifact in artifacts)
+    if not run_info:
+        return False
     
-    if has_model:
-        # Generate model name: asset_strategy format
-        model_name = f"{TARGET_ASSET}_{TARGET_STRATEGY}"
-        strategy_type = STRATEGY_TYPES.get(TARGET_STRATEGY, 'unknown')
+    if not run_info['has_model']:
+        print(f"❌ No model artifact found in run {run_id}")
+        print("Available artifacts:")
+        for artifact in run_info['artifacts']:
+            print(f"  - {artifact.path}")
+        print(f"\nRun needs a 'model' artifact. Use strategy.save_model() during training.")
+        return False
+    
+    # Display run summary
+    asset, strategy_type, strategy_basis = display_run_summary(run_info)
+    
+    # Generate model name if not provided
+    if not model_name:
+        tags = run_info['run'].data.tags
+        strategy = None
         
-        print(f"📝 Model name: {model_name}")
-        print(f"🏷️  Strategy type: {strategy_type}")
+        if 'mlflow.runName' in tags:
+            run_name_parts = tags['mlflow.runName'].split('_')
+            if len(run_name_parts) >= 2:
+                strategy = run_name_parts[0]
         
-        # Check if model already exists
-        try:
-            existing_versions = client.search_model_versions(f"name='{model_name}'")
-            print(f"ℹ️  Found {len(existing_versions)} existing versions of this model")
-        except:
+        if not strategy:
+            experiment_id = run_info['run'].info.experiment_id
+            experiment = client.get_experiment(experiment_id)
+            strategy = experiment.name
+        
+        model_name = f"{asset}_{strategy}"
+    
+    print(f"\n🏷️  Model Name: {model_name}")
+    
+    # Check for existing versions
+    try:
+        existing_versions = client.search_model_versions(f"name='{model_name}'")
+        if existing_versions:
+            latest_version = max([int(v.version) for v in existing_versions])
+            print(f"ℹ️  Next version will be: {latest_version + 1}")
+        else:
             print(f"ℹ️  This will be the first version of {model_name}")
+    except:
+        print(f"ℹ️  This will be the first version of {model_name}")
+    
+    return model_name, run_info, asset, strategy_type, strategy_basis
+
+
+def confirm_registration(model_name, run_id):
+    """Ask user to confirm registration."""
+    print(f"\n🚀 Ready to register model '{model_name}' from run {run_id}")
+    response = input("Continue? [y/N]: ").strip().lower()
+    return response in ['y', 'yes']
+
+
+def do_registration(run_id, model_name, asset, strategy_type, strategy_basis, run_info):
+    """Perform the actual model registration."""
+    try:
+        print(f"🚀 Registering model...")
+        
+        model_uri = f"runs:/{run_id}/model"
+        print(f"📦 Registering model from: {model_uri}")
         
         # Register the model
-        print(f"\n🚀 Registering model...")
-        try:
-            model_version = mlflow.register_model(
-                model_uri=f"runs:/{selected_run_id}/model",
-                name=model_name,
-                tags={
-                    "strategy_type": strategy_type,
-                    "asset": TARGET_ASSET,
-                    "strategy": TARGET_STRATEGY,
-                    "registration_date": pd.Timestamp.now().isoformat()
-                }
-            )
-            
-            print(f"✅ Model registered successfully!")
-            print(f"   Model: {model_name}")
-            print(f"   Version: {model_version.version}")
-            print(f"   Strategy Type: {strategy_type}")
-            
-        except Exception as e:
-            print(f"❌ Registration failed: {e}")
-            
-    else:
-        print(f"❌ No model artifact found in run {selected_run_id}")
-        print("Available artifacts:")
-        for artifact in artifacts:
-            print(f"  - {artifact.path}")
-else:
-    print("❌ No runs available for registration")
-
-# %%
-########################################################
-# Model Verification & Testing
-########################################################
-
-# Verify the registered model can be loaded
-model_name = f"{TARGET_ASSET}_{TARGET_STRATEGY}"
-
-try:
-    print(f"🔍 Verifying registered model: {model_name}")
-    
-    # Load the latest version
-    model = mlflow.pyfunc.load_model(f"models:/{model_name}/latest")
-    
-    print("✅ Model loaded successfully!")
-    print(f"   Model type: {type(model)}")
-    
-    # Get model version info
-    latest_versions = client.get_latest_versions(model_name, stages=["None"])
-    if latest_versions:
-        version = latest_versions[0]
-        print(f"   Version: {version.version}")
-        print(f"   Stage: {version.current_stage}")
-        print(f"   Creation time: {version.creation_timestamp}")
+        model_version = mlflow.register_model(
+            model_uri=model_uri,
+            name=model_name,
+            tags={
+                "asset": asset,
+                "strategy_type": strategy_type,
+                "strategy_basis": strategy_basis,
+                "registration_date": datetime.now().isoformat()
+            }
+        )
         
-        # Show model tags
-        if hasattr(version, 'tags') and version.tags:
-            print(f"   Tags: {version.tags}")
+        print(f"✅ Model registered successfully!")
+        print(f"   Model: {model_name}")
+        print(f"   Version: {model_version.version}")
+        print(f"   Asset: {asset}")
+        print(f"   Strategy Type: {strategy_type}")
+        print(f"   Strategy Basis: {strategy_basis}")
+        
+        print(f"\n💡 To use this model:")
+        print(f"   model = mlflow.pyfunc.load_model('models:/{model_name}/latest')")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Registration failed: {e}")
+        return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Register MLflow model from run ID')
+    parser.add_argument('--run-id', required=True, help='MLflow run ID')
+    parser.add_argument('--model-name', help='Custom model name (default: auto-generated from asset_strategy)')
+    parser.add_argument('--yes', action='store_true', help='Skip confirmation prompt')
     
-    # Test prediction capability (if you have sample data)
-    print(f"\n💡 To use this model:")
-    print(f"   model = mlflow.pyfunc.load_model('models:/{model_name}/latest')")
-    print(f"   predictions = model.predict(your_data)")
+    args = parser.parse_args()
     
-except Exception as e:
-    print(f"❌ Model verification failed: {e}")
+    print(f"🎯 Registering model from run: {args.run_id}")
+    
+    # Get run info and generate model name
+    result = register_model(args.run_id, args.model_name)
+    
+    if not result:
+        sys.exit(1)
+    
+    model_name, run_info, asset, strategy_type, strategy_basis = result
+    
+    # Confirm registration unless --yes flag is used
+    if not args.yes:
+        if not confirm_registration(model_name, args.run_id):
+            print("❌ Registration cancelled")
+            sys.exit(0)
+    
+    # Perform registration
+    success = do_registration(args.run_id, model_name, asset, strategy_type, strategy_basis, run_info)
+    
+    if success:
+        print(f"\n🎉 Registration complete!")
+    else:
+        sys.exit(1)
 
-# %%
-########################################################
-# Summary and Next Steps
-########################################################
 
-print("\n" + "="*60)
-print("📋 REGISTRATION SUMMARY")
-print("="*60)
-
-print(f"Target Asset: {TARGET_ASSET}")
-print(f"Target Strategy: {TARGET_STRATEGY}")
-print(f"Model Name: {TARGET_ASSET}_{TARGET_STRATEGY}")
-print(f"Strategy Type: {STRATEGY_TYPES.get(TARGET_STRATEGY, 'unknown')}")
-
-if len(runs) > 0:
-    print(f"Runs Reviewed: {len(runs)}")
-    print(f"Selected Run: {selected_run_id}")
-
-print(f"\n💡 Next Steps:")
-print(f"1. Repeat for other asset-strategy combinations")
-print(f"2. Use the model: mlflow.pyfunc.load_model('models:{TARGET_ASSET}_{TARGET_STRATEGY}/latest')")
-print(f"3. Consider promoting to 'Staging' or 'Production' stage when ready")
-
-print(f"\n🎯 To register more models:")
-print(f"   - Change TARGET_ASSET and TARGET_STRATEGY variables")
-print(f"   - Re-run the cells")
-
-# %%
+if __name__ == "__main__":
+    main()

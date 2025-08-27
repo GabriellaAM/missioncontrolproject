@@ -1,0 +1,19 @@
+artifact_path: /Users/valter.rebelo/MissionControl/experiments/mlruns/9/models/m-d59166a0fd2041a4a46577b4443dc130/artifacts
+flavors:
+  python_function:
+    cloudpickle_version: 3.1.1
+    code: null
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pyfunc.model
+    python_model: python_model.pkl
+    python_version: 3.11.5
+    streamable: false
+mlflow_version: 3.1.4
+model_id: m-d59166a0fd2041a4a46577b4443dc130
+model_size_bytes: 3347
+model_uuid: m-d59166a0fd2041a4a46577b4443dc130
+prompts: null
+run_id: 01c03ae2737c49159be6ffecf88862e0
+utc_time_created: '2025-08-27 16:13:32.459744'

@@ -21,6 +21,11 @@ class BollingerBandsStrategy(BaseStrategy):
         """Bollinger Bands is a mean-reversion strategy"""
         return "mean_reversion"
     
+    @property
+    def implementation_type(self) -> str:
+        """Bollinger Bands is a rules-based strategy"""
+        return "rules_based"
+    
     def get_required_features(self) -> Dict[str, Any]:
         """Bollinger Bands only needs crypto asset price data."""
         return {
