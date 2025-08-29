@@ -533,7 +533,8 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
                          wf_perm_results: Dict,
                          asset_name: str,
                          strategy_name: str,
-                         output_dir: str = '.') -> List[str]:
+                         output_dir: str = '.',
+                         start_date: Optional[str] = None) -> List[str]:
     """
     Generate and save all plots for MLflow artifact logging.
     
@@ -546,11 +547,17 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
         asset_name: Asset name
         strategy_name: Strategy name
         output_dir: Directory to save plots
+        start_date: Optional start date to filter out warmup period (YYYY-MM-DD format)
         
     Returns:
         List of saved plot filenames
     """
     saved_files = []
+    
+    # Filter out warmup period if start_date is provided
+    if start_date:
+        print(f"   Filtering plots to exclude warmup period (from {start_date} onward)")
+        strategy_data = strategy_data.loc[start_date:]
     
     # Cumulative returns plot with drawdown
     try:

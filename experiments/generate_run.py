@@ -44,19 +44,24 @@ class RunGenerator:
         self.start_date = start_date
         self.end_date = end_date
         
+        # Setup MLflow early so meta-models can access primary run data
+        self._setup_mlflow_tracking()
+        
         self.strategy = self._load_strategy()
         
-        # For meta-models, override dates and train_test_split with primary model's settings
+        # For meta-models, override dates, asset, and train_test_split with primary model's settings
         if self.strategy.is_meta_model:
             print(f"🔗 Meta-model detected - using primary model's configuration")
             self.start_date = self.strategy.primary_start_date
             self.end_date = self.strategy.primary_end_date
+            self.asset_name = self.strategy.primary_asset
             self.primary_train_test_split = self.strategy.primary_train_test_split
             print(f"   Updated date range: {self.start_date} to {self.end_date}")
+            print(f"   Updated asset: {self.asset_name}")
             print(f"   Using primary model's train_test_split: {self.primary_train_test_split}")
         
         self.features_df = self._load_features()
-        self._setup_mlflow()
+        self._setup_mlflow_experiment()
     
     def _load_strategy(self):
         """Dynamically load strategy class by scanning strategy directories."""
@@ -110,18 +115,47 @@ class RunGenerator:
             return strategy_class(asset=self.asset_name)
     
     def _load_features(self):
-        """Load features based on strategy requirements."""
+        """Load features based on strategy requirements with automatic warmup period."""
+        # Get worst-case warmup period (for optimization phase)
+        warmup_days = self.strategy.get_warmup_days()
+        
         # Get what features this strategy needs
         feature_spec = self.strategy.get_required_features()
         
-        # Initialize feature loader 
-        loader = FeatureLoader(start_date=self.start_date, end_date=self.end_date)
+        if warmup_days > 0:
+            # Calculate extended start date for warmup
+            original_start = pd.to_datetime(self.start_date)
+            extended_start = original_start - pd.Timedelta(days=warmup_days)
+            extended_start_str = extended_start.strftime('%Y-%m-%d')
+            
+            print(f"🕐 Strategy requires {warmup_days} warmup days")
+            print(f"   Extended data range: {extended_start_str} to {self.end_date}")
+            print(f"   Actual trading range: {self.start_date} to {self.end_date}")
+            
+            # Initialize feature loader with extended dates
+            loader = FeatureLoader(start_date=extended_start_str, end_date=self.end_date)
+            
+            # Store warmup info for later use
+            self.warmup_days = warmup_days
+            self.extended_start = extended_start_str
+        else:
+            # No warmup needed
+            print(f"📊 Strategy requires no warmup period")
+            loader = FeatureLoader(start_date=self.start_date, end_date=self.end_date)
+            self.warmup_days = 0
+            self.extended_start = self.start_date
         
-        # Load features using strategy specifications
-        features_df = loader.build_feature_set(**feature_spec)
-        
-        # For meta-models, augment with primary model labels
+        # For meta-models, ensure we load base OHLC data AND primary labels
         if self.strategy.is_meta_model:
+            # Load base features for the asset (includes OHLC data needed for permutation tests)
+            base_feature_spec = {
+                'crypto_assets': [self.asset_name],
+                'fred_indicators': None,
+                'yahoo_tickers': None,
+                'calculated_features': None
+            }
+            features_df = loader.build_feature_set(**base_feature_spec)
+            
             print(f"🔗 Loading primary model labels for meta-strategy...")
             primary_labels = self.strategy.load_primary_labels()
             
@@ -129,21 +163,41 @@ class RunGenerator:
             if 'timestamp' in features_df.columns:
                 features_df = features_df.set_index('timestamp')
             
-            # Join features with primary labels on timestamp index
-            # Use inner join to only keep rows where we have both features and labels
-            print(f"   Features before join: {len(features_df)} rows")
+            # Join base features with primary labels on timestamp index
+            # Use left join to keep all features - labels will be NaN for test period
+            print(f"   Base features before join: {len(features_df)} rows")
             print(f"   Primary labels: {len(primary_labels)} rows")
             
             features_df = features_df.merge(
-                primary_labels[['signal', 'label']],
+                primary_labels,  # Include all columns from primary labels
                 left_index=True,
                 right_index=True,
-                how='inner'  # Only keep rows with both features and labels
+                how='left',  # Keep all features, labels NaN for test period
+                suffixes=('', '_primary')  # Keep base features without suffix
             )
             
             print(f"   Features after join: {len(features_df)} rows")
-            print(f"   Meta-model will use signals from run: {self.strategy.primary_run_id}")
+            print(f"   Columns after merge: {list(features_df.columns)}")
+            
+            # Ensure signal column is present for meta-model
+            if 'signal' not in features_df.columns:
+                raise ValueError("Primary signal column missing after merge. Check timestamp alignment between base features and primary labels.")
+                
+            # Check how many non-null signals we have
+            non_null_signals = features_df['signal'].notna().sum()
+            print(f"   Non-null signals available: {non_null_signals}/{len(features_df)}")
+            
+            if non_null_signals == 0:
+                raise ValueError("No valid primary signals found after merge. Check date range overlap between primary model and meta-model.")
+            # Count non-null labels (training period)
+            label_count = features_df['label'].notna().sum() if 'label' in features_df.columns else 0
+            print(f"   Meta-model will use {label_count} training labels from run: {self.strategy.primary_run_id}")
+            print(f"   Signals available for full period: {features_df['signal'].notna().sum() if 'signal' in features_df.columns else 0} rows")
+            
         else:
+            # Regular strategies load features using their specifications
+            features_df = loader.build_feature_set(**feature_spec)
+            
             # For regular strategies, ensure timestamp is index
             if 'timestamp' in features_df.columns:
                 features_df = features_df.set_index('timestamp')
@@ -151,9 +205,12 @@ class RunGenerator:
         print(f"Loaded {len(features_df)} rows with {len(features_df.columns)} features for {self.strategy_name}")
         return features_df
     
-    def _setup_mlflow(self):
+    def _setup_mlflow_tracking(self):
+        """Setup MLflow tracking URI early so meta-models can access primary run data."""
         setup_mlflow()
-        
+    
+    def _setup_mlflow_experiment(self):
+        """Setup MLflow experiment after strategy is loaded."""
         # Extract clean strategy name (remove type prefix and run_id)
         parts = self.strategy_name.split(':')
         if len(parts) >= 2:
@@ -200,17 +257,17 @@ class RunGenerator:
             
             # Set strategy tags and asset as MLflow tags
             mlflow.set_tag("strategy_type", self.strategy.strategy_type)  # Algorithmic approach (trend_following, mean_reversion)
-            mlflow.set_tag("strategy_basis", self.strategy_type)  # Implementation approach (rules_based, ml_based, meta_model)
+            mlflow.set_tag("strategy_basis", getattr(self.strategy, 'strategy_basis', self.strategy_type))  # Implementation approach (rules_based, ml_based, meta_models)
             mlflow.set_tag("strategy", self.clean_strategy_name)  # Strategy name (e.g., sma_crossover)
             mlflow.set_tag("asset", self.asset_name)
             
             # For meta-models, log the primary run ID for lineage tracking
             if self.strategy.is_meta_model:
-                mlflow.set_tag("is_meta_model", "true")
-                mlflow.set_tag("primary_run_id", self.strategy.primary_run_id)
-                print(f"🏷️  Meta-model tags: primary_run_id = {self.strategy.primary_run_id}")
+                mlflow.log_param("is_meta_model", True)
+                mlflow.log_param("primary_run_id", self.strategy.primary_run_id)
+                print(f"🏷️  Meta-model params: primary_run_id = {self.strategy.primary_run_id}")
             else:
-                mlflow.set_tag("is_meta_model", "false")
+                mlflow.log_param("is_meta_model", False)
             
             print(f"\n{'='*60}")
             print(f"🚀 RUNNING TRAINING PIPELINE")
@@ -246,27 +303,38 @@ class RunGenerator:
             print(f"\n--- Step 2: Train/Test Split with Embargo ---")
             print(f"🔪 Splitting data at {train_test_split:.1%}...")
             
+            # Filter to original date range (excluding warmup) for train/test split calculations
+            original_data = self.features_df.loc[self.start_date:self.end_date]
+            print(f"   Original data range: {len(original_data)} rows from {self.start_date} to {self.end_date}")
+            print(f"   Full data (with warmup): {len(self.features_df)} rows from {self.features_df.index[0].strftime('%Y-%m-%d')} to {self.end_date}")
+            
             # Apply embargo: training data ends 7 days before test to prevent label leakage
             embargo_days = 7  # 5 days for triple barrier + 2 days buffer
-            split_idx = int(len(self.features_df) * train_test_split)
+            split_idx = int(len(original_data) * train_test_split)
             
             # Adjust split for embargo
             train_split_idx = split_idx - embargo_days
             test_split_idx = split_idx
             
-            train_data = self.features_df.iloc[:train_split_idx]
-            test_data = self.features_df.iloc[test_split_idx:]
+            # Use original data for train/test date determination
+            train_data_original = original_data.iloc[:train_split_idx]
+            test_data_original = original_data.iloc[test_split_idx:]
             
-            train_start = train_data.index[0].strftime('%Y-%m-%d')
-            train_end = train_data.index[-1].strftime('%Y-%m-%d')
-            test_start = test_data.index[0].strftime('%Y-%m-%d')
-            test_end = test_data.index[-1].strftime('%Y-%m-%d')
+            # Use original dates for training and testing (not including warmup)
+            train_start = train_data_original.index[0].strftime('%Y-%m-%d')
+            train_end = train_data_original.index[-1].strftime('%Y-%m-%d')
+            test_start = test_data_original.index[0].strftime('%Y-%m-%d')
+            test_end = test_data_original.index[-1].strftime('%Y-%m-%d')
+            
+            # But for data access, use the full features_df which includes warmup
+            train_data = self.features_df.loc[:train_end]  # Full data up to train_end
+            test_data = self.features_df.loc[test_start:]  # Data from test_start onward
             
             print(f"Training period: {train_start} to {train_end} ({len(train_data)} days)")
             print(f"Testing period: {test_start} to {test_end} ({len(test_data)} days)")
             
-            mlflow.log_metric("train_samples", len(train_data))
-            mlflow.log_metric("test_samples", len(test_data))
+            mlflow.log_metric("train_samples", len(train_data_original))
+            mlflow.log_metric("test_samples", len(test_data_original))
             
             # Step 3: Strategy Optimization (In-Sample)
             print(f"\n--- Step 3: Strategy Optimization ---")
@@ -304,7 +372,7 @@ class RunGenerator:
                 print(f"🧠 Training ML model with optimized parameters...")
                 
                 # Get training data and labels for ML model fitting
-                train_strategy_data = strategy_data.iloc[:train_split_idx]
+                train_strategy_data = strategy_data.loc[train_start:train_end]
                 
                 # Use triple barrier labels if available, otherwise create simple momentum labels
                 price_col = f"{self.asset_name}_close"
@@ -340,15 +408,15 @@ class RunGenerator:
                 strategy_data['transaction_cost']
             )
             
-            # Calculate in-sample performance metrics
-            train_strategy_data = strategy_data.iloc[:train_split_idx].dropna()
+            # Calculate in-sample performance metrics using date-based filtering
+            train_strategy_data = strategy_data.loc[train_start:train_end].dropna()
             if len(train_strategy_data) > 0:
                 # Get strategy returns and signals from cleaned strategy data
                 train_log_returns = train_strategy_data['strategy_returns'].values
                 train_signals = train_strategy_data['signal'].values
                 
                 # Get benchmark returns from consistent raw data, then align lengths
-                train_raw_data = self.features_df.iloc[:train_split_idx]
+                train_raw_data = self.features_df.loc[train_start:train_end]
                 train_raw_benchmark = train_raw_data[return_col].dropna()
                 
                 # Align benchmark with strategy data by taking the same number of most recent returns
@@ -372,28 +440,52 @@ class RunGenerator:
                     price_col = f"{self.asset_name}_close"
                     
                     # CRITICAL: Use the actual strategy data that already has signals calculated
-                    # train_strategy_data already contains the correct signals from line 230
-                    # Extract event timestamps where strategy actually trades (signal != 0)
-                    trading_events = train_strategy_data[train_strategy_data['signal'] != 0].index
-                    print(f"🎯 Found {len(trading_events)} trading events in training data")
+                    # Extract event timestamps where strategy actually trades (signal != 0) in training period only
+                    training_events = train_strategy_data[train_strategy_data['signal'] != 0].index
+                    print(f"🎯 Found {len(training_events)} trading events in training data")
                     
-                    # Apply triple barrier labeling to the strategy data (which has signals)
-                    # This ensures labels are aligned with actual strategy decisions
-                    train_strategy_labeled = add_triple_barrier_labels(
-                        train_strategy_data,  # Use strategy data with signals, not raw features!
+                    # Apply triple barrier labeling using FULL strategy data (including warmup) for volatility calculation
+                    # but only label events from the training period
+                    full_strategy_labeled = add_triple_barrier_labels(
+                        strategy_data,  # Use FULL strategy data (with warmup) for volatility calculation!
                         price_col=price_col,
-                        events=trading_events,  # Pass the actual trading events!
+                        events=training_events,  # Only label training period events
                         volatility_span=20,
                         time_barrier_days=5,
                         upper_barrier_mult=2.0,
                         lower_barrier_mult=2.0
                     )
                     
-                    # Save triple barrier labels as CSV artifact (includes strategy signals + labels)
+                    # Filter results to training period for labels
+                    train_strategy_labeled = full_strategy_labeled.loc[train_start:train_end]
+                    
+                    # Create artifact with FULL signal series but labels only for training period
                     if 'label' in train_strategy_labeled.columns:
+                        print(f"   Creating label artifact with full signal series...")
+                        
+                        # Get signals for the ENTIRE period (train + test)
+                        full_signals = strategy_data[['signal']].copy()
+                        
+                        # Get label columns from training period only
+                        label_columns = ['label', 'barrier_touched', 'days_to_barrier', 'return_at_barrier']
+                        available_label_columns = [col for col in label_columns if col in train_strategy_labeled.columns]
+                        training_labels = train_strategy_labeled[available_label_columns].copy()
+                        
+                        # Merge signals (full period) with labels (training only)
+                        # Labels will be NaN for test period
+                        artifact_data = full_signals.merge(
+                            training_labels,
+                            left_index=True,
+                            right_index=True,
+                            how='left'  # Keep all signals, labels NaN for test period
+                        )
+                        
                         labels_csv_path = 'triple_barrier_labels.csv'
-                        train_strategy_labeled.to_csv(labels_csv_path, index_label='timestamp')
+                        artifact_data.to_csv(labels_csv_path, index_label='timestamp')
                         mlflow.log_artifact(labels_csv_path)
+                        print(f"   Saved {len(artifact_data)} rows with columns: {list(artifact_data.columns)}")
+                        print(f"   Signals: full period ({len(artifact_data)} rows)")
+                        print(f"   Labels: training only ({len(training_labels)} rows, rest are NaN)")
                         
                         # Clean up temporary file
                         try:
@@ -475,9 +567,13 @@ class RunGenerator:
                 
                 # Calculate strategy returns if not present
                 if 'strategy_returns' not in result.columns:
-                    result['strategy_returns'] = (
-                        result[return_col] * result['signal'].shift(1)
-                    )
+                    if return_col in result.columns:
+                        result['strategy_returns'] = (
+                            result[return_col] * result['signal'].shift(1)
+                        )
+                    else:
+                        # Fallback - set to zero to prevent failure
+                        result['strategy_returns'] = 0.0
                 
                 # Apply transaction costs
                 result = apply_transaction_costs(result, 'signal', self.asset_name)
@@ -559,8 +655,15 @@ class RunGenerator:
             def optimize_func(data, train_start, train_end):
                 return self.strategy.optimize(data, train_start, train_end, n_trials=200)
             
+            # For meta-models, pass original features data (not processed strategy_data)
+            # because strategy_func expects raw data to calculate signals
+            if self.strategy.is_meta_model:
+                wf_features_df = self.features_df  # Original merged data with primary signals
+            else:
+                wf_features_df = strategy_data  # For regular strategies, use processed data
+                
             wf_results = walk_forward_validation(
-                features_df=strategy_data,
+                features_df=wf_features_df,
                 strategy_func=strategy_func,
                 optimize_func=optimize_func,
                 train_test_split=train_test_split,
@@ -568,6 +671,11 @@ class RunGenerator:
                 reoptimize_every=reoptimize_every,
                 embargo_days=7  # 5 days for triple barrier + 2 days buffer
             )
+            
+            print(f"📊 Walk-forward validation completed")
+            print(f"   overall_metrics: {wf_results.get('overall_metrics', 'None')}")
+            print(f"   all_returns length: {len(wf_results.get('all_returns', []))}")
+            print(f"   all_signals length: {len(wf_results.get('all_signals', []))}")
             
             if wf_results['overall_metrics']:
                 # Calculate comprehensive walk-forward metrics for strategy
@@ -590,16 +698,15 @@ class RunGenerator:
                     wf_strategy_returns = np.exp(wf_log_returns) - 1
                     wf_benchmark_returns = np.exp(wf_log_benchmark) - 1
                     
-                    # Extract walk-forward signals and gross returns for classification metrics
-                    wf_signals = []
+                    # Use pre-built signals from walk-forward validation to ensure length consistency
+                    wf_signals = np.array(wf_results['all_signals'])
+                    
+                    # Extract walk-forward gross returns for classification metrics
                     wf_gross_returns = []
                     for fold_start, fold_end in wf_results['fold_dates']:
                         fold_data = strategy_data.loc[fold_start:fold_end]
-                        fold_signals = fold_data['signal'].dropna().values
                         fold_gross = fold_data['strategy_returns_gross'].dropna().values
-                        wf_signals.extend(fold_signals)
                         wf_gross_returns.extend(fold_gross)
-                    wf_signals = np.array(wf_signals)
                     wf_gross_returns = np.array(wf_gross_returns)
                     
                     # Calculate and log total gross return for walk-forward (convert log returns to simple)
@@ -623,7 +730,7 @@ class RunGenerator:
                             mlflow.log_metric(f"wf_{metric}", round(float(value), 4))
                     
                     # Calculate benchmark metrics from test period (respecting embargo)
-                    test_strategy_data = strategy_data.iloc[test_split_idx:]
+                    test_strategy_data = strategy_data.loc[test_start:test_end]
                     test_log_benchmark = test_strategy_data[return_col].dropna().values
                     if len(test_log_benchmark) > 0:
                         # Convert log returns to simple returns for accurate metric calculation
@@ -677,7 +784,8 @@ class RunGenerator:
                     wf_results=wf_results,
                     wf_perm_results=wf_perm_results,
                     asset_name=self.asset_name,
-                    strategy_name=self.clean_strategy_name
+                    strategy_name=self.clean_strategy_name,
+                    start_date=train_start  # Exclude warmup period from plots
                 )
                 
                 # Log plot files as MLflow artifacts
@@ -805,32 +913,41 @@ def main():
     if args.primary_run_id and args.strategy:
         # Meta-model with separate primary run ID parameter
         strategy_with_run = f"{args.strategy}:{args.primary_run_id}"
-        # Dates will be extracted from primary model
+        # Dates and asset will be extracted from primary model
         start_date = args.start_date or "2022-01-01"  # Dummy values, will be overridden
         end_date = args.end_date or "2024-12-31"
+        asset = args.asset or "bitcoin"  # Dummy value, will be overridden
     else:
         # Regular strategy or meta-model with embedded run ID
         strategy_with_run = args.strategy
         start_date = args.start_date
         end_date = args.end_date
+        asset = args.asset
         
         # Validate required arguments for regular strategies
         if not strategy_with_run.startswith('meta_models:'):
-            if not all([args.strategy, args.asset, start_date, end_date]):
+            if not all([args.strategy, asset, start_date, end_date]):
                 parser.print_help()
                 print("\nFor regular strategies: --strategy, --asset, --start-date, --end-date are required")
-                print("For meta-models: --strategy, --asset, --primary-run-id are required")
+                print("For meta-models: --strategy, --primary-run-id are required")
                 print("Use --list-strategies to see available strategies")
                 return
     
-    if not args.strategy or not args.asset:
-        parser.print_help()
-        return
+    # For meta-models, only strategy and primary_run_id are required
+    if args.primary_run_id:
+        if not args.strategy:
+            parser.print_help()
+            return
+    else:
+        # For regular strategies, asset is still required
+        if not args.strategy or not asset:
+            parser.print_help()
+            return
     
     print(f"Running strategy: {strategy_with_run}")
-    print(f"Asset: {args.asset}")
+    print(f"Asset: {asset}")
     
-    runner = RunGenerator(strategy_with_run, args.asset, start_date, end_date)
+    runner = RunGenerator(strategy_with_run, asset, start_date, end_date)
     runner.run(
         train_test_split=args.train_test_split,
         n_optimization_trials=args.n_optimization_trials,

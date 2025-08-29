@@ -40,9 +40,12 @@ class SimpleMetaStrategy(MetaStrategy):
         """Create simple features for meta-model training."""
         df = data.copy()
         
-        # Primary model features
+        # Primary model features (handle NaN values properly)
         if 'signal' in df.columns:
-            df['primary_signal'] = df['signal'].astype(float)
+            df['primary_signal'] = df['signal'].fillna(0).astype(float)
+        else:
+            # Fallback: create dummy primary signal
+            df['primary_signal'] = 0.0
         
         # Asset price features
         close_col = f"{self.asset}_close"
@@ -73,8 +76,8 @@ class SimpleMetaStrategy(MetaStrategy):
         
         # Interaction features: signal performance in different momentum regimes
         if 'signal' in df.columns:
-            df['signal_x_momentum3'] = df['primary_signal'] * df.get('momentum_3', 0)
-            df['signal_x_momentum5'] = df['primary_signal'] * df.get('momentum_5', 0)
+            df['signal_x_momentum3'] = df['primary_signal'] * df.get('momentum_3', 0).fillna(0)
+            df['signal_x_momentum5'] = df['primary_signal'] * df.get('momentum_5', 0).fillna(0)
         
         return df
     
@@ -96,30 +99,15 @@ class SimpleMetaStrategy(MetaStrategy):
         # Create signals DataFrame
         df = feature_data.copy()
         
-        # Use probability-based thresholds
-        confidence_threshold = params.get('confidence_threshold', 0.7)
+        # Get primary signal (handle NaN values properly)
+        primary_signal = df.get('primary_signal', 0).fillna(0).astype(int)
         
-        # Start with primary signal
-        df['signal'] = df.get('primary_signal', 0).astype(int)
+        # Meta-model directly predicts {0, 1} as a filter
+        meta_filter = predictions  # Binary predictions from RandomForest
         
-        # Get probabilities for each class
-        max_prob_idx = np.argmax(probabilities, axis=1)
-        max_prob = np.max(probabilities, axis=1)
-        
-        # Map class indices to signals (assuming classes are in order [-1, 0, 1] or [0, 1])
-        unique_classes = sorted(self.model.classes_)
-        class_to_signal = {i: unique_classes[i] for i in range(len(unique_classes))}
-        
-        # Override primary signal where meta-model is confident
-        confident_predictions = max_prob > confidence_threshold
-        for i in range(len(df)):
-            if confident_predictions[i]:
-                predicted_class_idx = max_prob_idx[i]
-                df.iloc[i, df.columns.get_loc('signal')] = class_to_signal[predicted_class_idx]
-        
-        # Store confidence metrics
-        df['meta_confidence'] = max_prob
-        df['refined_by_meta'] = confident_predictions.astype(int)
+        # Combine: primary_signal × meta_filter
+        # Results in {-1, 0, +1} where 0 means filtered out
+        df['signal'] = primary_signal * meta_filter
         
         return df
     
@@ -130,8 +118,8 @@ class SimpleMetaStrategy(MetaStrategy):
         # Create meta features
         feature_data = self._create_meta_features(data)
         
-        # Filter training period
-        train_data = feature_data.loc[train_start:train_end].dropna()
+        # Filter training period (preserve warmup data by not using dropna)
+        train_data = feature_data.loc[train_start:train_end]
         
         if len(train_data) < 20:
             raise ValueError(f"Not enough training data for meta-model: {len(train_data)} samples")
@@ -158,14 +146,18 @@ class SimpleMetaStrategy(MetaStrategy):
         
         print(f"Meta-model features: {self.feature_cols}")
         
-        # Prepare training data
+        # Prepare training data - filter for valid labels BEFORE converting to int
         X_train = train_data[self.feature_cols].shift(1).fillna(method='ffill').fillna(0)
-        y_train = train_data['label'].astype(int)
         
-        # Remove first row due to shifting and any remaining NaN labels
-        mask = ~y_train.isna()
-        X_train = X_train[mask].iloc[1:]
-        y_train = y_train[mask].iloc[1:]
+        # Filter for valid labels BEFORE converting to int (avoids NaN conversion error)
+        valid_label_mask = train_data['label'].notna()
+        X_train = X_train[valid_label_mask]
+        y_train = train_data.loc[valid_label_mask, 'label'].astype(int)
+        
+        # Remove only the first row due to shifting (but keep warmup data)
+        if len(X_train) > 0:
+            X_train = X_train.iloc[1:]
+            y_train = y_train.iloc[1:]
         
         if len(X_train) < 10:
             raise ValueError(f"Not enough clean training samples: {len(X_train)}")
@@ -221,9 +213,6 @@ class SimpleMetaStrategy(MetaStrategy):
         print(f"Final meta-model accuracy: {final_accuracy:.4f}")
         print(f"Top features: {sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:3]}")
         
-        # Add confidence threshold parameter
-        best_params['confidence_threshold'] = 0.7
-        
         return {
             'best_params': best_params,
             'best_value': final_accuracy,
@@ -233,3 +222,25 @@ class SimpleMetaStrategy(MetaStrategy):
             'training_samples': len(X_train),
             'final_accuracy': final_accuracy
         }
+    
+    def get_input_example(self) -> pd.DataFrame:
+        """Generate input example with meta-features for MLflow signature."""
+        # Create a sample with meta-features that the model actually uses
+        sample_data = {
+            'primary_signal': [1.0],
+            'momentum_3': [0.01],
+            'momentum_5': [0.02],
+            'momentum_10': [0.03],
+            'price_vs_sma5': [0.01],
+            'price_vs_sma10': [0.02],
+            'volatility_5': [0.015],
+            'volume_ratio': [1.1],
+            'signal_x_momentum3': [0.01],
+            'signal_x_momentum5': [0.02]
+        }
+        
+        # Only include features that are actually in self.feature_cols
+        if hasattr(self, 'feature_cols') and self.feature_cols:
+            sample_data = {k: v for k, v in sample_data.items() if k in self.feature_cols}
+        
+        return pd.DataFrame(sample_data)

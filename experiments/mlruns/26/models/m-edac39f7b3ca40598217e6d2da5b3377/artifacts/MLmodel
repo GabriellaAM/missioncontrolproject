@@ -1,0 +1,27 @@
+artifact_path: /Users/valter.rebelo/MissionControl/experiments/mlruns/26/models/m-edac39f7b3ca40598217e6d2da5b3377/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.11.5
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.6.1
+mlflow_version: 3.1.4
+model_id: m-edac39f7b3ca40598217e6d2da5b3377
+model_size_bytes: 572298
+model_uuid: m-edac39f7b3ca40598217e6d2da5b3377
+prompts: null
+run_id: be4e1d8df8e44ab2818975d57bcd5118
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+utc_time_created: '2025-08-29 13:06:53.684697'

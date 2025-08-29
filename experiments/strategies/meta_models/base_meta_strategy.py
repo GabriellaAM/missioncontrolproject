@@ -39,6 +39,7 @@ class MetaStrategy(BaseStrategy):
             self.primary_end_date = run.data.params.get('end_date')
             self.primary_asset = run.data.params.get('asset')
             self.primary_train_test_split = float(run.data.params.get('train_test_split', 0.75))
+            self.primary_strategy_type = run.data.params.get('strategy_type', 'trend_following')
             
             # Check if triple_barrier_labels.csv artifact exists
             artifacts = client.list_artifacts(self.primary_run_id)
@@ -77,6 +78,7 @@ class MetaStrategy(BaseStrategy):
                         self.primary_end_date = labels_df.index.max().strftime('%Y-%m-%d')
                         self.primary_asset = self.asset  # Use current asset as fallback
                         self.primary_train_test_split = 0.75  # Default fallback
+                        self.primary_strategy_type = 'trend_following'  # Default fallback
                         
                         self._artifact_file_path = artifact_file
                         self._direct_file_access = True
@@ -101,8 +103,15 @@ class MetaStrategy(BaseStrategy):
                 # Load directly from file system
                 labels_df = pd.read_csv(self._artifact_file_path, index_col='timestamp', parse_dates=True)
             else:
-                # Use MLflow client
-                client = getattr(self, '_working_client', mlflow.tracking.MlflowClient())
+                # Use MLflow client - ensure we have a valid client
+                client = getattr(self, '_working_client', None)
+                if client is None:
+                    # Import here to avoid circular imports and ensure MLflow is configured
+                    import sys, os
+                    sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                    from config import setup_mlflow
+                    setup_mlflow()
+                    client = mlflow.tracking.MlflowClient()
                 
                 # Download triple_barrier_labels.csv artifact
                 with tempfile.TemporaryDirectory() as tmp_dir:
@@ -151,13 +160,18 @@ class MetaStrategy(BaseStrategy):
 
     @property
     def strategy_type(self) -> str:
-        """Meta-models are a distinct strategy type."""
-        return "meta_model"
+        """Meta-models inherit strategy type from primary model."""
+        return getattr(self, 'primary_strategy_type', 'trend_following')
     
     @property
     def implementation_type(self) -> str:
         """Meta-models are a distinct implementation type."""
         return "meta_model"
+    
+    @property
+    def strategy_basis(self) -> str:
+        """Meta-models have meta_models as their basis."""
+        return "meta_models"
 
     @abstractmethod
     def calculate_signals(self, data: pd.DataFrame, params: Dict) -> pd.DataFrame:

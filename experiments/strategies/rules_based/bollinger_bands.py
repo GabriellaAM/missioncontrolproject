@@ -38,6 +38,14 @@ class BollingerBandsStrategy(BaseStrategy):
     # Bollinger Bands only uses close price
     used_crypto_features = ['close']
     
+    def get_warmup_days(self, params: Dict = None) -> int:
+        """Return warmup days needed for Bollinger Bands moving average."""
+        if params:
+            return params.get('period', self.default_params['period'])
+        else:
+            # Worst-case for optimization phase
+            return self.period_range[1]  # 50 days
+    
     def calculate_signals(self, data: pd.DataFrame, params: Dict) -> pd.DataFrame:
         """Calculate Bollinger Bands mean reversion signals."""
         df = data.copy()
@@ -57,15 +65,20 @@ class BollingerBandsStrategy(BaseStrategy):
         df['banda_superior'] = df['ma'] + (params['std_multiplier'] * df['std'])
         df['banda_inferior'] = df['ma'] - (params['std_multiplier'] * df['std'])
         
-        # Initialize signal column
+        # Initialize signal column as neutral (no position)
         df['signal'] = 0
         
-        # Generate Bollinger Bands signals
+        # Generate Bollinger Bands signals only where bands are valid (not NaN)
         for i in range(1, len(df)):
             current_price = df[close_col].iloc[i]
             prev_lower_band = df['banda_inferior'].iloc[i-1]
             prev_upper_band = df['banda_superior'].iloc[i-1]
             prev_signal = df['signal'].iloc[i-1]
+            
+            # Only generate signals if bands are valid (not NaN)
+            if pd.isna(prev_lower_band) or pd.isna(prev_upper_band) or pd.isna(current_price):
+                df.loc[df.index[i], 'signal'] = 0  # No signal during warmup
+                continue
             
             # LONG trigger: close[t] < lower_band[t-1]
             if current_price < prev_lower_band:

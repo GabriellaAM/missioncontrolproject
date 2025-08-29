@@ -471,7 +471,17 @@ def walk_forward_validation(features_df: pd.DataFrame,
         
         # Apply strategy to this fold
         strategy_data = strategy_func(features_df, **current_params)
-        fold_data = strategy_data.iloc[fold_start_idx:fold_end_idx + 1].dropna()
+        fold_data = strategy_data.iloc[fold_start_idx:fold_end_idx + 1]
+        
+        # For meta-models, only drop rows where essential columns (signal, returns) are NaN
+        # Don't drop rows where label is NaN (test period data)
+        essential_cols = ['signal', 'strategy_returns']
+        available_essential = [col for col in essential_cols if col in fold_data.columns]
+        if available_essential:
+            fold_data = fold_data.dropna(subset=available_essential)
+        else:
+            # Fallback: standard dropna behavior
+            fold_data = fold_data.dropna()
         
         if len(fold_data) > 0:
             # Extract returns and signals
@@ -641,18 +651,6 @@ def walk_forward_permutation_test(features_df: pd.DataFrame,
     permuted_sharpes = np.array([s for s in permuted_sharpes if np.isfinite(s)])
     permuted_pfs = np.array([pf for pf in permuted_pfs if np.isfinite(pf)])
     
-    # Debug: Show distribution statistics
-    if len(permuted_sharpes) > 0:
-        print(f"Permuted Sharpe distribution: mean={np.mean(permuted_sharpes):.3f}, "
-              f"std={np.std(permuted_sharpes):.3f}, min={np.min(permuted_sharpes):.3f}, "
-              f"max={np.max(permuted_sharpes):.3f}")
-        print(f"Original Sharpe ({original_sharpe:.3f}) vs Permuted mean ({np.mean(permuted_sharpes):.3f})")
-    
-    if len(permuted_pfs) > 0:
-        print(f"Permuted PF distribution: mean={np.mean(permuted_pfs):.3f}, "
-              f"std={np.std(permuted_pfs):.3f}, min={np.min(permuted_pfs):.3f}, "
-              f"max={np.max(permuted_pfs):.3f}")
-        print(f"Original PF ({original_pf:.3f}) vs Permuted mean ({np.mean(permuted_pfs):.3f})")
     
     sharpe_p_value = np.mean(permuted_sharpes >= original_sharpe) if len(permuted_sharpes) > 0 else 1.0
     pf_p_value = np.mean(permuted_pfs >= original_pf) if len(permuted_pfs) > 0 else 1.0

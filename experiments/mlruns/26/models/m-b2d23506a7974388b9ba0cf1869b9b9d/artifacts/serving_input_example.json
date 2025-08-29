@@ -1,0 +1,30 @@
+{
+  "dataframe_split": {
+    "columns": [
+      "primary_signal",
+      "momentum_3",
+      "momentum_5",
+      "momentum_10",
+      "price_vs_sma5",
+      "price_vs_sma10",
+      "volatility_5",
+      "volume_ratio",
+      "signal_x_momentum3",
+      "signal_x_momentum5"
+    ],
+    "data": [
+      [
+        1.0,
+        0.01,
+        0.02,
+        0.03,
+        0.01,
+        0.02,
+        0.015,
+        1.1,
+        0.01,
+        0.02
+      ]
+    ]
+  }
+}

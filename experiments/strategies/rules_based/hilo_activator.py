@@ -55,6 +55,25 @@ class HiloActivatorStrategy(BaseStrategy):
     # Hilo Activator uses close, high, and low prices
     used_crypto_features = ['close', 'high', 'low']
 
+    def get_warmup_days(self, params: Dict = None) -> int:
+        """Return warmup days needed for Hilo Activator moving averages."""
+        if params:
+            period = params.get('period', self.default_params['period'])
+            shift = params.get('shift', self.default_params['shift'])
+            ma_type = params.get('ma_type', self.default_params['ma_type']).lower()
+            
+            if ma_type == 'ema':
+                # EMA needs ~3x the period to converge, plus shift
+                return (period * 3) + shift
+            else:
+                # SMA needs the period, plus shift
+                return period + shift
+        else:
+            # Worst-case for optimization phase
+            max_period = self.period_range[1]
+            max_shift = self.shift_range[1]
+            return (max_period * 3) + max_shift  # Assume EMA worst-case: 20*3 + 3 = 63 days
+
     def calculate_signals(self, data: pd.DataFrame, params: Dict) -> pd.DataFrame:
         """
         Calculate Hilo Activator signals.
@@ -138,10 +157,10 @@ class HiloActivatorStrategy(BaseStrategy):
         import optuna
         from utils.evaluation_metrics import calculate_sharpe_ratio
 
-        train_data = data.loc[train_start:train_end]
+        # Use full data for strategy calculation, evaluate only on training period
         return_col = f"{self.asset}_log_return_1"
-        if return_col not in train_data.columns:
-            raise ValueError(f"Return column '{return_col}' not found")
+        if return_col not in data.columns:
+            data[return_col] = np.log(data[f"{self.asset}_close"] / data[f"{self.asset}_close"].shift(1))
 
         def objective(trial):
             period = trial.suggest_int('period', self.period_range[0], self.period_range[1])
@@ -151,12 +170,18 @@ class HiloActivatorStrategy(BaseStrategy):
             params = {'period': period, 'shift': shift, 'ma_type': ma_type}
 
             try:
-                strat_df = self.calculate_signals(train_data, params)
+                # Calculate strategy on full data (including warmup)
+                strat_df = self.calculate_signals(data, params)
                 strat_df['strategy_returns'] = strat_df[return_col] * strat_df['signal'].shift(1)
-                returns = strat_df['strategy_returns'].dropna().values
-                if len(returns) < 30:
+                
+                # Evaluate only on training period
+                train_returns = strat_df.loc[train_start:train_end, 'strategy_returns']
+                valid_returns = train_returns.dropna()
+                
+                if len(valid_returns) < 30:
                     return -np.inf
-                sharpe = calculate_sharpe_ratio(returns)
+                
+                sharpe = calculate_sharpe_ratio(valid_returns.values)
                 return sharpe if np.isfinite(sharpe) else -np.inf
             except Exception:
                 return -np.inf

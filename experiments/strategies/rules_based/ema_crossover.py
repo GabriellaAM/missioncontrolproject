@@ -39,6 +39,16 @@ class EMACrossoverStrategy(BaseStrategy):
     # EMA crossover only uses close price
     used_crypto_features = ['close']
     
+    def get_warmup_days(self, params: Dict = None) -> int:
+        """Return warmup days needed for EMAs to converge."""
+        if params:
+            # EMAs need ~3x the period to fully converge
+            slow = params.get('slow_period', self.default_params['slow_period'])
+            return slow * 3
+        else:
+            # Worst-case for optimization phase
+            return self.slow_period_range[1]  # e.g., 100 * 3 = 300 days
+    
     def calculate_signals(self, data: pd.DataFrame, params: Dict) -> pd.DataFrame:
         """Calculate EMA crossover signals."""
         df = data.copy()
@@ -52,8 +62,15 @@ class EMACrossoverStrategy(BaseStrategy):
         df['ema_fast'] = df[close_col].ewm(span=params['fast_period'], adjust=False).mean()
         df['ema_slow'] = df[close_col].ewm(span=params['slow_period'], adjust=False).mean()
         
-        # Generate signals: 1 when fast > slow, 0 otherwise
-        df['signal'] = (df['ema_fast'] >= df['ema_slow']).astype(int)
+        # Initialize signals as neutral (no position)
+        df['signal'] = 0
+        
+        # Only generate signals where both EMAs are valid (not NaN)
+        valid_mask = df['ema_fast'].notna() & df['ema_slow'].notna()
+        df.loc[valid_mask, 'signal'] = np.where(
+            df.loc[valid_mask, 'ema_fast'] >= df.loc[valid_mask, 'ema_slow'], 
+            1, -1
+        )
         
         return df
     
@@ -81,9 +98,12 @@ class EMACrossoverStrategy(BaseStrategy):
                     # Calculate strategy
                     strategy_data = self.calculate_signals(data, params)
                     
-                    # Evaluate on training period
-                    train_data = strategy_data.loc[train_start:train_end].dropna()
-                    if len(train_data) < 100:
+                    # Evaluate on training period only (no dropna to preserve warmup data)
+                    train_data = strategy_data.loc[train_start:train_end]
+                    
+                    # Only check valid signal data within training period
+                    valid_signals = train_data['signal'].notna()
+                    if valid_signals.sum() < 100:
                         continue
                     
                     # Calculate profit factor

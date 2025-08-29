@@ -1,0 +1,67 @@
+{
+  "run_info": {
+    "run_id": "bb75326a2320436ea3b07128b36aaa79",
+    "experiment_name": "ema_crossover",
+    "strategy_type": "trend_following",
+    "strategy_basis": "rules_based",
+    "asset": "bitcoin",
+    "start_date": "2024-01-01",
+    "end_date": "2024-03-31",
+    "train_test_split": 0.75
+  },
+  "optimization": {
+    "best_params": {
+      "fast_period": 10,
+      "slow_period": 30
+    },
+    "optimization_score": -Infinity
+  },
+  "validation": {
+    "permutation_results": {
+      "profit_factor": {
+        "original_value": 1.6863724202458243,
+        "permuted_values": "[0.85957136 2.56130677]",
+        "p_value": 0.5,
+        "percentile": 50.0,
+        "passes_test": "False",
+        "n_permutations": 2,
+        "permuted_mean": 1.7104390611700575,
+        "permuted_std": 0.8508677044992763
+      },
+      "sharpe_ratio": {
+        "original_value": 3.4381547292999257,
+        "permuted_values": "[-0.96642322  5.91400995]",
+        "p_value": 0.5,
+        "percentile": 50.0,
+        "passes_test": "False",
+        "n_permutations": 2,
+        "permuted_mean": 2.4737933682742135,
+        "permuted_std": 3.4402165847063735
+      }
+    },
+    "walk_forward_permutation": {
+      "sharpe": {
+        "original": 4.0706280254551235,
+        "permuted_values": "[-1.5621271   3.95258533]",
+        "permuted_mean": 1.195229114315655,
+        "permuted_std": 2.757356214557575,
+        "p_value": 0.0,
+        "passes_test": "True",
+        "n_permutations": 2
+      },
+      "profit_factor": {
+        "original": 1.795786652652851,
+        "permuted_values": "[0.79268777 1.81595077]",
+        "permuted_mean": 1.304319267401402,
+        "permuted_std": 0.5116314980078693,
+        "p_value": 0.5,
+        "passes_test": "False",
+        "n_permutations": 2
+      }
+    }
+  },
+  "deployment": {
+    "model_artifact_path": "model",
+    "ready_for_registration": true
+  }
+}
