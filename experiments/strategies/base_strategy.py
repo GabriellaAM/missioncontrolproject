@@ -7,6 +7,10 @@ import mlflow.pyfunc
 
 class BaseStrategy(ABC):
     
+    # Default flags for strategy types
+    is_meta_model = False
+    primary_run_id = None
+    
     def __init__(self, name: str):
         self.name = name
     
@@ -40,21 +44,114 @@ class BaseStrategy(ABC):
         """Optimize strategy parameters."""
         pass
     
-    def get_input_example(self) -> pd.DataFrame:
-        """Automatically generate sample input based on strategy requirements."""
-        asset = getattr(self, 'asset', 'bitcoin')
+    # Default crypto features used by most strategies
+    used_crypto_features = ['close']
+    
+    def get_input_schema(self):
+        """Generate MLflow input schema using explicit used_crypto_features property."""
+        from mlflow.types import DataType, ColSpec, Schema
         
-        # Start with basic price data (most strategies need this)
-        sample_data = {f"{asset}_close": [50000, 51000, 49000]}
+        # Get strategy's feature requirements 
+        try:
+            required_features = self.get_required_features()
+        except:
+            # Fallback to basic detection if method fails
+            return self._get_basic_input_schema()
+        
+        columns = []
+        
+        # 1. Crypto Assets - Add only the features specified in used_crypto_features
+        crypto_assets = required_features.get('crypto_assets', [])
+        crypto_features = self.used_crypto_features
+        
+        if crypto_assets and crypto_features:
+            for asset in crypto_assets:
+                for feature in crypto_features:
+                    if feature == 'volume':
+                        # Map 'volume' to 'total_volume' as that's what the FeatureLoader uses
+                        columns.append(ColSpec(DataType.double, f"{asset}_total_volume"))
+                    else:
+                        columns.append(ColSpec(DataType.double, f"{asset}_{feature}"))
+                
+                # Add BTC-denominated features for non-BTC assets if specified
+                if asset != 'bitcoin':
+                    for feature in crypto_features:
+                        if feature in ['close', 'market_cap']:  # Only these have BTC versions
+                            columns.append(ColSpec(DataType.double, f"{asset}_{feature}_btc"))
+        
+        # 2. FRED Indicators - Add all FRED features (they're typically single-column)
+        fred_indicators = required_features.get('fred_indicators')
+        if fred_indicators:
+            for indicator_key, alias in fred_indicators.items():
+                columns.append(ColSpec(DataType.double, alias))
+        
+        # 3. Yahoo Tickers - Add all yahoo features (for now, can be made configurable later)
+        yahoo_tickers = required_features.get('yahoo_tickers')
+        if yahoo_tickers:
+            for ticker, prefix in yahoo_tickers.items():
+                # Add all OHLCV features unless it's an index like VIX
+                columns.append(ColSpec(DataType.double, f"{prefix}_close"))
+                if not any(x in ticker.lower() for x in ['vix', 'index']):
+                    columns.extend([
+                        ColSpec(DataType.double, f"{prefix}_open"),
+                        ColSpec(DataType.double, f"{prefix}_high"), 
+                        ColSpec(DataType.double, f"{prefix}_low"),
+                        ColSpec(DataType.double, f"{prefix}_volume")
+                    ])
+        
+        # 4. Calculated Features - Add all calculated features (they're typically single-column)
+        calculated_features = required_features.get('calculated_features')
+        if calculated_features:
+            for feature_key, alias in calculated_features.items():
+                columns.append(ColSpec(DataType.double, alias))
+        
+        # If no features specified, fall back to basic detection
+        if not columns:
+            return self._get_basic_input_schema()
+        
+        return Schema(columns)
+    
+    def _get_basic_input_schema(self):
+        """Fallback method using pattern-based detection."""
+        from mlflow.types import DataType, ColSpec, Schema
+        
+        asset = getattr(self, 'asset', 'bitcoin')
+        columns = [ColSpec(DataType.double, f"{asset}_close")]
         
         # Detect if strategy needs OHLC data
         if self._needs_ohlc_data():
-            sample_data[f"{asset}_high"] = [51000, 52000, 50000]
-            sample_data[f"{asset}_low"] = [49000, 50000, 48000]
+            columns.extend([
+                ColSpec(DataType.double, f"{asset}_high"),
+                ColSpec(DataType.double, f"{asset}_low")
+            ])
         
         # Detect if strategy needs volume data
         if self._needs_volume_data():
-            sample_data[f"{asset}_total_volume"] = [1000, 1100, 900]
+            columns.append(ColSpec(DataType.double, f"{asset}_total_volume"))
+        
+        return Schema(columns)
+    
+    def get_input_example(self) -> pd.DataFrame:
+        """Generate minimal input example for MLflow signature validation."""
+        # Create a minimal sample with just 1 row for signature validation
+        schema = self.get_input_schema()
+        sample_data = {}
+        
+        for col_spec in schema.inputs:
+            # Generate minimal realistic values
+            col_name = col_spec.name
+            if 'close' in col_name and 'btc' not in col_name:
+                sample_data[col_name] = [50000.0]
+            elif '_btc' in col_name:
+                sample_data[col_name] = [0.02]
+            elif any(x in col_name.lower() for x in ['volume', 'market_cap']):
+                sample_data[col_name] = [1000000.0]
+            elif any(x in col_name.lower() for x in ['vix', 'volatility']):
+                sample_data[col_name] = [25.0]
+            elif any(x in col_name.lower() for x in ['rate', 'fed']):
+                sample_data[col_name] = [0.05]
+            else:
+                sample_data[col_name] = [100.0]  # Generic value
         
         return pd.DataFrame(sample_data)
     
@@ -97,19 +194,21 @@ class BaseStrategy(ABC):
     def _save_catboost_model(self, params: Dict) -> str:
         """Save CatBoost model using native flavor."""
         import mlflow.catboost
-        from mlflow.models import infer_signature
+        from mlflow.models import ModelSignature
         
-        # Get input example and signature
-        input_example = self.get_input_example() if hasattr(self, 'get_input_example') else None
+        # Get schema and input example
+        input_schema = self.get_input_schema()
+        input_example = self.get_input_example()
         signature = None
         
-        if input_example is not None:
-            try:
-                predictions = self.model.predict(input_example)
-                signature = infer_signature(input_example, predictions)
-                print(f"✅ Generated MLflow signature with {len(input_example)} samples")
-            except Exception as e:
-                print(f"⚠️  Could not generate signature: {e}")
+        try:
+            predictions = self.model.predict(input_example)
+            # Create signature from schema and predictions
+            from mlflow.models import infer_signature
+            signature = infer_signature(input_example, predictions)
+            print(f"✅ Generated MLflow signature from schema")
+        except Exception as e:
+            print(f"⚠️  Could not generate signature: {e}")
         
         # Save CatBoost model
         model_info = mlflow.catboost.log_model(
@@ -128,19 +227,21 @@ class BaseStrategy(ABC):
     def _save_sklearn_model(self, params: Dict) -> str:
         """Save sklearn model using native flavor."""
         import mlflow.sklearn
-        from mlflow.models import infer_signature
+        from mlflow.models import ModelSignature
         
-        # Get input example and signature
-        input_example = self.get_input_example() if hasattr(self, 'get_input_example') else None
+        # Get schema and input example
+        input_schema = self.get_input_schema()
+        input_example = self.get_input_example()
         signature = None
         
-        if input_example is not None:
-            try:
-                predictions = self.model.predict(input_example)
-                signature = infer_signature(input_example, predictions)
-                print(f"✅ Generated MLflow signature with {len(input_example)} samples")
-            except Exception as e:
-                print(f"⚠️  Could not generate signature: {e}")
+        try:
+            predictions = self.model.predict(input_example)
+            # Create signature from schema and predictions
+            from mlflow.models import infer_signature
+            signature = infer_signature(input_example, predictions)
+            print(f"✅ Generated MLflow signature from schema")
+        except Exception as e:
+            print(f"⚠️  Could not generate signature: {e}")
         
         # Save sklearn model
         model_info = mlflow.sklearn.log_model(
@@ -172,18 +273,17 @@ class BaseStrategy(ABC):
         # Create wrapper
         model = StrategyModel(self, params)
         
-        # Try to get input example for signature
-        input_example = None
+        # Get schema and input example
+        input_schema = self.get_input_schema()
+        input_example = self.get_input_example()
         signature = None
         
-        if hasattr(self, 'get_input_example'):
-            try:
-                input_example = self.get_input_example()
-                sample_output = model.predict(None, input_example)
-                signature = mlflow.models.infer_signature(input_example, sample_output)
-                print(f"✅ Generated PyFunc signature")
-            except Exception as e:
-                print(f"⚠️  Could not generate signature: {e}")
+        try:
+            sample_output = model.predict(None, input_example)
+            signature = mlflow.models.infer_signature(input_example, sample_output)
+            print(f"✅ Generated PyFunc signature from schema")
+        except Exception as e:
+            print(f"⚠️  Could not generate signature: {e}")
         
         # Save PyFunc model
         model_info = mlflow.pyfunc.log_model(
@@ -220,7 +320,7 @@ class BaseStrategy(ABC):
             temp_path = f.name
         
         try:
-            # Just log the artifact without specifying artifact_path to avoid directory creation
-            mlflow.log_artifact(temp_path)
+            # Log with proper artifact name to avoid temporary filename being used
+            mlflow.log_artifact(temp_path, artifact_path="strategy_config.json")
         finally:
             os.unlink(temp_path)

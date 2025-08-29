@@ -1,0 +1,14 @@
+{
+  "dataframe_split": {
+    "columns": [
+      "bitcoin_close",
+      "bitcoin_market_cap"
+    ],
+    "data": [
+      [
+        50000.0,
+        1000000.0
+      ]
+    ]
+  }
+}

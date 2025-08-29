@@ -1,0 +1,12 @@
+{
+  "strategy_name": "macro_vix",
+  "strategy_type": "trend_following",
+  "implementation_type": "rules_based",
+  "asset": "bitcoin",
+  "parameters": {
+    "vix_threshold": 25,
+    "gdp_weight": 0.3
+  },
+  "feature_cols": [],
+  "strategy_class": "__main__.MacroVIXStrategy"
+}

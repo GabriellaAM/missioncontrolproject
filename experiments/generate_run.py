@@ -45,18 +45,35 @@ class RunGenerator:
         self.end_date = end_date
         
         self.strategy = self._load_strategy()
+        
+        # For meta-models, override dates and train_test_split with primary model's settings
+        if self.strategy.is_meta_model:
+            print(f"🔗 Meta-model detected - using primary model's configuration")
+            self.start_date = self.strategy.primary_start_date
+            self.end_date = self.strategy.primary_end_date
+            self.primary_train_test_split = self.strategy.primary_train_test_split
+            print(f"   Updated date range: {self.start_date} to {self.end_date}")
+            print(f"   Using primary model's train_test_split: {self.primary_train_test_split}")
+        
         self.features_df = self._load_features()
         self._setup_mlflow()
     
     def _load_strategy(self):
         """Dynamically load strategy class by scanning strategy directories."""
-        # Strategy name format: "strategy_type:strategy_file"
-        # e.g., "rules_based:ema_crossover" or "ml_based:persistent_homology_random_forest"
+        # Strategy name format: "strategy_type:strategy_file" or "strategy_type:strategy_file:primary_run_id"
+        # e.g., "rules_based:ema_crossover" or "meta_models:ensemble_meta:run123abc"
         
         if ':' not in self.strategy_name:
-            raise ValueError(f"Strategy name must be in format 'type:filename' (e.g., 'rules_based:ema_crossover')")
+            raise ValueError(f"Strategy name must be in format 'type:filename' (e.g., 'rules_based:ema_crossover') or 'meta_models:filename:primary_run_id'")
         
-        strategy_type, strategy_file = self.strategy_name.split(':', 1)
+        parts = self.strategy_name.split(':')
+        if len(parts) == 2:
+            strategy_type, strategy_file = parts
+            primary_run_id = None
+        elif len(parts) == 3:
+            strategy_type, strategy_file, primary_run_id = parts
+        else:
+            raise ValueError(f"Invalid strategy name format: {self.strategy_name}")
         
         # Build module path - handle both module execution and direct execution
         try:
@@ -77,14 +94,20 @@ class RunGenerator:
             attr = getattr(module, attr_name)
             if (isinstance(attr, type) and 
                 attr_name.endswith('Strategy') and 
-                attr_name != 'BaseStrategy'):
+                attr_name not in ['BaseStrategy', 'MetaStrategy']):
                 strategy_class = attr
                 break
         
         if not strategy_class:
             raise ValueError(f"No strategy class found in '{module_path}' (looking for *Strategy class)")
         
-        return strategy_class(asset=self.asset_name)
+        # Create strategy instance - meta-models need primary_run_id
+        if strategy_type == 'meta_models':
+            if primary_run_id is None:
+                raise ValueError(f"Meta-model strategies require primary_run_id: use format 'meta_models:filename:run_id'")
+            return strategy_class(asset=self.asset_name, primary_run_id=primary_run_id)
+        else:
+            return strategy_class(asset=self.asset_name)
     
     def _load_features(self):
         """Load features based on strategy requirements."""
@@ -97,15 +120,45 @@ class RunGenerator:
         # Load features using strategy specifications
         features_df = loader.build_feature_set(**feature_spec)
         
+        # For meta-models, augment with primary model labels
+        if self.strategy.is_meta_model:
+            print(f"🔗 Loading primary model labels for meta-strategy...")
+            primary_labels = self.strategy.load_primary_labels()
+            
+            # Ensure features DataFrame has timestamp as index
+            if 'timestamp' in features_df.columns:
+                features_df = features_df.set_index('timestamp')
+            
+            # Join features with primary labels on timestamp index
+            # Use inner join to only keep rows where we have both features and labels
+            print(f"   Features before join: {len(features_df)} rows")
+            print(f"   Primary labels: {len(primary_labels)} rows")
+            
+            features_df = features_df.merge(
+                primary_labels[['signal', 'label']],
+                left_index=True,
+                right_index=True,
+                how='inner'  # Only keep rows with both features and labels
+            )
+            
+            print(f"   Features after join: {len(features_df)} rows")
+            print(f"   Meta-model will use signals from run: {self.strategy.primary_run_id}")
+        else:
+            # For regular strategies, ensure timestamp is index
+            if 'timestamp' in features_df.columns:
+                features_df = features_df.set_index('timestamp')
+        
         print(f"Loaded {len(features_df)} rows with {len(features_df.columns)} features for {self.strategy_name}")
         return features_df
     
     def _setup_mlflow(self):
         setup_mlflow()
         
-        # Extract clean strategy name (remove type prefix)
-        if ':' in self.strategy_name:
-            self.strategy_type, self.clean_strategy_name = self.strategy_name.split(':', 1)
+        # Extract clean strategy name (remove type prefix and run_id)
+        parts = self.strategy_name.split(':')
+        if len(parts) >= 2:
+            self.strategy_type = parts[0]
+            self.clean_strategy_name = parts[1]  # Just the strategy name, no run_id
         else:
             self.strategy_type = 'unknown'
             self.clean_strategy_name = self.strategy_name
@@ -134,6 +187,11 @@ class RunGenerator:
         7. Final Evaluation & MLflow Logging
         """
         
+        # For meta-models, use primary model's train_test_split
+        if self.strategy.is_meta_model:
+            train_test_split = self.primary_train_test_split
+            print(f"🔗 Meta-model using primary model's train_test_split: {train_test_split}")
+        
         # Create unique run name with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_run_name = f"{self.clean_strategy_name}_{self.asset_name}_{timestamp}"
@@ -145,6 +203,14 @@ class RunGenerator:
             mlflow.set_tag("strategy_basis", self.strategy_type)  # Implementation approach (rules_based, ml_based, meta_model)
             mlflow.set_tag("strategy", self.clean_strategy_name)  # Strategy name (e.g., sma_crossover)
             mlflow.set_tag("asset", self.asset_name)
+            
+            # For meta-models, log the primary run ID for lineage tracking
+            if self.strategy.is_meta_model:
+                mlflow.set_tag("is_meta_model", "true")
+                mlflow.set_tag("primary_run_id", self.strategy.primary_run_id)
+                print(f"🏷️  Meta-model tags: primary_run_id = {self.strategy.primary_run_id}")
+            else:
+                mlflow.set_tag("is_meta_model", "false")
             
             print(f"\n{'='*60}")
             print(f"🚀 RUNNING TRAINING PIPELINE")
@@ -299,77 +365,81 @@ class RunGenerator:
                 # Calculate strategy metrics (including position-based classification metrics)
                 strategy_metrics = calculate_all_metrics(train_returns, signals=train_signals, benchmark_returns=train_benchmark)
                 
-                # Calculate triple barrier labels ONLY for training data and ONLY for strategy events
-                print(f"🎯 Generating triple barrier labels for training data...")
-                price_col = f"{self.asset_name}_close"
-                
-                # CRITICAL: Use the actual strategy data that already has signals calculated
-                # train_strategy_data already contains the correct signals from line 230
-                # Extract event timestamps where strategy actually trades (signal != 0)
-                trading_events = train_strategy_data[train_strategy_data['signal'] != 0].index
-                print(f"🎯 Found {len(trading_events)} trading events in training data")
-                
-                # Apply triple barrier labeling to the strategy data (which has signals)
-                # This ensures labels are aligned with actual strategy decisions
-                train_strategy_labeled = add_triple_barrier_labels(
-                    train_strategy_data,  # Use strategy data with signals, not raw features!
-                    price_col=price_col,
-                    events=trading_events,  # Pass the actual trading events!
-                    volatility_span=20,
-                    time_barrier_days=5,
-                    upper_barrier_mult=2.0,
-                    lower_barrier_mult=2.0
-                )
-                
-                # Save triple barrier labels as CSV artifact (includes strategy signals + labels)
-                if 'label' in train_strategy_labeled.columns:
-                    labels_csv_path = 'triple_barrier_labels.csv'
-                    train_strategy_labeled.to_csv(labels_csv_path, index_label='timestamp')
-                    mlflow.log_artifact(labels_csv_path)
+                # Skip triple barrier labeling for meta-models - they already have labels from primary model
+                if not self.strategy.is_meta_model:
+                    # Calculate triple barrier labels ONLY for training data and ONLY for strategy events
+                    print(f"🎯 Generating triple barrier labels for training data...")
+                    price_col = f"{self.asset_name}_close"
                     
-                    # Clean up temporary file
-                    try:
-                        os.remove(labels_csv_path)
-                    except:
-                        pass
-                
-                # Align labels with strategy data - ONLY for labeled events
-                if 'label' in train_strategy_labeled.columns:
-                    # Filter out NaN labels (only keep actual trading events with labels)
-                    labeled_events = train_strategy_labeled.dropna(subset=['label'])
-                    print(f"🏷️  Found {len(labeled_events)} labeled trading events")
+                    # CRITICAL: Use the actual strategy data that already has signals calculated
+                    # train_strategy_data already contains the correct signals from line 230
+                    # Extract event timestamps where strategy actually trades (signal != 0)
+                    trading_events = train_strategy_data[train_strategy_data['signal'] != 0].index
+                    print(f"🎯 Found {len(trading_events)} trading events in training data")
                     
-                    if len(labeled_events) > 0:
-                        # All data is now aligned since we used train_strategy_data throughout
-                        labels = labeled_events['label'].values
-                        aligned_signals = labeled_events['signal'].values
-                        aligned_returns = labeled_events['strategy_returns'].values
+                    # Apply triple barrier labeling to the strategy data (which has signals)
+                    # This ensures labels are aligned with actual strategy decisions
+                    train_strategy_labeled = add_triple_barrier_labels(
+                        train_strategy_data,  # Use strategy data with signals, not raw features!
+                        price_col=price_col,
+                        events=trading_events,  # Pass the actual trading events!
+                        volatility_span=20,
+                        time_barrier_days=5,
+                        upper_barrier_mult=2.0,
+                        lower_barrier_mult=2.0
+                    )
+                    
+                    # Save triple barrier labels as CSV artifact (includes strategy signals + labels)
+                    if 'label' in train_strategy_labeled.columns:
+                        labels_csv_path = 'triple_barrier_labels.csv'
+                        train_strategy_labeled.to_csv(labels_csv_path, index_label='timestamp')
+                        mlflow.log_artifact(labels_csv_path)
                         
-                        label_metrics = calculate_metrics_with_labels(
-                            predictions=aligned_signals,
-                            labels=labels,
-                            returns=aligned_returns
-                        )
+                        # Clean up temporary file
+                        try:
+                            os.remove(labels_csv_path)
+                        except:
+                            pass
+                    
+                    # Align labels with strategy data - ONLY for labeled events
+                    if 'label' in train_strategy_labeled.columns:
+                        # Filter out NaN labels (only keep actual trading events with labels)
+                        labeled_events = train_strategy_labeled.dropna(subset=['label'])
+                        print(f"🏷️  Found {len(labeled_events)} labeled trading events")
                         
-                        # Log label-based metrics
-                        for metric, value in label_metrics.items():
-                            if isinstance(value, np.ndarray):
-                                # Skip confusion matrix arrays
-                                continue
-                            elif isinstance(value, str) and metric == 'confusion_matrix_plot':
-                                # Log confusion matrix plot artifact
-                                if value:  # Only if plot was created
-                                    mlflow.log_artifact(value)
-                                    # Clean up temp file
-                                    try:
-                                        import os
-                                        os.remove(value)
-                                    except:
-                                        pass
-                            elif not isinstance(value, str):
-                                mlflow.log_metric(f"insample_label_{metric}", round(float(value), 4))
-                    else:
-                        print("⚠️  No labeled events found after filtering NaN")
+                        if len(labeled_events) > 0:
+                            # All data is now aligned since we used train_strategy_data throughout
+                            labels = labeled_events['label'].values
+                            aligned_signals = labeled_events['signal'].values
+                            aligned_returns = labeled_events['strategy_returns'].values
+                            
+                            label_metrics = calculate_metrics_with_labels(
+                                predictions=aligned_signals,
+                                labels=labels,
+                                returns=aligned_returns
+                            )
+                            
+                            # Log label-based metrics
+                            for metric, value in label_metrics.items():
+                                if isinstance(value, np.ndarray):
+                                    # Skip confusion matrix arrays
+                                    continue
+                                elif isinstance(value, str) and metric == 'confusion_matrix_plot':
+                                    # Log confusion matrix plot artifact
+                                    if value:  # Only if plot was created
+                                        mlflow.log_artifact(value)
+                                        # Clean up temp file
+                                        try:
+                                            import os
+                                            os.remove(value)
+                                        except:
+                                            pass
+                                elif not isinstance(value, str):
+                                    mlflow.log_metric(f"insample_label_{metric}", round(float(value), 4))
+                        else:
+                            print("⚠️  No labeled events found after filtering NaN")
+                else:
+                    print(f"🔗 Meta-model: Skipping triple barrier labeling (using primary model labels)")
                 
                 # Also calculate and log total gross return for comparison
                 train_returns_gross = train_strategy_data['strategy_returns_gross'].values
@@ -711,6 +781,7 @@ def main():
     parser.add_argument('--asset', help='Asset name (e.g., bitcoin, ethereum)')
     parser.add_argument('--start-date', help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', help='End date (YYYY-MM-DD)')
+    parser.add_argument('--primary-run-id', help='Primary model run ID (required for meta-models, format: meta_models:strategy_name:run_id)')
     parser.add_argument('--train-test-split', type=float, default=0.75, help='Train/test split')
     parser.add_argument('--n-optimization-trials', type=int, default=1000, help='Number of optimization trials (default: 1000)')
     parser.add_argument('--n-insample-permutations', type=int, default=1000, help='Number of in-sample permutation tests (default: 100)')
@@ -727,18 +798,39 @@ def main():
         print("Available strategies:")
         for strategy in sorted(strategies):
             print(f"  {strategy}")
+        print("\nFor meta-models, use: --primary-run-id <run_id> instead of dates")
         return
     
-    # Validate required arguments
-    if not all([args.strategy, args.asset, args.start_date, args.end_date]):
+    # Handle meta-models vs regular strategies
+    if args.primary_run_id and args.strategy:
+        # Meta-model with separate primary run ID parameter
+        strategy_with_run = f"{args.strategy}:{args.primary_run_id}"
+        # Dates will be extracted from primary model
+        start_date = args.start_date or "2022-01-01"  # Dummy values, will be overridden
+        end_date = args.end_date or "2024-12-31"
+    else:
+        # Regular strategy or meta-model with embedded run ID
+        strategy_with_run = args.strategy
+        start_date = args.start_date
+        end_date = args.end_date
+        
+        # Validate required arguments for regular strategies
+        if not strategy_with_run.startswith('meta_models:'):
+            if not all([args.strategy, args.asset, start_date, end_date]):
+                parser.print_help()
+                print("\nFor regular strategies: --strategy, --asset, --start-date, --end-date are required")
+                print("For meta-models: --strategy, --asset, --primary-run-id are required")
+                print("Use --list-strategies to see available strategies")
+                return
+    
+    if not args.strategy or not args.asset:
         parser.print_help()
-        print("\nUse --list-strategies to see available strategies")
         return
     
-    print(f"Running strategy: {args.strategy}")
+    print(f"Running strategy: {strategy_with_run}")
     print(f"Asset: {args.asset}")
     
-    runner = RunGenerator(args.strategy, args.asset, args.start_date, args.end_date)
+    runner = RunGenerator(strategy_with_run, args.asset, start_date, end_date)
     runner.run(
         train_test_split=args.train_test_split,
         n_optimization_trials=args.n_optimization_trials,

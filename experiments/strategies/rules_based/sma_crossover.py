@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from strategies.base_strategy import BaseStrategy
-from typing import Dict, Any
+from typing import Dict, Any, List
 import pandas as pd
 import numpy as np
 
@@ -35,6 +35,9 @@ class SMACrossoverStrategy(BaseStrategy):
             'yahoo_tickers': None,
             'calculated_features': None
         }
+    
+    # SMA crossover only uses close price
+    used_crypto_features = ['close']
     
     def calculate_signals(self, data: pd.DataFrame, params: Dict) -> pd.DataFrame:
         """Calculate SMA crossover signals."""

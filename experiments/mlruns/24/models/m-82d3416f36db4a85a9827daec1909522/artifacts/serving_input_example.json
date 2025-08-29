@@ -1,0 +1,30 @@
+{
+  "dataframe_split": {
+    "columns": [
+      "bitcoin_close",
+      "bitcoin_market_cap",
+      "vix",
+      "gdp",
+      "spx_close",
+      "spx_open",
+      "spx_high",
+      "spx_low",
+      "spx_volume",
+      "momentum"
+    ],
+    "data": [
+      [
+        50000.0,
+        1000000.0,
+        25.0,
+        100.0,
+        50000.0,
+        100.0,
+        100.0,
+        100.0,
+        1000000.0,
+        100.0
+      ]
+    ]
+  }
+}

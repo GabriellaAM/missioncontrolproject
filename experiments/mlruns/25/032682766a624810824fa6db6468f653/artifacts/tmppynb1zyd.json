@@ -1,0 +1,24 @@
+{
+  "strategy_name": "simple_meta_bitcoin",
+  "strategy_type": "trend_following",
+  "implementation_type": "meta_model",
+  "asset": "bitcoin",
+  "parameters": {
+    "n_estimators": 73,
+    "max_depth": 8,
+    "confidence_threshold": 0.7
+  },
+  "feature_cols": [
+    "primary_signal",
+    "momentum_3",
+    "momentum_5",
+    "momentum_10",
+    "price_vs_sma5",
+    "price_vs_sma10",
+    "volatility_5",
+    "volume_ratio",
+    "signal_x_momentum3",
+    "signal_x_momentum5"
+  ],
+  "strategy_class": "experiments.strategies.meta_models.simple_meta.SimpleMetaStrategy"
+}
