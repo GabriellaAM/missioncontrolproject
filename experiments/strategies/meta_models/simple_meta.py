@@ -5,7 +5,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from strategies.meta_models.base_meta_strategy import MetaStrategy
 from typing import Dict, Any
 import pandas as pd
-import numpy as np
 import optuna
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
@@ -40,64 +39,128 @@ class SimpleMetaStrategy(MetaStrategy):
         """Create simple features for meta-model training."""
         df = data.copy()
         
-        # Primary model features (handle NaN values properly)
-        if 'signal' in df.columns:
-            df['primary_signal'] = df['signal'].fillna(0).astype(float)
-        else:
-            # Fallback: create dummy primary signal
-            df['primary_signal'] = 0.0
+        # Primary model features - fail fast if missing
+        if 'signal' not in df.columns:
+            raise ValueError("Required 'signal' column missing from input data. Meta-model requires primary model signals.")
         
-        # Asset price features
+        df['primary_signal'] = df['signal'].fillna(0).astype(float)
+        
+        # Validation: ensure we have meaningful signals
+        non_zero_signals = (df['signal'] != 0).sum()
+        if non_zero_signals == 0:
+            raise ValueError("No non-zero primary signals found in data. Meta-model requires actual primary model decisions.")
+        
+        # Asset price features - fail fast if missing required data
         close_col = f"{self.asset}_close"
-        if close_col in df.columns:
-            # Recent price momentum
-            df['momentum_3'] = df[close_col].pct_change(3)
-            df['momentum_5'] = df[close_col].pct_change(5)
-            df['momentum_10'] = df[close_col].pct_change(10)
-            
-            # Simple moving averages
-            df['sma_5'] = df[close_col].rolling(5).mean()
-            df['sma_10'] = df[close_col].rolling(10).mean()
-            
-            # Price position relative to moving averages
-            df['price_vs_sma5'] = (df[close_col] / df['sma_5']) - 1
-            df['price_vs_sma10'] = (df[close_col] / df['sma_10']) - 1
-            
-            # Price volatility
-            df['volatility_5'] = df[close_col].pct_change().rolling(5).std()
+        if close_col not in df.columns:
+            raise ValueError(f"Required price column '{close_col}' missing from input data. Check asset name and data loading.")
         
-        # Volume features
+        if df[close_col].isna().all():
+            raise ValueError(f"Price column '{close_col}' contains only NaN values. Check data quality.")
+        
+        # Recent price momentum
+        df['momentum_3'] = df[close_col].pct_change(3)
+        df['momentum_5'] = df[close_col].pct_change(5)
+        df['momentum_10'] = df[close_col].pct_change(10)
+        
+        # Simple moving averages
+        df['sma_5'] = df[close_col].rolling(5).mean()
+        df['sma_10'] = df[close_col].rolling(10).mean()
+        
+        # Price position relative to moving averages
+        df['price_vs_sma5'] = (df[close_col] / df['sma_5']) - 1
+        df['price_vs_sma10'] = (df[close_col] / df['sma_10']) - 1
+        
+        # Price volatility
+        df['volatility_5'] = df[close_col].pct_change().rolling(5).std()
+        
+        # Volume features - fail fast if missing
         volume_col = f"{self.asset}_total_volume"
-        if volume_col in df.columns:
-            df['volume_sma_5'] = df[volume_col].rolling(5).mean()
-            df['volume_ratio'] = df[volume_col] / df['volume_sma_5']
-        else:
-            df['volume_ratio'] = 1.0
+        if volume_col not in df.columns:
+            raise ValueError(f"Required volume column '{volume_col}' missing from input data. Check asset name and data loading.")
+        
+        if df[volume_col].isna().all():
+            raise ValueError(f"Volume column '{volume_col}' contains only NaN values. Check data quality.")
+        
+        df['volume_sma_5'] = df[volume_col].rolling(5).mean()
+        df['volume_ratio'] = df[volume_col] / df['volume_sma_5']
         
         # Interaction features: signal performance in different momentum regimes
-        if 'signal' in df.columns:
-            df['signal_x_momentum3'] = df['primary_signal'] * df.get('momentum_3', 0).fillna(0)
-            df['signal_x_momentum5'] = df['primary_signal'] * df.get('momentum_5', 0).fillna(0)
+        df['signal_x_momentum3'] = df['primary_signal'] * df['momentum_3'].fillna(0)
+        df['signal_x_momentum5'] = df['primary_signal'] * df['momentum_5'].fillna(0)
         
         return df
+    
+    def _add_meta_features_inplace(self, df: pd.DataFrame) -> None:
+        """Add meta features directly to the DataFrame in-place to preserve index."""
+        # Primary model features - fail fast if missing
+        if 'signal' not in df.columns:
+            raise ValueError("Required 'signal' column missing from input data. Meta-model requires primary model signals.")
+        
+        df['primary_signal'] = df['signal'].fillna(0).astype(float)
+        
+        # Validation: ensure we have meaningful signals
+        non_zero_signals = (df['signal'] != 0).sum()
+        if non_zero_signals == 0:
+            raise ValueError("No non-zero primary signals found in data. Meta-model requires actual primary model decisions.")
+        
+        # Asset price features - fail fast if missing required data
+        close_col = f"{self.asset}_close"
+        if close_col not in df.columns:
+            raise ValueError(f"Required price column '{close_col}' missing from input data. Check asset name and data loading.")
+        
+        if df[close_col].isna().all():
+            raise ValueError(f"Price column '{close_col}' contains only NaN values. Check data quality.")
+        
+        # Recent price momentum
+        df['momentum_3'] = df[close_col].pct_change(3)
+        df['momentum_5'] = df[close_col].pct_change(5)
+        df['momentum_10'] = df[close_col].pct_change(10)
+        
+        # Simple moving averages
+        df['sma_5'] = df[close_col].rolling(5).mean()
+        df['sma_10'] = df[close_col].rolling(10).mean()
+        
+        # Price position relative to moving averages
+        df['price_vs_sma5'] = (df[close_col] / df['sma_5']) - 1
+        df['price_vs_sma10'] = (df[close_col] / df['sma_10']) - 1
+        
+        # Price volatility
+        df['volatility_5'] = df[close_col].pct_change().rolling(5).std()
+        
+        # Volume features - fail fast if missing
+        volume_col = f"{self.asset}_total_volume"
+        if volume_col not in df.columns:
+            raise ValueError(f"Required volume column '{volume_col}' missing from input data. Check asset name and data loading.")
+        
+        if df[volume_col].isna().all():
+            raise ValueError(f"Volume column '{volume_col}' contains only NaN values. Check data quality.")
+        
+        df['volume_sma_5'] = df[volume_col].rolling(5).mean()
+        df['volume_ratio'] = df[volume_col] / df['volume_sma_5']
+        
+        # Interaction features: signal performance in different momentum regimes
+        df['signal_x_momentum3'] = df['primary_signal'] * df['momentum_3'].fillna(0)
+        df['signal_x_momentum5'] = df['primary_signal'] * df['momentum_5'].fillna(0)
     
     def calculate_signals(self, data: pd.DataFrame, params: Dict) -> pd.DataFrame:
         """Calculate meta-model signals using trained model."""
         if self.model is None:
             raise ValueError("Meta-model not trained yet! Call optimize() first.")
         
-        # Create meta features
-        feature_data = self._create_meta_features(data)
+        # Work directly with the input data to preserve index
+        # This is the key fix - don't create new DataFrames that lose the index
+        df = data.copy()
+        
+        # Add meta features directly to the original data structure
+        # This preserves the timestamp index throughout
+        self._add_meta_features_inplace(df)
         
         # Prepare features for prediction - shift to prevent look-ahead bias
-        X = feature_data[self.feature_cols].shift(1).fillna(method='ffill').fillna(0)
+        X = df[self.feature_cols].shift(1).fillna(0)
         
         # Make predictions
         predictions = self.model.predict(X)
-        probabilities = self.model.predict_proba(X)
-        
-        # Create signals DataFrame
-        df = feature_data.copy()
         
         # Get primary signal (handle NaN values properly)
         primary_signal = df.get('primary_signal', 0).fillna(0).astype(int)
@@ -112,11 +175,12 @@ class SimpleMetaStrategy(MetaStrategy):
         return df
     
     def optimize(self, data: pd.DataFrame, train_start: str, train_end: str, 
-                 n_trials: int = 1000, **kwargs) -> Dict:
+                 n_trials: int = 500, **kwargs) -> Dict:
         """Optimize meta-model parameters using Optuna."""
         
-        # Create meta features
-        feature_data = self._create_meta_features(data)
+        # Create meta features using in-place method to preserve index
+        feature_data = data.copy()
+        self._add_meta_features_inplace(feature_data)
         
         # Filter training period (preserve warmup data by not using dropna)
         train_data = feature_data.loc[train_start:train_end]
@@ -144,14 +208,15 @@ class SimpleMetaStrategy(MetaStrategy):
         if len(self.feature_cols) < 2:
             raise ValueError(f"Not enough valid features for meta-model: {self.feature_cols}")
         
-        print(f"Meta-model features: {self.feature_cols}")
-        
-        # Prepare training data - filter for valid labels BEFORE converting to int
-        X_train = train_data[self.feature_cols].shift(1).fillna(method='ffill').fillna(0)
+        # Prepare training data - IMPORTANT: We need to shift labels to avoid look-ahead bias
+        # The label at time t tells us the outcome of a trade entered at time t
+        # So we need to align features at time t-1 with label at time t
+        X_train = train_data[self.feature_cols].shift(1).fillna(0)
         
         # Filter for valid labels BEFORE converting to int (avoids NaN conversion error)
         valid_label_mask = train_data['label'].notna()
         X_train = X_train[valid_label_mask]
+        # No shift needed for labels - they already represent future outcomes
         y_train = train_data.loc[valid_label_mask, 'label'].astype(int)
         
         # Remove only the first row due to shifting (but keep warmup data)
@@ -162,13 +227,10 @@ class SimpleMetaStrategy(MetaStrategy):
         if len(X_train) < 10:
             raise ValueError(f"Not enough clean training samples: {len(X_train)}")
         
-        print(f"Training samples: {len(X_train)}")
-        print(f"Label distribution: {y_train.value_counts().to_dict()}")
-        
-        # Simple optimization with limited trials for meta-model
+        # Optimization with Optuna
         def objective(trial):
-            n_estimators = trial.suggest_int('n_estimators', 20, 100)
-            max_depth = trial.suggest_int('max_depth', 3, 8)
+            n_estimators = trial.suggest_int('n_estimators', 10, 50)
+            max_depth = trial.suggest_int('max_depth', 3, 10)
             
             model = RandomForestClassifier(
                 n_estimators=n_estimators,
@@ -186,7 +248,7 @@ class SimpleMetaStrategy(MetaStrategy):
         
         # Run optimization
         study = optuna.create_study(direction='maximize')
-        study.optimize(objective, n_trials=min(n_trials, 50))
+        study.optimize(objective, n_trials=n_trials)
         
         best_params = study.best_params
         best_score = study.best_value

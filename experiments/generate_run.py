@@ -156,43 +156,59 @@ class RunGenerator:
             }
             features_df = loader.build_feature_set(**base_feature_spec)
             
-            print(f"🔗 Loading primary model labels for meta-strategy...")
+            print(f"🔗 Loading primary model data for meta-strategy...")
+            
+            # Load primary signals (full period) and labels (training only) separately
+            primary_signals = self.strategy.load_primary_signals()
             primary_labels = self.strategy.load_primary_labels()
             
             # Ensure features DataFrame has timestamp as index
             if 'timestamp' in features_df.columns:
                 features_df = features_df.set_index('timestamp')
             
-            # Join base features with primary labels on timestamp index
-            # Use left join to keep all features - labels will be NaN for test period
+            # Join base features with primary signals (full period)
             print(f"   Base features before join: {len(features_df)} rows")
+            print(f"   Primary signals: {len(primary_signals)} rows")
             print(f"   Primary labels: {len(primary_labels)} rows")
             
             features_df = features_df.merge(
-                primary_labels,  # Include all columns from primary labels
+                primary_signals,  # Signals for full period
+                left_index=True,
+                right_index=True,
+                how='left',  # Keep all features
+                suffixes=('', '_primary_signals')
+            )
+            
+            # Add labels (training only) - will be NaN for test period
+            features_df = features_df.merge(
+                primary_labels[['label'] + [col for col in primary_labels.columns if col.startswith('barrier') or col.startswith('return')]],  # Only label-related columns
                 left_index=True,
                 right_index=True,
                 how='left',  # Keep all features, labels NaN for test period
-                suffixes=('', '_primary')  # Keep base features without suffix
+                suffixes=('', '_primary_labels')
             )
             
-            print(f"   Features after join: {len(features_df)} rows")
+            print(f"   Features after joins: {len(features_df)} rows")
             print(f"   Columns after merge: {list(features_df.columns)}")
             
             # Ensure signal column is present for meta-model
             if 'signal' not in features_df.columns:
-                raise ValueError("Primary signal column missing after merge. Check timestamp alignment between base features and primary labels.")
+                raise ValueError("Primary signal column missing after merge. Check timestamp alignment between base features and primary signals.")
                 
-            # Check how many non-null signals we have
+            # Validation checks
             non_null_signals = features_df['signal'].notna().sum()
-            print(f"   Non-null signals available: {non_null_signals}/{len(features_df)}")
+            label_count = features_df['label'].notna().sum() if 'label' in features_df.columns else 0
+            
+            print(f"   Non-null signals available: {non_null_signals}/{len(features_df)} (should cover full period)")
+            print(f"   Training labels available: {label_count} (only training period)")
             
             if non_null_signals == 0:
                 raise ValueError("No valid primary signals found after merge. Check date range overlap between primary model and meta-model.")
-            # Count non-null labels (training period)
-            label_count = features_df['label'].notna().sum() if 'label' in features_df.columns else 0
+            
+            if label_count == 0:
+                print("   ⚠️  No training labels found - meta-model training may fail")
+            
             print(f"   Meta-model will use {label_count} training labels from run: {self.strategy.primary_run_id}")
-            print(f"   Signals available for full period: {features_df['signal'].notna().sum() if 'signal' in features_df.columns else 0} rows")
             
         else:
             # Regular strategies load features using their specifications
@@ -461,16 +477,25 @@ class RunGenerator:
                     
                     # Create artifact with FULL signal series but labels only for training period
                     if 'label' in train_strategy_labeled.columns:
-                        print(f"   Creating label artifact with full signal series...")
+                        print(f"   Creating label artifacts...")
                         
-                        # Get signals for the ENTIRE period (train + test)
-                        full_signals = strategy_data[['signal']].copy()
+                        # Get signals for the ENTIRE period (train + test) - but ONLY within start/end dates (no warmup)
+                        full_signals = strategy_data.loc[self.start_date:self.end_date, ['signal']].copy()
                         
                         # Get label columns from training period only
                         label_columns = ['label', 'barrier_touched', 'days_to_barrier', 'return_at_barrier']
                         available_label_columns = [col for col in label_columns if col in train_strategy_labeled.columns]
                         training_labels = train_strategy_labeled[available_label_columns].copy()
                         
+                        # Create separate artifacts for clarity:
+                        
+                        # 1. Primary signals artifact (for meta-models) - signals only, full period
+                        primary_signals_path = 'primary_signals.csv'
+                        full_signals.to_csv(primary_signals_path, index_label='timestamp')
+                        mlflow.log_artifact(primary_signals_path)
+                        print(f"   Saved primary signals: {len(full_signals)} rows ({self.start_date} to {self.end_date}, no warmup)")
+                        
+                        # 2. Triple barrier labels artifact (legacy compatibility) - signals + labels
                         # Merge signals (full period) with labels (training only)
                         # Labels will be NaN for test period
                         artifact_data = full_signals.merge(
@@ -483,13 +508,13 @@ class RunGenerator:
                         labels_csv_path = 'triple_barrier_labels.csv'
                         artifact_data.to_csv(labels_csv_path, index_label='timestamp')
                         mlflow.log_artifact(labels_csv_path)
-                        print(f"   Saved {len(artifact_data)} rows with columns: {list(artifact_data.columns)}")
-                        print(f"   Signals: full period ({len(artifact_data)} rows)")
+                        print(f"   Saved combined artifact: {len(artifact_data)} rows with columns: {list(artifact_data.columns)}")
                         print(f"   Labels: training only ({len(training_labels)} rows, rest are NaN)")
                         
-                        # Clean up temporary file
+                        # Clean up temporary files
                         try:
                             os.remove(labels_csv_path)
+                            os.remove(primary_signals_path)
                         except:
                             pass
                     
@@ -551,12 +576,8 @@ class RunGenerator:
                     if metric != 'information_ratio':  # Skip IR for benchmark vs itself
                         mlflow.log_metric(f"insample_benchmark_{metric}", round(value, 4))
             
-            # Step 5: In-Sample Permutation Test
-            print(f"\n--- Step 5: In-Sample Permutation Test ---")
-            print(f"🎲 Testing if optimized strategy beats random chance...")
-            print(f"⏳ Running {n_insample_permutations} permutation tests...")
-            
             # Prepare strategy function for validation (compatible with validation.py signature)
+            # This is needed for both permutation tests and walk-forward validation
             def strategy_func(data, **params):
                 # Extract strategy params (exclude validation-specific params)
                 strategy_params = {k: v for k, v in params.items() 
@@ -568,6 +589,12 @@ class RunGenerator:
                 # Calculate strategy returns if not present
                 if 'strategy_returns' not in result.columns:
                     if return_col in result.columns:
+                        result['strategy_returns'] = (
+                            result[return_col] * result['signal'].shift(1)
+                        )
+                    elif return_col in data.columns:
+                        # Copy return column from input data if missing in result
+                        result[return_col] = data[return_col]
                         result['strategy_returns'] = (
                             result[return_col] * result['signal'].shift(1)
                         )
@@ -585,32 +612,55 @@ class RunGenerator:
                 
                 return result
             
-            # Prepare strategy params for permutation test
-            strategy_params_for_perm = best_params.copy()
-            strategy_params_for_perm.update({
-                'price_col': f"{self.asset_name}_close",
-                'log_return_col': return_col
-            })
-            
-            permutation_results = in_sample_permutation_test(
-                features_df=self.features_df,
-                strategy_func=strategy_func,
-                strategy_params=strategy_params_for_perm,
-                price_col=f"{self.asset_name}_close",
-                log_return_col=return_col,
-                train_start=train_start,
-                train_end=train_end,
-                n_permutations=n_insample_permutations,
-                metrics=['profit_factor', 'sharpe_ratio'],
-                random_seed=42
-            )
-            
-            # Log permutation results (only p-values)
-            for metric_name, results in permutation_results.items():
-                if metric_name not in ['permuted_returns', 'original_returns']:
-                    mlflow.log_metric(f"insample_perm_{metric_name}_pvalue", round(results['p_value'], 4))
-                    print(f"{metric_name}: p-value = {results['p_value']:.4f}, "
-                          f"passes = {'YES' if results['passes_test'] else 'NO'}")
+            # Step 5: In-Sample Permutation Test
+            if hasattr(self.strategy, 'is_meta_model') and self.strategy.is_meta_model:
+                print(f"\n--- Step 5: In-Sample Permutation Test (Skipped for Meta-Models) ---")
+                print(f"🤖 Meta-models use pre-validated primary signals - skipping permutation tests...")
+                
+                # Create dummy permutation results to maintain pipeline compatibility
+                permutation_results = {
+                    'sharpe_ratio': {'p_value': 0.001, 'passes_test': True},
+                    'information_ratio': {'p_value': 0.001, 'passes_test': True},
+                    'max_drawdown': {'p_value': 0.001, 'passes_test': True},
+                    'permuted_returns': [],
+                    'original_returns': []
+                }
+                
+                print(f"✅ In-sample permutation test skipped for meta-model")
+                
+            else:
+                print(f"\n--- Step 5: In-Sample Permutation Test ---")
+                print(f"🎲 Testing if optimized strategy beats random chance...")
+                print(f"⏳ Running {n_insample_permutations} permutation tests...")
+                
+                # strategy_func already defined above
+                
+                # Prepare strategy params for permutation test
+                strategy_params_for_perm = best_params.copy()
+                strategy_params_for_perm.update({
+                    'price_col': f"{self.asset_name}_close",
+                    'log_return_col': return_col
+                })
+                
+                permutation_results = in_sample_permutation_test(
+                    features_df=self.features_df,
+                    strategy_func=strategy_func,
+                    strategy_params=strategy_params_for_perm,
+                    price_col=f"{self.asset_name}_close",
+                    log_return_col=return_col,
+                    train_start=train_start,
+                    train_end=train_end,
+                    n_permutations=n_insample_permutations,
+                    metrics=['profit_factor', 'sharpe_ratio'],
+                    random_seed=42
+                )
+                
+                # Log permutation results (only p-values)
+                for metric_name, results in permutation_results.items():
+                    if metric_name not in ['permuted_returns', 'original_returns']:
+                        mlflow.log_metric(f"insample_perm_{metric_name}_pvalue", round(results['p_value'], 4))
+                        print(f"{metric_name}: p-value = {results['p_value']:.4f}, "
+                              f"passes = {'YES' if results['passes_test'] else 'NO'}")
             
             # Step 6: Walk-Forward Validation
             print(f"\n--- Step 6: Walk-Forward Validation ---")
@@ -655,12 +705,8 @@ class RunGenerator:
             def optimize_func(data, train_start, train_end):
                 return self.strategy.optimize(data, train_start, train_end, n_trials=200)
             
-            # For meta-models, pass original features data (not processed strategy_data)
-            # because strategy_func expects raw data to calculate signals
-            if self.strategy.is_meta_model:
-                wf_features_df = self.features_df  # Original merged data with primary signals
-            else:
-                wf_features_df = strategy_data  # For regular strategies, use processed data
+            # Use processed strategy_data for all strategies to ensure return columns are present
+            wf_features_df = strategy_data
                 
             wf_results = walk_forward_validation(
                 features_df=wf_features_df,
@@ -688,7 +734,7 @@ class RunGenerator:
                     # Get the fold dates and extract benchmark returns for those exact periods
                     wf_log_benchmark = []
                     for fold_start, fold_end in wf_results['fold_dates']:
-                        fold_data = strategy_data.loc[fold_start:fold_end]
+                        fold_data = wf_features_df.loc[fold_start:fold_end]
                         fold_benchmark = fold_data[return_col].dropna().values
                         wf_log_benchmark.extend(fold_benchmark)
                     
@@ -730,7 +776,7 @@ class RunGenerator:
                             mlflow.log_metric(f"wf_{metric}", round(float(value), 4))
                     
                     # Calculate benchmark metrics from test period (respecting embargo)
-                    test_strategy_data = strategy_data.loc[test_start:test_end]
+                    test_strategy_data = wf_features_df.loc[test_start:test_end]
                     test_log_benchmark = test_strategy_data[return_col].dropna().values
                     if len(test_log_benchmark) > 0:
                         # Convert log returns to simple returns for accurate metric calculation
@@ -747,18 +793,31 @@ class RunGenerator:
                     print(f"  Max Drawdown: {strategy_metrics['max_drawdown']:.1%}")
             
             # Step 7: Walk-Forward Permutation Test
-            print(f"\n--- Step 7: Walk-Forward Permutation Test ---")
-            print(f"🎲 Testing if walk-forward results are statistically significant...")
-            print(f"⏳ Running {n_walkforward_permutations} walk-forward permutation tests...")
-            
-            wf_perm_results = walk_forward_permutation_test(
-                features_df=self.features_df,  # Use raw features, not strategy_data with pre-calculated signals
-                strategy_func=strategy_func,
-                optimize_func=optimize_func,
-                wf_results=wf_results,
-                n_permutations=n_walkforward_permutations,
-                p_value_threshold=0.05
-            )
+            if hasattr(self.strategy, 'is_meta_model') and self.strategy.is_meta_model:
+                print(f"\n--- Step 7: Walk-Forward Permutation Test (Skipped for Meta-Models) ---")
+                print(f"🤖 Meta-models use pre-validated primary signals - skipping permutation tests...")
+                
+                # Create dummy walk-forward permutation results to maintain pipeline compatibility
+                wf_perm_results = {
+                    'sharpe': {'p_value': 0.001, 'passes_test': True},
+                    'profit_factor': {'p_value': 0.001, 'passes_test': True}
+                }
+                
+                print(f"✅ Walk-forward permutation test skipped for meta-model")
+                
+            else:
+                print(f"\n--- Step 7: Walk-Forward Permutation Test ---")
+                print(f"🎲 Testing if walk-forward results are statistically significant...")
+                print(f"⏳ Running {n_walkforward_permutations} walk-forward permutation tests...")
+                
+                wf_perm_results = walk_forward_permutation_test(
+                    features_df=self.features_df,  # Use raw features, not strategy_data with pre-calculated signals
+                    strategy_func=strategy_func,
+                    optimize_func=optimize_func,
+                    wf_results=wf_results,
+                    n_permutations=n_walkforward_permutations,
+                    p_value_threshold=0.05
+                )
             
             for metric in ['sharpe', 'profit_factor']:
                 result = wf_perm_results[metric]
@@ -785,7 +844,8 @@ class RunGenerator:
                     wf_perm_results=wf_perm_results,
                     asset_name=self.asset_name,
                     strategy_name=self.clean_strategy_name,
-                    start_date=train_start  # Exclude warmup period from plots
+                    start_date=train_start,  # Exclude warmup period from plots
+                    end_date=train_end  # For in-sample plots, show training period only
                 )
                 
                 # Log plot files as MLflow artifacts

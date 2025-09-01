@@ -38,8 +38,8 @@ class MetaStrategy(BaseStrategy):
             self.primary_start_date = run.data.params.get('start_date')
             self.primary_end_date = run.data.params.get('end_date')
             self.primary_asset = run.data.params.get('asset')
-            self.primary_train_test_split = float(run.data.params.get('train_test_split', 0.75))
-            self.primary_strategy_type = run.data.params.get('strategy_type', 'trend_following')
+            self.primary_train_test_split = float(run.data.params.get('train_test_split'))
+            self.primary_strategy_type = run.data.params.get('strategy_type')
             
             # Check if triple_barrier_labels.csv artifact exists
             artifacts = client.list_artifacts(self.primary_run_id)
@@ -77,8 +77,8 @@ class MetaStrategy(BaseStrategy):
                         self.primary_start_date = labels_df.index.min().strftime('%Y-%m-%d')
                         self.primary_end_date = labels_df.index.max().strftime('%Y-%m-%d')
                         self.primary_asset = self.asset  # Use current asset as fallback
-                        self.primary_train_test_split = 0.75  # Default fallback
-                        self.primary_strategy_type = 'trend_following'  # Default fallback
+                        self.primary_train_test_split = 0.8  # Default fallback
+                        self.primary_strategy_type = ''  # Default fallback
                         
                         self._artifact_file_path = artifact_file
                         self._direct_file_access = True
@@ -93,8 +93,55 @@ class MetaStrategy(BaseStrategy):
             # If both fail, raise the original error
             raise ValueError(f"Cannot validate primary run {self.primary_run_id}. Tried MLflow client and direct file access. Original error: {first_error}")
 
+    def load_primary_signals(self) -> pd.DataFrame:
+        """Load primary model signals (full period) for meta-model predictions."""
+        try:
+            # Use MLflow client to download primary_signals.csv artifact
+            client = getattr(self, '_working_client', None)
+            if client is None:
+                # Import here to avoid circular imports and ensure MLflow is configured
+                import sys, os
+                sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                from config import setup_mlflow
+                setup_mlflow()
+                client = mlflow.tracking.MlflowClient()
+            
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                try:
+                    # First try to load the new primary_signals.csv artifact
+                    artifact_path = client.download_artifacts(
+                        self.primary_run_id,
+                        'primary_signals.csv',
+                        tmp_dir
+                    )
+                    signals_df = pd.read_csv(artifact_path, index_col='timestamp', parse_dates=True)
+                    print(f"✅ Loaded primary signals from primary_signals.csv")
+                except Exception:
+                    # Fallback to extracting signals from triple_barrier_labels.csv
+                    print(f"⚠️  primary_signals.csv not found, extracting signals from triple_barrier_labels.csv")
+                    artifact_path = client.download_artifacts(
+                        self.primary_run_id,
+                        'triple_barrier_labels.csv',
+                        tmp_dir
+                    )
+                    combined_df = pd.read_csv(artifact_path, index_col='timestamp', parse_dates=True)
+                    signals_df = combined_df[['signal']].copy()
+                
+                # Validate signal column exists
+                if 'signal' not in signals_df.columns:
+                    raise ValueError(f"Primary signals missing 'signal' column")
+                
+                print(f"   Loaded {len(signals_df)} primary signals from run {self.primary_run_id}")
+                print(f"   Date range: {signals_df.index.min()} to {signals_df.index.max()}")
+                print(f"   Non-null signals: {signals_df['signal'].notna().sum()}")
+                
+                return signals_df
+                
+        except Exception as e:
+            raise RuntimeError(f"Failed to load primary signals from run {self.primary_run_id}: {e}")
+    
     def load_primary_labels(self) -> pd.DataFrame:
-        """Load label artifacts from primary model run."""
+        """Load label artifacts (training labels only) from primary model run."""
         if self._primary_labels is not None:
             return self._primary_labels
 
@@ -124,14 +171,17 @@ class MetaStrategy(BaseStrategy):
                     # Load the labels
                     labels_df = pd.read_csv(artifact_path, index_col='timestamp', parse_dates=True)
             
-            # Validate required columns
-            required_cols = ['signal', 'label']
-            missing_cols = [col for col in required_cols if col not in labels_df.columns]
-            if missing_cols:
-                raise ValueError(f"Primary labels missing required columns: {missing_cols}")
+            # Validate required columns (labels may have NaN for test period)
+            if 'label' not in labels_df.columns:
+                raise ValueError(f"Primary labels missing 'label' column")
             
-            self._primary_labels = labels_df
-            print(f"✅ Loaded {len(labels_df)} primary labels from run {self.primary_run_id}")
+            # Only keep rows with non-null labels (training period)
+            training_labels = labels_df.dropna(subset=['label'])
+            
+            self._primary_labels = labels_df  # Keep full dataset for reference
+            print(f"✅ Loaded primary labels from run {self.primary_run_id}")
+            print(f"   Total rows: {len(labels_df)}")
+            print(f"   Training labels (non-null): {len(training_labels)}")
             print(f"   Available columns: {list(labels_df.columns)}")
             print(f"   Date range: {labels_df.index.min()} to {labels_df.index.max()}")
             
@@ -208,3 +258,4 @@ class MetaStrategy(BaseStrategy):
             Dict with optimization results
         """
         pass
+    

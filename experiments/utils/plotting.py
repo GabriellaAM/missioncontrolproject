@@ -398,10 +398,28 @@ def plot_walk_forward_analysis(strategy_data: pd.DataFrame,
     fold_metrics = wf_results.get('fold_metrics', [])
     reopt_dates = wf_results.get('reoptimization_dates', [])
     
-    # Get the walk-forward period (test period)
+    # Get the walk-forward period (test period) using train_test_split
+    # The test period starts right after training ends, not at the first fold
     train_test_split = wf_results.get('train_test_split', 0.75)
     split_idx = int(len(strategy_data) * train_test_split)
-    test_data = strategy_data.iloc[split_idx:].dropna()
+    
+    # Test data spans from the split point to the end of available data.
+    # Do NOT trim to the last recorded fold end, since later folds may have
+    # been skipped (e.g., due to NaNs) while valid returns still exist.
+    test_data = strategy_data.iloc[split_idx:].copy()
+    
+    # Only drop rows where strategy_returns is NaN (the critical column for plotting)
+    if 'strategy_returns' in test_data.columns:
+        test_data = test_data.dropna(subset=['strategy_returns'])
+    else:
+        test_data = test_data.dropna()
+
+    # Clip reoptimization markers to the visible test period to avoid
+    # extending the x-axis beyond the plotted returns
+    if len(test_data) > 0 and reopt_dates:
+        test_start_dt = test_data.index[0]
+        test_end_dt = test_data.index[-1]
+        reopt_dates = [d for d in reopt_dates if (d >= test_start_dt and d <= test_end_dt)]
     
     # 1. Cumulative Returns with Reoptimization Markers
     ax1 = axes[0]
@@ -534,7 +552,8 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
                          asset_name: str,
                          strategy_name: str,
                          output_dir: str = '.',
-                         start_date: Optional[str] = None) -> List[str]:
+                         start_date: Optional[str] = None,
+                         end_date: Optional[str] = None) -> List[str]:
     """
     Generate and save all plots for MLflow artifact logging.
     
@@ -548,16 +567,24 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
         strategy_name: Strategy name
         output_dir: Directory to save plots
         start_date: Optional start date to filter out warmup period (YYYY-MM-DD format)
+        end_date: Optional end date to filter to training period only (YYYY-MM-DD format)
         
     Returns:
         List of saved plot filenames
     """
     saved_files = []
     
-    # Filter out warmup period if start_date is provided
+    # Filter data for in-sample plotting
+    plot_data = strategy_data.copy()
     if start_date:
         print(f"   Filtering plots to exclude warmup period (from {start_date} onward)")
-        strategy_data = strategy_data.loc[start_date:]
+        plot_data = plot_data.loc[start_date:]
+    if end_date:
+        print(f"   Filtering plots to show training period only (until {end_date})")
+        plot_data = plot_data.loc[:end_date]
+    
+    # Use filtered data ONLY for in-sample plots; keep original strategy_data for WFA
+    # (do not reassign strategy_data)
     
     # Cumulative returns plot with drawdown
     try:
@@ -565,7 +592,7 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), height_ratios=[2, 1])
         
         # Strategy cumulative returns (convert log returns to simple returns first)
-        strategy_log_returns = strategy_data['strategy_returns'].fillna(0)
+        strategy_log_returns = plot_data['strategy_returns'].fillna(0)
         strategy_returns = np.exp(strategy_log_returns) - 1
         strategy_cum_returns = (1 + strategy_returns).cumprod() - 1
         ax1.plot(strategy_cum_returns.index, strategy_cum_returns, 
@@ -573,8 +600,8 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
         
         # Benchmark cumulative returns (convert log returns to simple returns first)
         benchmark_col = f"{asset_name}_log_return_1"
-        if benchmark_col in strategy_data.columns:
-            benchmark_log_returns = strategy_data[benchmark_col].fillna(0)
+        if benchmark_col in plot_data.columns:
+            benchmark_log_returns = plot_data[benchmark_col].fillna(0)
             benchmark_returns = np.exp(benchmark_log_returns) - 1
             benchmark_cum_returns = (1 + benchmark_returns).cumprod() - 1
             ax1.plot(benchmark_cum_returns.index, benchmark_cum_returns, 
@@ -596,7 +623,7 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
         ax2.plot(strategy_drawdown.index, strategy_drawdown, color='blue', linewidth=1)
         
         # Benchmark drawdown if available
-        if benchmark_col in strategy_data.columns:
+        if benchmark_col in plot_data.columns:
             benchmark_cumulative = (1 + benchmark_returns).cumprod()
             benchmark_running_max = benchmark_cumulative.cummax()
             benchmark_drawdown = (benchmark_cumulative - benchmark_running_max) / benchmark_running_max
