@@ -37,6 +37,7 @@ series_mapping = {
     #'T10Y3M': 'treasury10Y3MSpread', # daily        
     'CPIAUCSL': 'consumerPriceIndex', # monthly
     'T5YIE': 'treasury5YInflationExpectation', # monthly
+    'T10YIE': 'treasury10YInflationExpectation', # monthly
     'DGORDER': 'durableGoodsOrders', # monthly
     'JTSJOL': 'jobOpenings', # monthly
     'PAYEMS': 'nonfarmPayrolls', # monthly

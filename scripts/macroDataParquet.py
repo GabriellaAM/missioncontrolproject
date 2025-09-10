@@ -299,6 +299,7 @@ class FredDataManager(MacroDataManager):
             'DTB6': 'treasury6M',
             'CPIAUCSL': 'consumerPriceIndex',
             'T5YIE': 'treasury5YInflationExpectation',
+            'T10YIE': 'treasury10YInflationExpectation',
             'DGORDER': 'durableGoodsOrders',
             'JTSJOL': 'jobOpenings',
             'PAYEMS': 'nonfarmPayrolls',

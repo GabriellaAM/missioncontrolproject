@@ -6,7 +6,7 @@ import pandas as pd
 import json
 import mlflow
 from pathlib import Path
-from typing import List, Dict, Optional, Union, Callable
+from typing import List, Dict, Optional, Union, Callable, Tuple
 from datetime import datetime
 
 class FeatureLoader:
@@ -149,28 +149,111 @@ class FeatureLoader:
         
         return result
     
-    def _load_single_calculated(self, feature_name: str, rename_as: str) -> pd.DataFrame:
-        """Load single calculated feature"""
+    def _load_single_calculated(self, feature_name: str, rename_as: str, column_name: str = None) -> pd.DataFrame:
+        """
+        Load single calculated feature with intelligent column detection
+        
+        Args:
+            feature_name: Name of the calculated feature
+            rename_as: Name to use in the resulting DataFrame (may also be the column name)
+            column_name: Column to extract from the parquet file (if None, auto-detect)
+        """
         path = self.base_path / "macro_data" / "calculated" / feature_name / "data.parquet"
-        df = pd.read_parquet(path)[['timestamp', 'value']]
+        
+        # Read parquet to check available columns
+        df_full = pd.read_parquet(path)
+        available_columns = df_full.columns.tolist()
+        
+        # Auto-detect column if not specified
+        if column_name is None:
+            # Check if rename_as matches an actual column (and it's not 'value')
+            if rename_as in available_columns and rename_as != 'value':
+                # User wants to extract a specific column that matches the rename
+                column_name = rename_as
+            elif 'value' in available_columns:
+                # Default to 'value' column if it exists
+                column_name = 'value'
+            else:
+                # No 'value' column, try to find a suitable numeric column
+                # Exclude metadata columns
+                metadata_cols = ['timestamp', 'macro_asset_id', 'source', 'frequency']
+                data_cols = [col for col in available_columns if col not in metadata_cols]
+                
+                if rename_as in data_cols:
+                    column_name = rename_as
+                elif len(data_cols) == 1:
+                    # If there's only one data column, use it
+                    column_name = data_cols[0]
+                else:
+                    raise ValueError(f"Cannot auto-detect column for {feature_name}. "
+                                   f"Available columns: {data_cols}. "
+                                   f"Please specify using tuple format: ('{rename_as}', 'column_name')")
+        
+        # Extract the required columns
+        df = df_full[['timestamp', column_name]].copy()
         
         # Ensure timestamp is timezone-naive for consistent merging
         if hasattr(df['timestamp'].dtype, 'tz') and df['timestamp'].dtype.tz is not None:
-            df['timestamp'] = df['timestamp'].dt.tz_convert('UTC').dt.tz_localize(None)
+            df['timestamp'] = pd.to_datetime(df['timestamp'].dt.tz_convert('UTC').dt.tz_localize(None))
         
-        result = df.rename(columns={'value': rename_as})
+        # Only rename if column_name differs from rename_as
+        if column_name != rename_as:
+            result = df.rename(columns={column_name: rename_as})
+        else:
+            result = df
         
         # Track metadata
         self._metadata['sources'].append({
             'type': 'calculated',
             'feature_name': feature_name,
             'renamed_as': rename_as,
+            'column_used': column_name,
             'path': str(path),
             'shape': result.shape,
             'date_range': [str(result['timestamp'].min()), str(result['timestamp'].max())]
         })
         
         return result
+    
+    def _load_multiple_calculated(self, feature_name: str, columns: List[str]) -> pd.DataFrame:
+        """
+        Load multiple columns from a single calculated feature
+        
+        Args:
+            feature_name: Name of the calculated feature
+            columns: List of columns to extract
+        """
+        path = self.base_path / "macro_data" / "calculated" / feature_name / "data.parquet"
+        
+        # Read parquet and verify columns exist
+        df_full = pd.read_parquet(path)
+        available_columns = df_full.columns.tolist()
+        
+        # Check all requested columns exist
+        missing_cols = [col for col in columns if col not in available_columns]
+        if missing_cols:
+            raise ValueError(f"Columns {missing_cols} not found in {feature_name}. "
+                           f"Available columns: {available_columns}")
+        
+        # Extract timestamp and requested columns
+        cols_to_extract = ['timestamp'] + columns
+        df = df_full[cols_to_extract].copy()
+        
+        # Ensure timestamp is timezone-naive for consistent merging
+        if hasattr(df['timestamp'].dtype, 'tz') and df['timestamp'].dtype.tz is not None:
+            df['timestamp'] = pd.to_datetime(df['timestamp'].dt.tz_convert('UTC').dt.tz_localize(None))
+        
+        # Track metadata
+        self._metadata['sources'].append({
+            'type': 'calculated',
+            'feature_name': feature_name,
+            'columns_extracted': columns,
+            'path': str(path),
+            'shape': df.shape,
+            'date_range': [str(df['timestamp'].min()), str(df['timestamp'].max())]
+        })
+        
+        return df
     
     def load_crypto_features(self, 
                            assets: Union[str, List[str]], 
@@ -280,7 +363,7 @@ class FeatureLoader:
         return self._apply_date_filter(result)
     
     def load_calculated_features(self,
-                               features: Union[str, List[str], Dict[str, str]]) -> pd.DataFrame:
+                               features: Union[str, List[str], Dict[str, Union[str, Tuple[str, str], List[str]]]]) -> pd.DataFrame:
         """
         Load multiple calculated features
         
@@ -289,19 +372,44 @@ class FeatureLoader:
                 - str: single feature
                 - List[str]: multiple features (use original names)
                 - Dict[str, str]: {feature_name: rename_as} for custom naming
+                - Dict[str, Tuple[str, str]]: {feature_name: (rename_as, column_name)} for special cases
+                - Dict[str, List[str]]: {feature_name: ['col1', 'col2']} for multiple columns
         
         Returns:
             DataFrame with calculated features
+        
+        Examples:
+            # List format (backwards compatible)
+            load_calculated_features(['rty_ym_ratio', 'usNetLiquidity'])
+            
+            # Dict with rename
+            load_calculated_features({'rty_ym_ratio': 'rty_ym'})
+            
+            # Dict with special column
+            load_calculated_features({'yieldCurveRegime': ('yield_spread', 'spread_2s10s')})
+            
+            # Dict with multiple columns
+            load_calculated_features({'yieldCurveRegime': ['regime', 'spread_2s10s']})
         """
         
         if isinstance(features, str):
             features = {features: features}
-        elif isinstance(features, list):
+        elif isinstance(features, list) and all(isinstance(f, str) for f in features):
+            # Handle list of feature names
             features = {feat: feat for feat in features}
         
         dfs = []
-        for feature_name, rename_as in features.items():
-            df = self._load_single_calculated(feature_name, rename_as)
+        for feature_name, config in features.items():
+            if isinstance(config, list):
+                # List format: extract multiple columns
+                df = self._load_multiple_calculated(feature_name, config)
+            elif isinstance(config, tuple):
+                # Tuple format: (rename_as, column_name)
+                rename_as, column_name = config
+                df = self._load_single_calculated(feature_name, rename_as, column_name)
+            else:
+                # String format: just rename_as (use default 'value' column or auto-detect)
+                df = self._load_single_calculated(feature_name, config)
             dfs.append(df)
         
         result = dfs[0]
@@ -387,9 +495,9 @@ class FeatureLoader:
         
         # Handle missing values
         if fillna_method == 'ffill':
-            result = result.fillna(method='ffill')
+            result = result.ffill()
         elif fillna_method == 'bfill':
-            result = result.fillna(method='bfill')
+            result = result.bfill()
         
         # Track data quality before cleaning
         rows_before_cleaning = len(result)
