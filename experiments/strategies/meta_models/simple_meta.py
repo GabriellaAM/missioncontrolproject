@@ -33,7 +33,7 @@ class SimpleMetaStrategy(MetaStrategy):
         }
     
     # Specify which crypto features we need
-    used_crypto_features = ['close', 'volume']
+    #used_crypto_features = ['close', 'volume']
     
     def _create_meta_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Create simple features for meta-model training."""

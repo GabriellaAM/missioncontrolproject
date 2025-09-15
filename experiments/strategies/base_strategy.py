@@ -60,6 +60,26 @@ class BaseStrategy(ABC):
         """
         return 0  # Default: no warmup needed
     
+    def get_normalization_config(self) -> Dict:
+        """
+        Return normalization configuration for this strategy.
+        
+        Override this in strategies that require feature normalization.
+        
+        Returns:
+            Dict with normalization config or None if no normalization needed.
+            Format:
+            {
+                'columns': {
+                    'column_name': 'scaler_type',  # standard, minmax, robust
+                    'pattern:*': 'scaler_type',    # patterns supported
+                },
+                'exclude': ['signal', 'label'],  # columns to never normalize
+                'default': 'standard'  # default scaler if not specified
+            }
+        """
+        return None  # Default: no normalization needed
+    
     # Default crypto features used by most strategies
     used_crypto_features = ['close']
     

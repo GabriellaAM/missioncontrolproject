@@ -47,7 +47,8 @@ others = ['fartcoin', 'raydium', 'aixbt', 'griffain', 'orbit-3', 'hyperliquid', 
           'mubarak', 'bubblemaps', 'baby-doge-coin', 'chill-guy', 'liquity', 'book-of-meme', 'prometeus', 'myria',
           'slerf', 'zebec-network', 'lagrange', 'shiba-inu', 'official-trump', 'dogwifcoin', 'bonk','popcat',
           'gigachad-2', 'harrypotterobamasonic10in', 'kekius-maximus', 'based-brett', 'dog-go-to-the-moon-rune', 
-          'siren-2', 'apu-s-club', 'turbo', 'cat-in-a-dogs-world', 'snek', 'ai16z', 'aethir', 'useless-3', 'constitutiondao']  
+          'siren-2', 'apu-s-club', 'turbo', 'cat-in-a-dogs-world', 'snek', 'ai16z', 'aethir', 'useless-3', 'constitutiondao',
+          'velvet', 'bio-protocol']  
 
 combo = carteira_AC + carteira_EXC + carteira_HB + carteira_LC + others
 

@@ -20,6 +20,7 @@ try:
     from .utils.plotting import save_plots_for_mlflow
     from .utils.transaction_costs import apply_transaction_costs, adjust_strategy_returns_for_costs
     from .utils.triple_barrier import add_triple_barrier_labels, calculate_metrics_with_labels
+    from .utils.normalization import ColumnNormalizer
 except ImportError:
     # Fall back to absolute imports (for direct execution)
     from config import setup_mlflow, create_experiment
@@ -30,6 +31,7 @@ except ImportError:
     from utils.plotting import save_plots_for_mlflow
     from utils.transaction_costs import apply_transaction_costs, adjust_strategy_returns_for_costs
     from utils.triple_barrier import add_triple_barrier_labels, calculate_metrics_with_labels
+    from utils.normalization import ColumnNormalizer
 import mlflow
 import numpy as np
 import pandas as pd
@@ -116,8 +118,18 @@ class RunGenerator:
     
     def _load_features(self):
         """Load features based on strategy requirements with automatic warmup period."""
-        # Get worst-case warmup period (for optimization phase)
-        warmup_days = self.strategy.get_warmup_days()
+        # Get strategy-specific warmup period
+        strategy_warmup = self.strategy.get_warmup_days()
+        
+        # Check if normalization is required and get its warmup
+        normalization_config = self.strategy.get_normalization_config()
+        normalization_warmup = 0
+        if normalization_config:
+            # EWMA normalization requires 135 days (1.5 * 90 halflife)
+            normalization_warmup = 135
+        
+        # Total warmup is the maximum of both
+        warmup_days = max(strategy_warmup, normalization_warmup)
         
         # Get what features this strategy needs
         feature_spec = self.strategy.get_required_features()
@@ -128,7 +140,11 @@ class RunGenerator:
             extended_start = original_start - pd.Timedelta(days=warmup_days)
             extended_start_str = extended_start.strftime('%Y-%m-%d')
             
-            print(f"🕐 Strategy requires {warmup_days} warmup days")
+            print(f"🕐 Total warmup required: {warmup_days} days")
+            if strategy_warmup > 0:
+                print(f"   Strategy indicators: {strategy_warmup} days")
+            if normalization_warmup > 0:
+                print(f"   EWMA normalization: {normalization_warmup} days")
             print(f"   Extended data range: {extended_start_str} to {self.end_date}")
             print(f"   Actual trading range: {self.start_date} to {self.end_date}")
             
@@ -241,7 +257,7 @@ class RunGenerator:
         mlflow.set_experiment(self.clean_strategy_name)
     
     def run(self, 
-            train_test_split: float = 0.75,
+            train_test_split: float = 0.80,
             n_optimization_trials: int = 1000,
             n_insample_permutations: int = 100,
             n_walkforward_permutations: int = 20,
@@ -351,6 +367,33 @@ class RunGenerator:
             
             mlflow.log_metric("train_samples", len(train_data_original))
             mlflow.log_metric("test_samples", len(test_data_original))
+            
+            # Step 2.5: Apply Normalization (if required by strategy)
+            normalization_config = self.strategy.get_normalization_config()
+            
+            if normalization_config:
+                print(f"\n--- Step 2.5: EWMA Z-Score Normalization ---")
+                print(f"🔧 Applying rolling EWMA normalization...")
+                
+                # Initialize normalizer
+                normalizer = ColumnNormalizer()
+                normalizer.configure(normalization_config)
+                
+                # Apply continuous EWMA normalization to entire dataset
+                # EWMA only uses past data, so no look-ahead bias
+                self.features_df = normalizer.normalize(self.features_df)
+                
+                excluded_cols = normalization_config.get('exclude', [])
+                normalized_cols = [col for col in self.features_df.columns if col not in excluded_cols]
+                
+                print(f"✅ Normalized {len(normalized_cols)} columns with 90-day EWMA")
+                print(f"   Excluded columns: {excluded_cols}")
+                mlflow.log_param("normalization_enabled", True)
+                mlflow.log_param("normalization_method", "ewma_zscore")
+                mlflow.log_param("ewma_halflife", normalizer.halflife)
+                mlflow.log_metric("n_normalized_columns", len(normalized_cols))
+            else:
+                mlflow.log_param("normalization_enabled", False)
             
             # Step 3: Strategy Optimization (In-Sample)
             print(f"\n--- Step 3: Strategy Optimization ---")
