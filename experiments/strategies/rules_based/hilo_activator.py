@@ -113,18 +113,24 @@ class HiloActivatorStrategy(BaseStrategy):
 
         # Generate signals with explicit state tracking
         # This avoids forward-fill which causes issues with permutation tests
-        
-        # Initialize signal array
-        signal = pd.Series(0, index=df.index)
-        
-        # Track current position state
-        in_position = 0  # 0 = flat, 1 = long, -1 = short
-        
+
+        # Initialize signal array - start with short position
+        signal = pd.Series(-1, index=df.index)
+
+        # Track current position state and first valid index
+        in_position = -1  # Start short until we get first signal
+        first_valid_idx = None
+
         for i in range(len(df)):
             if pd.isna(high_ma.iloc[i]) or pd.isna(low_ma.iloc[i]):
-                # During warmup period, stay flat
-                signal.iloc[i] = 0
-            elif df[close_col].iloc[i] > high_ma.iloc[i]:
+                # During warmup period, skip
+                continue
+
+            # Mark first valid index
+            if first_valid_idx is None:
+                first_valid_idx = i
+
+            if df[close_col].iloc[i] > high_ma.iloc[i]:
                 # Breakout above high MA - go long
                 signal.iloc[i] = 1
                 in_position = 1
@@ -135,21 +141,31 @@ class HiloActivatorStrategy(BaseStrategy):
             else:
                 # Between bands - maintain previous position
                 signal.iloc[i] = in_position
-        
+
         signal = signal.astype(int)
 
-        # Event flags for backtesting
-        enter_long = (df[close_col] > high_ma) & (signal.shift(1).fillna(0) != 1)
-        enter_short = (df[close_col] < low_ma) & (signal.shift(1).fillna(0) != -1)
+        # Event flags for backtesting (only calculate on valid data)
+        if first_valid_idx is not None:
+            valid_df = df.iloc[first_valid_idx:]
+            valid_signal = signal.iloc[first_valid_idx:]
+            valid_high_ma = high_ma.iloc[first_valid_idx:]
+            valid_low_ma = low_ma.iloc[first_valid_idx:]
 
-        # Store results
-        df['hilo_high_ma'] = high_ma
-        df['hilo_low_ma'] = low_ma
-        df['signal'] = signal
-        df['enter_long'] = enter_long.astype(bool)
-        df['enter_short'] = enter_short.astype(bool)
+            enter_long = (valid_df[close_col] > valid_high_ma) & (valid_signal.shift(1).fillna(-1) != 1)
+            enter_short = (valid_df[close_col] < valid_low_ma) & (valid_signal.shift(1).fillna(1) != -1)
 
-        return df
+            # Store results only for valid data
+            df = df.iloc[first_valid_idx:].copy()
+            df['hilo_high_ma'] = valid_high_ma
+            df['hilo_low_ma'] = valid_low_ma
+            df['signal'] = valid_signal
+            df['enter_long'] = enter_long.astype(bool)
+            df['enter_short'] = enter_short.astype(bool)
+
+            return df
+        else:
+            # If no valid signals, return empty DataFrame
+            return df.iloc[0:0]
 
     def optimize(self, data: pd.DataFrame, train_start: str, train_end: str,
                  n_trials: int = 1000, **kwargs) -> Dict:

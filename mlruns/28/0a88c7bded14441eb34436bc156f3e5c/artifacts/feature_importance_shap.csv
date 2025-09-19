@@ -1,0 +1,6 @@
+feature,mean_abs_shap
+bitcoin_close_topo_l2_norm_1_x,0.5152488240652855
+bitcoin_close_topo_avg_hole_lifetime_1_x,0.2873347368964861
+bitcoin_close_topo_num_relevant_holes_1_x,0.22064385128864514
+bitcoin_close_topo_l1_norm_1_x,0.19786281120951563
+signal,0.15771197033270867

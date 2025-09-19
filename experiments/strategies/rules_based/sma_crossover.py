@@ -51,27 +51,31 @@ class SMACrossoverStrategy(BaseStrategy):
     def calculate_signals(self, data: pd.DataFrame, params: Dict) -> pd.DataFrame:
         """Calculate SMA crossover signals."""
         df = data.copy()
-        
+
         # Find close price column with asset prefix
         close_col = f"{self.asset}_close"
         if close_col not in df.columns:
             raise ValueError(f"Required column '{close_col}' not found in data")
-        
+
         # Calculate SMAs
         df['sma_fast'] = df[close_col].rolling(window=params['fast_period']).mean()
         df['sma_slow'] = df[close_col].rolling(window=params['slow_period']).mean()
-        
-        # Initialize signals as neutral (no position)
-        df['signal'] = 0
-        
-        # Only generate signals where both SMAs are valid (not NaN)
+
+        # Generate signals where both SMAs are valid (not NaN)
         valid_mask = df['sma_fast'].notna() & df['sma_slow'].notna()
-        df.loc[valid_mask, 'signal'] = np.where(
-            df.loc[valid_mask, 'sma_fast'] >= df.loc[valid_mask, 'sma_slow'], 
+        df['signal'] = np.where(
+            df['sma_fast'] >= df['sma_slow'],
             1, -1
         )
-        
-        return df
+
+        # Only return data from where valid signals can be generated
+        # This ensures no 0 signals are passed forward
+        if valid_mask.any():
+            first_valid_idx = df[valid_mask].index[0]
+            return df.loc[first_valid_idx:]
+        else:
+            # If no valid signals, return empty DataFrame with same structure
+            return df.iloc[0:0]
     
     def optimize(self, data: pd.DataFrame, train_start: str, train_end: str, 
                  n_trials: int = 1000, **kwargs) -> Dict:

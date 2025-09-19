@@ -93,8 +93,14 @@ class MetaStrategy(BaseStrategy):
             # If both fail, raise the original error
             raise ValueError(f"Cannot validate primary run {self.primary_run_id}. Tried MLflow client and direct file access. Original error: {first_error}")
 
-    def load_primary_signals(self) -> pd.DataFrame:
-        """Load primary model signals (full period) for meta-model predictions."""
+    def load_primary_signals(self, expected_start_date: str = None, expected_end_date: str = None, warmup_days: int = 0) -> pd.DataFrame:
+        """Load primary model signals (full period) for meta-model predictions.
+
+        Args:
+            expected_start_date: Expected start date for signals (including warmup)
+            expected_end_date: Expected end date for signals
+            warmup_days: Number of warmup days needed
+        """
         try:
             # Use MLflow client to download primary_signals.csv artifact
             client = getattr(self, '_working_client', None)
@@ -105,7 +111,7 @@ class MetaStrategy(BaseStrategy):
                 from config import setup_mlflow
                 setup_mlflow()
                 client = mlflow.tracking.MlflowClient()
-            
+
             with tempfile.TemporaryDirectory() as tmp_dir:
                 try:
                     # First try to load the new primary_signals.csv artifact
@@ -126,22 +132,67 @@ class MetaStrategy(BaseStrategy):
                     )
                     combined_df = pd.read_csv(artifact_path, index_col='timestamp', parse_dates=True)
                     signals_df = combined_df[['signal']].copy()
-                
+
                 # Validate signal column exists
                 if 'signal' not in signals_df.columns:
                     raise ValueError(f"Primary signals missing 'signal' column")
-                
+
                 print(f"   Loaded {len(signals_df)} primary signals from run {self.primary_run_id}")
                 print(f"   Date range: {signals_df.index.min()} to {signals_df.index.max()}")
                 print(f"   Non-null signals: {signals_df['signal'].notna().sum()}")
-                
+
+                # Handle warmup period alignment if parameters provided
+                if expected_start_date and warmup_days > 0:
+                    expected_start = pd.to_datetime(expected_start_date)
+                    signals_start = signals_df.index.min()
+
+                    if signals_start > expected_start:
+                        # Primary signals don't cover the full warmup period
+                        warmup_gap_days = (signals_start - expected_start).days
+                        print(f"   ⚠️  Primary signals missing {warmup_gap_days} days of warmup period")
+                        print(f"   🔧 Padding warmup period with zeros from {expected_start_date} to {signals_start}")
+
+                        # Create warmup padding with zero signals
+                        warmup_dates = pd.date_range(start=expected_start, end=signals_start, freq='D', inclusive='left')
+                        warmup_padding = pd.DataFrame(
+                            index=warmup_dates,
+                            data={'signal': 0}  # Zero signals during warmup
+                        )
+                        warmup_padding.index.name = 'timestamp'
+
+                        # Prepend warmup padding to signals
+                        signals_df = pd.concat([warmup_padding, signals_df])
+                        print(f"   ✅ Added {len(warmup_padding)} warmup days with zero signals")
+
+                # Validate expected date range coverage if provided
+                if expected_start_date and expected_end_date:
+                    expected_start = pd.to_datetime(expected_start_date)
+                    expected_end = pd.to_datetime(expected_end_date)
+                    actual_start = signals_df.index.min()
+                    actual_end = signals_df.index.max()
+
+                    if actual_start > expected_start:
+                        print(f"   ⚠️  WARNING: Primary signals start later than expected")
+                        print(f"      Expected: {expected_start}, Actual: {actual_start}")
+
+                    if actual_end < expected_end:
+                        print(f"   ⚠️  WARNING: Primary signals end earlier than expected")
+                        print(f"      Expected: {expected_end}, Actual: {actual_end}")
+
+                print(f"   Final signals shape: {signals_df.shape}")
                 return signals_df
-                
+
         except Exception as e:
             raise RuntimeError(f"Failed to load primary signals from run {self.primary_run_id}: {e}")
     
-    def load_primary_labels(self) -> pd.DataFrame:
-        """Load label artifacts (training labels only) from primary model run."""
+    def load_primary_labels(self, expected_start_date: str = None, expected_end_date: str = None, warmup_days: int = 0) -> pd.DataFrame:
+        """Load label artifacts (training labels only) from primary model run.
+
+        Args:
+            expected_start_date: Expected start date for labels (including warmup)
+            expected_end_date: Expected end date for labels
+            warmup_days: Number of warmup days needed
+        """
         if self._primary_labels is not None:
             return self._primary_labels
 
@@ -159,7 +210,7 @@ class MetaStrategy(BaseStrategy):
                     from config import setup_mlflow
                     setup_mlflow()
                     client = mlflow.tracking.MlflowClient()
-                
+
                 # Download triple_barrier_labels.csv artifact
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     artifact_path = client.download_artifacts(
@@ -167,26 +218,68 @@ class MetaStrategy(BaseStrategy):
                         'triple_barrier_labels.csv',
                         tmp_dir
                     )
-                    
+
                     # Load the labels
                     labels_df = pd.read_csv(artifact_path, index_col='timestamp', parse_dates=True)
-            
+
             # Validate required columns (labels may have NaN for test period)
             if 'label' not in labels_df.columns:
                 raise ValueError(f"Primary labels missing 'label' column")
-            
+
+            print(f"✅ Loaded primary labels from run {self.primary_run_id}")
+            print(f"   Original date range: {labels_df.index.min()} to {labels_df.index.max()}")
+
+            # Handle warmup period alignment if parameters provided
+            if expected_start_date and warmup_days > 0:
+                expected_start = pd.to_datetime(expected_start_date)
+                labels_start = labels_df.index.min()
+
+                if labels_start > expected_start:
+                    # Primary labels don't cover the full warmup period
+                    warmup_gap_days = (labels_start - expected_start).days
+                    print(f"   ⚠️  Primary labels missing {warmup_gap_days} days of warmup period")
+                    print(f"   🔧 Padding warmup period with NaN labels from {expected_start_date} to {labels_start}")
+
+                    # Create warmup padding with NaN labels (no ground truth during warmup)
+                    warmup_dates = pd.date_range(start=expected_start, end=labels_start, freq='D', inclusive='left')
+
+                    # Create warmup padding with same structure as original labels
+                    warmup_columns = {col: None for col in labels_df.columns}  # NaN for all label columns during warmup
+                    warmup_padding = pd.DataFrame(
+                        index=warmup_dates,
+                        data=warmup_columns
+                    )
+                    warmup_padding.index.name = 'timestamp'
+
+                    # Prepend warmup padding to labels
+                    labels_df = pd.concat([warmup_padding, labels_df])
+                    print(f"   ✅ Added {len(warmup_padding)} warmup days with NaN labels")
+
+            # Validate expected date range coverage if provided
+            if expected_start_date and expected_end_date:
+                expected_start = pd.to_datetime(expected_start_date)
+                expected_end = pd.to_datetime(expected_end_date)
+                actual_start = labels_df.index.min()
+                actual_end = labels_df.index.max()
+
+                if actual_start > expected_start:
+                    print(f"   ⚠️  WARNING: Primary labels start later than expected")
+                    print(f"      Expected: {expected_start}, Actual: {actual_start}")
+
+                if actual_end < expected_end:
+                    print(f"   ⚠️  WARNING: Primary labels end earlier than expected")
+                    print(f"      Expected: {expected_end}, Actual: {actual_end}")
+
             # Only keep rows with non-null labels (training period)
             training_labels = labels_df.dropna(subset=['label'])
-            
+
             self._primary_labels = labels_df  # Keep full dataset for reference
-            print(f"✅ Loaded primary labels from run {self.primary_run_id}")
-            print(f"   Total rows: {len(labels_df)}")
+            print(f"   Final labels shape: {labels_df.shape}")
             print(f"   Training labels (non-null): {len(training_labels)}")
             print(f"   Available columns: {list(labels_df.columns)}")
-            print(f"   Date range: {labels_df.index.min()} to {labels_df.index.max()}")
-            
+
             return labels_df
-                
+
         except Exception as e:
             raise RuntimeError(f"Failed to load primary labels from run {self.primary_run_id}: {e}")
 

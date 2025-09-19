@@ -1,0 +1,54 @@
+{
+  "run_info": {
+    "run_id": "9a92262227584571947deaeafcbe2211",
+    "experiment_name": "topological_mr_validator",
+    "strategy_type": null,
+    "strategy_basis": "meta_models",
+    "asset": "bitcoin",
+    "start_date": "2022-01-01",
+    "end_date": "2024-12-31",
+    "train_test_split": 0.8
+  },
+  "optimization": {
+    "best_params": {
+      "iterations": 178,
+      "depth": 7,
+      "learning_rate": 0.12512507592179042,
+      "l2_leaf_reg": 9.426419780361096,
+      "random_strength": 0.7574141229630846,
+      "bagging_temperature": 0.3416248443378231,
+      "border_count": 92
+    },
+    "optimization_score": 0.5468245783373016
+  },
+  "validation": {
+    "permutation_results": {
+      "sharpe_ratio": {
+        "p_value": 0.001,
+        "passes_test": true
+      },
+      "information_ratio": {
+        "p_value": 0.001,
+        "passes_test": true
+      },
+      "max_drawdown": {
+        "p_value": 0.001,
+        "passes_test": true
+      }
+    },
+    "walk_forward_permutation": {
+      "sharpe": {
+        "p_value": 0.001,
+        "passes_test": true
+      },
+      "profit_factor": {
+        "p_value": 0.001,
+        "passes_test": true
+      }
+    }
+  },
+  "deployment": {
+    "model_artifact_path": "model",
+    "ready_for_registration": true
+  }
+}

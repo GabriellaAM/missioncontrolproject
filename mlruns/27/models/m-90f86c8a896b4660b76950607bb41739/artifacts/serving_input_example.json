@@ -1,0 +1,16 @@
+{
+  "dataframe_split": {
+    "columns": [
+      "bitcoin_close",
+      "signal",
+      "label"
+    ],
+    "data": [
+      [
+        50000.0,
+        100.0,
+        100.0
+      ]
+    ]
+  }
+}

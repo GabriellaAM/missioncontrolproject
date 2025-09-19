@@ -1,0 +1,17 @@
+{
+  "strategy_name": "topological_mr_validator_bitcoin",
+  "strategy_type": null,
+  "implementation_type": "meta_model",
+  "asset": "bitcoin",
+  "parameters": {
+    "iterations": 264,
+    "depth": 3,
+    "learning_rate": 0.06457120189157252,
+    "l2_leaf_reg": 6.700691452626759,
+    "random_strength": 0.5928130087101013,
+    "bagging_temperature": 0.8880220387628583,
+    "border_count": 55
+  },
+  "feature_cols": [],
+  "strategy_class": "experiments.strategies.meta_models.topological_mr_validator.TopologicalMRValidatorStrategy"
+}

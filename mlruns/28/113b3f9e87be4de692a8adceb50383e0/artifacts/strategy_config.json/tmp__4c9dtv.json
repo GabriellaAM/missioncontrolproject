@@ -1,0 +1,13 @@
+{
+  "strategy_name": "topological_lr_validator_bitcoin",
+  "strategy_type": null,
+  "implementation_type": "meta_model",
+  "asset": "bitcoin",
+  "parameters": {
+    "C": 0.1028176864440004,
+    "penalty": "elasticnet",
+    "l1_ratio": 0.9210915348781479
+  },
+  "feature_cols": [],
+  "strategy_class": "experiments.strategies.meta_models.topological_lr_validator.TopologicalLRValidatorStrategy"
+}

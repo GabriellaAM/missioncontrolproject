@@ -1,0 +1,34 @@
+{
+  "dataframe_split": {
+    "columns": [
+      "bitcoin_close",
+      "signal",
+      "label",
+      "bitcoin_log_return_1",
+      "bitcoin_close_topo_avg_hole_lifetime_1",
+      "bitcoin_close_topo_avg_hole_lifetime_1_ma5",
+      "bitcoin_close_topo_num_relevant_holes_1",
+      "bitcoin_close_topo_num_relevant_holes_1_ma5",
+      "bitcoin_close_topo_l1_norm_1",
+      "bitcoin_close_topo_l1_norm_1_ma5",
+      "bitcoin_close_topo_l1_norm_1_ma10",
+      "bitcoin_close_topo_l2_norm_1"
+    ],
+    "data": [
+      [
+        50000.0,
+        1,
+        1,
+        0.01,
+        0.15,
+        0.15,
+        1.0,
+        1.0,
+        1.5,
+        1.5,
+        1.5,
+        1.5
+      ]
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+feature_name,feature_type
+bitcoin_open,primary
+bitcoin_close,primary
+bitcoin_high,primary
+bitcoin_low,primary
+bitcoin_total_volume,primary
+bitcoin_market_cap,primary
+barrier_touched,primary
+return_at_barrier,primary
+bitcoin_log_return_1,primary
