@@ -497,65 +497,81 @@ class RunGenerator:
                 
                 # Skip triple barrier labeling for meta-models - they already have labels from primary model
                 if not self.strategy.is_meta_model:
-                    # Calculate triple barrier labels ONLY for training data and ONLY for strategy events
-                    print(f"🎯 Generating triple barrier labels for training data...")
+                    # Calculate triple barrier labels for FULL dataset (train + test) for all strategy events
+                    print(f"🎯 Generating triple barrier labels for full dataset...")
                     price_col = f"{self.asset_name}_close"
-                    
-                    # CRITICAL: Use the actual strategy data that already has signals calculated
-                    # Extract event timestamps where strategy actually trades (signal != 0) in training period only
-                    training_events = train_strategy_data[train_strategy_data['signal'] != 0].index
-                    print(f"🎯 Found {len(training_events)} trading events in training data")
-                    
+
+                    # FIXED: Extract event timestamps where strategy actually trades (signal != 0) from FULL period
+                    # This ensures meta-models have labels for test set evaluation
+                    full_period_data = strategy_data.loc[self.start_date:self.end_date]
+                    all_strategy_events = full_period_data[full_period_data['signal'] != 0].index
+                    print(f"🎯 Found {len(all_strategy_events)} trading events in full dataset (train + test)")
+
+                    # Split events for reporting
+                    training_events = all_strategy_events[all_strategy_events <= train_end]
+                    test_events = all_strategy_events[all_strategy_events >= test_start]
+                    print(f"   Training events: {len(training_events)}")
+                    print(f"   Test events: {len(test_events)}")
+
                     # Apply triple barrier labeling using FULL strategy data (including warmup) for volatility calculation
-                    # but only label events from the training period
+                    # and label ALL strategy events (train + test)
                     full_strategy_labeled = add_triple_barrier_labels(
                         strategy_data,  # Use FULL strategy data (with warmup) for volatility calculation!
                         price_col=price_col,
-                        events=training_events,  # Only label training period events
+                        events=all_strategy_events,  # Label ALL events, not just training
                         volatility_span=20,
                         time_barrier_days=5,
                         upper_barrier_mult=2.0,
                         lower_barrier_mult=2.0
                     )
                     
-                    # Filter results to training period for labels
-                    train_strategy_labeled = full_strategy_labeled.loc[train_start:train_end]
-                    
-                    # Create artifact with FULL signal series but labels only for training period
-                    if 'label' in train_strategy_labeled.columns:
+                    # Get labeled data for full period (train + test)
+                    full_period_labeled = full_strategy_labeled.loc[self.start_date:self.end_date]
+
+                    # Create artifacts with labels for FULL period (train + test)
+                    if 'label' in full_strategy_labeled.columns:
                         print(f"   Creating label artifacts...")
-                        
-                        # Get signals for the ENTIRE period (train + test) - but ONLY within start/end dates (no warmup)
-                        full_signals = strategy_data.loc[self.start_date:self.end_date, ['signal']].copy()
-                        
-                        # Get label columns from training period only
+
+                        # Get signals and labels for the ENTIRE period (train + test) - but ONLY within start/end dates (no warmup)
+                        full_signals = full_period_labeled[['signal']].copy()
+
+                        # Get label columns from FULL period (train + test)
                         label_columns = ['label', 'barrier_touched', 'days_to_barrier', 'return_at_barrier']
-                        available_label_columns = [col for col in label_columns if col in train_strategy_labeled.columns]
-                        training_labels = train_strategy_labeled[available_label_columns].copy()
-                        
+                        available_label_columns = [col for col in label_columns if col in full_period_labeled.columns]
+                        full_labels = full_period_labeled[available_label_columns].copy()
+
+                        # Count labels by period for reporting
+                        train_labels = full_labels.loc[train_start:train_end]
+                        test_labels = full_labels.loc[test_start:test_end] if pd.to_datetime(test_start) <= full_labels.index.max() else pd.DataFrame()
+
+                        train_label_count = train_labels['label'].notna().sum()
+                        test_label_count = test_labels['label'].notna().sum() if len(test_labels) > 0 else 0
+
+                        print(f"   Training labels: {train_label_count}")
+                        print(f"   Test labels: {test_label_count}")
+                        print(f"   Total labels: {train_label_count + test_label_count}")
+
                         # Create separate artifacts for clarity:
-                        
+
                         # 1. Primary signals artifact (for meta-models) - signals only, full period
                         primary_signals_path = 'primary_signals.csv'
                         full_signals.to_csv(primary_signals_path, index_label='timestamp')
                         mlflow.log_artifact(primary_signals_path)
                         print(f"   Saved primary signals: {len(full_signals)} rows ({self.start_date} to {self.end_date}, no warmup)")
-                        
-                        # 2. Triple barrier labels artifact (legacy compatibility) - signals + labels
-                        # Merge signals (full period) with labels (training only)
-                        # Labels will be NaN for test period
+
+                        # 2. Triple barrier labels artifact - signals + labels for FULL period
                         artifact_data = full_signals.merge(
-                            training_labels,
+                            full_labels,
                             left_index=True,
                             right_index=True,
-                            how='left'  # Keep all signals, labels NaN for test period
+                            how='left'  # Keep all signals, include all available labels
                         )
-                        
+
                         labels_csv_path = 'triple_barrier_labels.csv'
                         artifact_data.to_csv(labels_csv_path, index_label='timestamp')
                         mlflow.log_artifact(labels_csv_path)
                         print(f"   Saved combined artifact: {len(artifact_data)} rows with columns: {list(artifact_data.columns)}")
-                        print(f"   Labels: training only ({len(training_labels)} rows, rest are NaN)")
+                        print(f"   Labels: full period ({full_labels['label'].notna().sum()} total labels for train + test)")
                         
                         # Clean up temporary files
                         try:
@@ -564,12 +580,13 @@ class RunGenerator:
                         except:
                             pass
                     
-                    # Align labels with strategy data - ONLY for labeled events
-                    if 'label' in train_strategy_labeled.columns:
-                        # Filter out NaN labels (only keep actual trading events with labels)
+                    # Align labels with strategy data - use training events only for in-sample metrics
+                    if 'label' in full_strategy_labeled.columns:
+                        # Filter training period labeled events for in-sample evaluation
+                        train_strategy_labeled = full_strategy_labeled.loc[train_start:train_end]
                         labeled_events = train_strategy_labeled.dropna(subset=['label'])
-                        print(f"🏷️  Found {len(labeled_events)} labeled trading events")
-                        
+                        print(f"🏷️  Found {len(labeled_events)} labeled trading events in training period")
+
                         if len(labeled_events) > 0:
                             # All data is now aligned since we used train_strategy_data throughout
                             labels = labeled_events['label'].values
