@@ -336,19 +336,43 @@ class MetaStrategy(BaseStrategy):
         pass
 
     @abstractmethod
-    def optimize(self, data: pd.DataFrame, train_start: str, train_end: str, 
+    def optimize(self, data: pd.DataFrame, train_start: str, train_end: str,
                  n_trials: int = 1000, **kwargs) -> Dict:
         """
         Optimize meta-model parameters.
-        
+
         Args:
             data: DataFrame with features + signal + label columns
             train_start: Training start date
             train_end: Training end date
             n_trials: Number of optimization trials
-            
+
         Returns:
             Dict with optimization results
         """
         pass
+
+    def get_required_artifacts(self) -> list:
+        """
+        Return list of artifacts required for meta-models.
+
+        Meta-models typically need additional artifacts beyond standard strategies:
+        - confusion_matrix: Classification performance on train/test sets
+        - signal_comparison: Primary vs meta vs final signal analysis
+        - comprehensive_csv: Complete data export including all signal stages
+        - model_summary: Meta-model specific performance metrics
+
+        Override this method to customize artifacts for specific meta-models.
+
+        Returns:
+            List of required artifact names
+        """
+        return [
+            'performance_plots',      # Standard performance charts
+            'returns_analysis',       # Standard returns analysis
+            'confusion_matrix',       # Classification performance
+            'signal_comparison',      # Signal evolution analysis
+            'comprehensive_csv',      # Complete data export
+            'model_summary'           # Meta-model performance summary
+        ]
     

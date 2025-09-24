@@ -1,1 +1,2 @@
 - When implementing any function, module, class, or anything, focus on the most basic and needed functionalities first, before adding too much complexity, detail and flexibility.
+- I see that sometimes you suggest to create new files, but disregard elements that have been already implemented. So instead of modifying, you create redundancy. Try to be effective by understanding what needs to be modified rather than recreated, and if recreated, check for redundancies.

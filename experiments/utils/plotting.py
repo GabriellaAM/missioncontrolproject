@@ -672,3 +672,190 @@ def save_plots_for_mlflow(strategy_data: pd.DataFrame,
         print(f"Warning: Could not create walk-forward analysis plot: {e}")
     
     return saved_files
+
+
+def plot_feature_importance(model, features: list, model_type: str,
+                          title: str = None, max_features: int = 20,
+                          save_path: str = None) -> str:
+    """
+    Create feature importance plot for any model type.
+
+    Args:
+        model: Trained model with feature importance capability
+        features: List of feature names
+        model_type: Type of model ('catboost', 'sklearn', 'lightgbm', etc.)
+        title: Plot title (auto-generated if None)
+        max_features: Maximum number of features to show
+        save_path: Path to save plot (temp file if None)
+
+    Returns:
+        Path to saved plot file
+    """
+    import os
+    import tempfile
+
+    if title is None:
+        title = f"{model_type.title()} Feature Importance"
+
+    try:
+        # Extract feature importance based on model type
+        if model_type.lower() == 'catboost':
+            importance_values = model.get_feature_importance()
+        elif hasattr(model, 'feature_importances_'):
+            # sklearn-style models
+            importance_values = model.feature_importances_
+        elif hasattr(model, 'coef_'):
+            # Linear models - use absolute coefficients
+            importance_values = np.abs(model.coef_).flatten()
+        else:
+            raise ValueError(f"Unsupported model type for feature importance: {model_type}")
+
+        # Create DataFrame and sort by importance
+        importance_df = pd.DataFrame({
+            'feature': features[:len(importance_values)],  # Handle length mismatch
+            'importance': importance_values
+        }).sort_values('importance', ascending=False)
+
+        # Limit to top features
+        if len(importance_df) > max_features:
+            importance_df = importance_df.head(max_features)
+
+        # Create plot
+        plt.figure(figsize=(12, max(6, len(importance_df) * 0.3)))
+
+        # Use horizontal bar chart for better readability with long feature names
+        sns.barplot(data=importance_df, x='importance', y='feature', orient='h')
+        plt.title(title, fontsize=14, fontweight='bold')
+        plt.xlabel('Importance', fontsize=12)
+        plt.ylabel('Features', fontsize=12)
+
+        # Add value labels on bars
+        for i, (idx, row) in enumerate(importance_df.iterrows()):
+            plt.text(row['importance'], i, f'{row["importance"]:.3f}',
+                    va='center', ha='left', fontsize=9, alpha=0.8)
+
+        plt.tight_layout()
+
+        # Save plot
+        if save_path is None:
+            save_path = os.path.join(tempfile.gettempdir(), 'feature_importance.png')
+
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        return save_path
+
+    except Exception as e:
+        print(f"Warning: Could not create feature importance plot: {e}")
+        # Return empty file path on error
+        return ""
+
+
+def plot_signal_comparison(data: pd.DataFrame,
+                          primary_signal_col: str = 'primary_signal',
+                          meta_decision_col: str = 'meta_decision',
+                          final_signal_col: str = 'signal',
+                          title: str = "Signal Evolution Analysis",
+                          save_path: str = None,
+                          max_days: int = 500) -> str:
+    """
+    Create signal comparison plot showing primary, meta, and final signals.
+
+    Args:
+        data: DataFrame with signal columns
+        primary_signal_col: Column name for primary signals
+        meta_decision_col: Column name for meta decisions (0/1)
+        final_signal_col: Column name for final combined signals
+        title: Plot title
+        save_path: Path to save plot (temp file if None)
+        max_days: Maximum days to plot (for readability)
+
+    Returns:
+        Path to saved plot file
+    """
+    import os
+    import tempfile
+
+    try:
+        # Limit data for readability
+        plot_data = data.copy()
+        if len(plot_data) > max_days:
+            plot_data = plot_data.tail(max_days)
+
+        # Check required columns exist
+        required_cols = [primary_signal_col, meta_decision_col, final_signal_col]
+        missing_cols = [col for col in required_cols if col not in plot_data.columns]
+        if missing_cols:
+            print(f"Warning: Missing columns for signal comparison: {missing_cols}")
+            return ""
+
+        fig, axes = plt.subplots(4, 1, figsize=(15, 12), sharex=True)
+
+        # Plot 1: Primary signals
+        axes[0].step(plot_data.index, plot_data[primary_signal_col],
+                    where='post', color='blue', linewidth=1.5, label='Primary Signal')
+        axes[0].set_title('Primary Strategy Signals', fontsize=12, fontweight='bold')
+        axes[0].set_ylabel('Signal', fontsize=11)
+        axes[0].grid(True, alpha=0.3)
+        axes[0].legend()
+        axes[0].set_ylim(-1.2, 1.2)
+
+        # Plot 2: Meta decisions (0/1)
+        axes[1].step(plot_data.index, plot_data[meta_decision_col],
+                    where='post', color='red', linewidth=1.5, label='Meta Decision')
+        axes[1].fill_between(plot_data.index, 0, plot_data[meta_decision_col],
+                           step='post', alpha=0.3, color='red')
+        axes[1].set_title('Meta-Model Decisions (1=Take Signal, 0=Skip)', fontsize=12, fontweight='bold')
+        axes[1].set_ylabel('Decision', fontsize=11)
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend()
+        axes[1].set_ylim(-0.1, 1.2)
+
+        # Plot 3: Final combined signals
+        axes[2].step(plot_data.index, plot_data[final_signal_col],
+                    where='post', color='green', linewidth=1.5, label='Final Signal')
+        axes[2].set_title('Final Combined Signals (Primary × Meta)', fontsize=12, fontweight='bold')
+        axes[2].set_ylabel('Signal', fontsize=11)
+        axes[2].grid(True, alpha=0.3)
+        axes[2].legend()
+        axes[2].set_ylim(-1.2, 1.2)
+
+        # Plot 4: Signal statistics over time (rolling counts)
+        window = min(30, len(plot_data) // 10)  # Adaptive window
+        if window >= 5:
+            primary_nonzero = plot_data[primary_signal_col].abs().rolling(window).sum()
+            final_nonzero = plot_data[final_signal_col].abs().rolling(window).sum()
+
+            axes[3].plot(plot_data.index, primary_nonzero,
+                        color='blue', alpha=0.7, label=f'Primary Signals ({window}d)')
+            axes[3].plot(plot_data.index, final_nonzero,
+                        color='green', alpha=0.7, label=f'Final Signals ({window}d)')
+            axes[3].fill_between(plot_data.index, primary_nonzero, final_nonzero,
+                               alpha=0.2, color='orange', label='Filtered Out')
+
+        axes[3].set_title(f'Signal Activity (Rolling {window}-day Count)', fontsize=12, fontweight='bold')
+        axes[3].set_ylabel('Count', fontsize=11)
+        axes[3].set_xlabel('Time', fontsize=11)
+        axes[3].grid(True, alpha=0.3)
+        axes[3].legend()
+
+        # Format x-axis
+        for ax in axes:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+
+        plt.xticks(rotation=45)
+        plt.suptitle(title, fontsize=14, fontweight='bold', y=0.98)
+        plt.tight_layout()
+
+        # Save plot
+        if save_path is None:
+            save_path = os.path.join(tempfile.gettempdir(), 'signal_comparison.png')
+
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        return save_path
+
+    except Exception as e:
+        print(f"Warning: Could not create signal comparison plot: {e}")
+        return ""

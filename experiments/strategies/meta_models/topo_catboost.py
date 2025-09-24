@@ -44,6 +44,21 @@ class TopoCatBoostStrategy(MetaStrategy):
             'calculated_features': {}
         }
 
+    def get_required_artifacts(self) -> list:
+        """
+        Return list of artifacts required for CatBoost meta-model.
+
+        Inherits meta-model artifacts from base class and adds CatBoost-specific ones.
+        """
+        base_artifacts = super().get_required_artifacts()
+
+        # Add CatBoost-specific artifacts
+        catboost_artifacts = [
+            'feature_importance'  # CatBoost feature importance visualization
+        ]
+
+        return base_artifacts + catboost_artifacts
+
     def get_normalization_config(self) -> Dict:
         """
         Configure normalization for raw features only.
@@ -352,44 +367,6 @@ class TopoCatBoostStrategy(MetaStrategy):
         except Exception as e:
             raise RuntimeError(f"Error in signal generation: {e}") from e
 
-    def _create_feature_importance_artifacts(self, model, feature_cols):
-        """
-        Create and save feature importance artifacts for CatBoost.
-        """
-        try:
-            print(f"📊 Creating feature importance artifacts...")
-
-            # Get feature importance
-            feature_importance = model.get_feature_importance()
-
-            # Create DataFrame with feature names and importance
-            importance_df = pd.DataFrame({
-                'feature': feature_cols,
-                'importance': feature_importance
-            }).sort_values('importance', ascending=False)
-
-            # Save feature importance
-            importance_df.to_csv('feature_importance_catboost.csv', index=False)
-            mlflow.log_artifact('feature_importance_catboost.csv')
-
-            # Plot feature importance
-            plt.figure(figsize=(12, 8))
-            top_features = importance_df.head(20)  # Top 20 features
-            sns.barplot(data=top_features, x='importance', y='feature')
-            plt.title('Top 20 Feature Importance (CatBoost)')
-            plt.xlabel('Importance')
-            plt.tight_layout()
-            plt.savefig('feature_importance_plot.png', dpi=300, bbox_inches='tight')
-            plt.close()
-            mlflow.log_artifact('feature_importance_plot.png')
-
-            print(f"   ✅ Saved feature importance artifacts")
-            print(f"   Top 5 features:")
-            for _, row in importance_df.head(5).iterrows():
-                print(f"      {row['feature']}: {row['importance']:.3f}")
-
-        except Exception as e:
-            print(f"⚠️  Error creating feature importance artifacts: {e}")
 
     def optimize(self, data: pd.DataFrame, train_start: str, train_end: str,
                  n_trials: int = 1000, **kwargs) -> Dict:
@@ -618,9 +595,6 @@ class TopoCatBoostStrategy(MetaStrategy):
 
         self.model = cb.CatBoostClassifier(**final_params)
         self.model.fit(X_train, y_train)
-
-        # Create feature importance artifacts
-        self._create_feature_importance_artifacts(self.model, feature_cols)
 
         # CRITICAL FIX: Train and store scaler for feature normalization
         from sklearn.preprocessing import StandardScaler

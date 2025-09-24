@@ -7,6 +7,13 @@ from typing import Union, Optional, Dict, List, Tuple
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+import os
+import tempfile
+try:
+    import mlflow
+    MLFLOW_AVAILABLE = True
+except ImportError:
+    MLFLOW_AVAILABLE = False
 
 
 def calculate_sharpe_ratio(returns: np.ndarray, 
@@ -267,45 +274,116 @@ def extract_positions(signals: np.ndarray, returns: np.ndarray) -> List[Dict]:
     return positions
 
 
-def create_confusion_matrix_plot(y_true: List[int], y_pred: List[int], 
+def create_confusion_matrix_plot(y_true: Union[List[int], np.ndarray],
+                                y_pred: Union[List[int], np.ndarray],
                                 title: str = "Position Profitability Confusion Matrix",
-                                filename: str = "confusion_matrix.png") -> str:
+                                save_path: Optional[str] = None,
+                                filename: Optional[str] = None,
+                                log_to_mlflow: bool = False,
+                                binary_conversion: str = 'none',
+                                labels: Optional[List[int]] = None,
+                                label_names: Optional[List[str]] = None) -> str:
     """
     Create a matplotlib confusion matrix visualization and save to file.
-    
+    Enhanced version supporting multiple use cases and MLflow integration.
+
     Args:
-        y_true: True labels (0=unprofitable, 1=profitable)
-        y_pred: Predicted labels (0=unprofitable, 1=profitable)
+        y_true: True labels
+        y_pred: Predicted labels
         title: Plot title
-        filename: Output filename
-        
+        save_path: Full path to save file (takes precedence over filename)
+        filename: Output filename (used with temp directory if save_path not provided)
+        log_to_mlflow: Whether to log artifact to MLflow
+        binary_conversion: How to convert to binary ('none', 'profitable_vs_rest', 'long_vs_rest')
+        labels: Explicit labels for confusion matrix (defaults to unique values)
+        label_names: Human-readable names for labels
+
     Returns:
         Path to saved plot file
     """
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    
+    # Convert to numpy arrays and handle NaN values
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+
+    # Filter out NaN values
+    mask = ~(np.isnan(y_true) | np.isnan(y_pred))
+    y_true_clean = y_true[mask]
+    y_pred_clean = y_pred[mask]
+
+    # Apply binary conversion if specified
+    if binary_conversion == 'profitable_vs_rest':
+        y_true_clean = (y_true_clean == 1).astype(int)
+        y_pred_clean = (y_pred_clean == 1).astype(int)
+        default_labels = [0, 1]
+        default_label_names = ['Unprofitable', 'Profitable']
+    elif binary_conversion == 'long_vs_rest':
+        y_true_clean = (y_true_clean == 1).astype(int)
+        y_pred_clean = (y_pred_clean == 1).astype(int)
+        default_labels = [0, 1]
+        default_label_names = ['Not Long', 'Long']
+    else:
+        default_labels = sorted(list(set(y_true_clean.tolist() + y_pred_clean.tolist())))
+        default_label_names = [f'Class {i}' for i in default_labels]
+
+    # Use provided labels or defaults
+    if labels is None:
+        labels = default_labels
+    if label_names is None:
+        if binary_conversion in ['profitable_vs_rest', 'long_vs_rest']:
+            label_names = default_label_names
+        else:
+            label_names = [f'Class {i}' for i in labels]
+
+    # Calculate confusion matrix
+    cm = confusion_matrix(y_true_clean, y_pred_clean, labels=labels)
+
     # Create the plot
     plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                xticklabels=['Predicted\nUnprofitable', 'Predicted\nProfitable'],
-                yticklabels=['Actual\nUnprofitable', 'Actual\nProfitable'],
+
+    # Format tick labels
+    if len(labels) == 2:
+        x_labels = [f'Predicted\n{label_names[0]}', f'Predicted\n{label_names[1]}']
+        y_labels = [f'Actual\n{label_names[0]}', f'Actual\n{label_names[1]}']
+    else:
+        x_labels = [f'Pred\n{name}' for name in label_names]
+        y_labels = [f'Act\n{name}' for name in label_names]
+
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=x_labels, yticklabels=y_labels,
                 cbar_kws={'label': 'Number of Positions'})
-    
+
     plt.title(title, fontsize=14, fontweight='bold')
     plt.xlabel('Predicted', fontsize=12)
     plt.ylabel('Actual', fontsize=12)
-    
-    # Add text annotations explaining the quadrants
-    plt.text(0.5, -0.15, 
+
+    # Add accuracy information
+    accuracy = np.trace(cm) / np.sum(cm) if np.sum(cm) > 0 else 0
+    plt.text(0.5, -0.15,
              f"Total Positions: {cm.sum()}\n"
-             f"Accurate Predictions: {cm[0,0] + cm[1,1]} ({(cm[0,0] + cm[1,1])/cm.sum()*100:.1f}%)",
+             f"Accurate Predictions: {np.trace(cm)} ({accuracy*100:.1f}%)",
              transform=plt.gca().transAxes, ha='center', fontsize=10)
-    
+
+    # Determine save path
+    if save_path is None:
+        if filename is None:
+            filename = "confusion_matrix.png"
+        if not os.path.isabs(filename):
+            save_path = os.path.join(tempfile.gettempdir(), filename)
+        else:
+            save_path = filename
+
     plt.tight_layout()
-    plt.savefig(filename, dpi=150, bbox_inches='tight')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
-    
-    return filename
+
+    # Log to MLflow if requested and available
+    if log_to_mlflow and MLFLOW_AVAILABLE:
+        try:
+            mlflow.log_artifact(save_path)
+        except Exception as e:
+            print(f"Warning: Could not log confusion matrix to MLflow: {e}")
+
+    return save_path
 
 
 def calculate_position_based_classification_metrics(signals: np.ndarray, 
@@ -416,4 +494,251 @@ def calculate_all_metrics(returns: np.ndarray,
     
     # Position-based classification removed - use triple barrier labels for ground truth instead
     
+    return metrics
+
+
+def export_comprehensive_csv(data, filename: str = "comprehensive_data.csv",
+                            include_columns: Optional[List[str]] = None,
+                            mlflow_log: bool = False) -> str:
+    """
+    Export comprehensive data to CSV with flexible column selection.
+
+    Args:
+        data: DataFrame or dict of data to export
+        filename: Output filename
+        include_columns: List of specific columns to include. If None, includes all.
+        mlflow_log: Whether to log as MLflow artifact
+
+    Returns:
+        Path to saved CSV file
+    """
+    import pandas as pd
+    import tempfile
+    import os
+
+    # Convert to DataFrame if not already
+    if not isinstance(data, pd.DataFrame):
+        if isinstance(data, dict):
+            data = pd.DataFrame(data)
+        else:
+            raise ValueError("Data must be DataFrame or dict")
+
+    # Filter columns if specified
+    if include_columns:
+        available_columns = [col for col in include_columns if col in data.columns]
+        if len(available_columns) != len(include_columns):
+            missing = set(include_columns) - set(available_columns)
+            print(f"Warning: Missing columns {missing}")
+        data = data[available_columns]
+
+    # Save to temporary file
+    temp_dir = tempfile.gettempdir()
+    filepath = os.path.join(temp_dir, filename)
+    data.to_csv(filepath)
+
+    # Log to MLflow if requested
+    if mlflow_log and MLFLOW_AVAILABLE:
+        try:
+            mlflow.log_artifact(filepath)
+            print(f"✅ Logged comprehensive CSV to MLflow: {filename}")
+        except Exception as e:
+            print(f"⚠️ Failed to log to MLflow: {e}")
+
+    print(f"📊 Exported comprehensive data: {filepath}")
+    print(f"   Rows: {len(data)}, Columns: {len(data.columns)}")
+
+    return filepath
+
+
+def create_model_summary(model, metrics: dict, feature_importance: Optional[dict] = None,
+                        model_type: str = "unknown", save_path: Optional[str] = None,
+                        mlflow_log: bool = False) -> str:
+    """
+    Create comprehensive model performance summary.
+
+    Args:
+        model: Trained model object
+        metrics: Dictionary of performance metrics
+        feature_importance: Optional feature importance dictionary
+        model_type: Type of model (catboost, sklearn, linear, etc.)
+        save_path: Optional path to save summary
+        mlflow_log: Whether to log as MLflow artifact
+
+    Returns:
+        Path to saved summary file
+    """
+    import tempfile
+    import os
+    from datetime import datetime
+
+    # Generate summary content
+    summary_lines = [
+        f"Model Performance Summary",
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Model Type: {model_type}",
+        f"="*50,
+        "",
+        "PERFORMANCE METRICS:",
+        "-"*20
+    ]
+
+    # Add metrics
+    for metric_name, value in metrics.items():
+        if isinstance(value, (int, float)):
+            summary_lines.append(f"{metric_name}: {value:.4f}")
+        else:
+            summary_lines.append(f"{metric_name}: {value}")
+
+    summary_lines.append("")
+
+    # Add model-specific information
+    if hasattr(model, 'get_params'):
+        try:
+            params = model.get_params()
+            summary_lines.extend([
+                "MODEL PARAMETERS:",
+                "-"*17
+            ])
+            for param, value in params.items():
+                summary_lines.append(f"{param}: {value}")
+            summary_lines.append("")
+        except:
+            pass
+
+    # Add feature importance if provided
+    if feature_importance:
+        summary_lines.extend([
+            "TOP 10 FEATURE IMPORTANCE:",
+            "-"*26
+        ])
+
+        # Sort by importance and take top 10
+        sorted_features = sorted(feature_importance.items(),
+                               key=lambda x: abs(x[1]), reverse=True)[:10]
+
+        for feature, importance in sorted_features:
+            summary_lines.append(f"{feature}: {importance:.4f}")
+        summary_lines.append("")
+
+    # Add model info if available
+    if hasattr(model, 'tree_count_'):
+        summary_lines.append(f"Tree Count: {model.tree_count_}")
+    elif hasattr(model, 'n_estimators'):
+        summary_lines.append(f"N Estimators: {model.n_estimators}")
+
+    # Create file path
+    if save_path is None:
+        temp_dir = tempfile.gettempdir()
+        save_path = os.path.join(temp_dir, "model_summary.txt")
+
+    # Write summary
+    with open(save_path, 'w') as f:
+        f.write('\n'.join(summary_lines))
+
+    # Log to MLflow if requested
+    if mlflow_log and MLFLOW_AVAILABLE:
+        try:
+            mlflow.log_artifact(save_path)
+            print(f"✅ Logged model summary to MLflow")
+        except Exception as e:
+            print(f"⚠️ Failed to log to MLflow: {e}")
+
+    print(f"📋 Created model summary: {save_path}")
+    return save_path
+
+
+def calculate_metrics_with_labels(
+    predictions: np.ndarray,
+    labels: np.ndarray,
+    returns: Optional[np.ndarray] = None,
+    plot_filename: str = "insample_label_confusion_matrix.png"
+) -> dict:
+    """
+    Calculate classification metrics using triple barrier labels as ground truth.
+
+    Parameters
+    ----------
+    predictions : np.ndarray
+        Model predictions or strategy signals (-1, 0, 1)
+    labels : np.ndarray
+        Triple barrier labels (ground truth)
+    returns : np.ndarray, optional
+        Actual returns for additional metrics
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - accuracy: Overall accuracy
+        - precision: Precision for binary classification
+        - recall: Recall for binary classification
+        - f1: F1 score for binary classification
+        - mcc: Matthews Correlation Coefficient
+        - confusion_matrix_plot: Path to confusion matrix plot
+    """
+    from sklearn.metrics import (precision_score, recall_score, f1_score,
+                               accuracy_score, matthews_corrcoef)
+
+    # Filter out NaN values
+    mask = ~(np.isnan(predictions) | np.isnan(labels))
+    clean_predictions = predictions[mask]
+    clean_labels = labels[mask]
+
+    if len(clean_predictions) == 0:
+        return {
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1': 0.0,
+            'mcc': 0.0,
+            'confusion_matrix_plot': ''
+        }
+
+    # For binary classification: 1 = long, 0 = not long (short or neutral)
+    binary_predictions = (clean_predictions == 1).astype(int)
+    binary_labels = (clean_labels == 1).astype(int)
+
+    # Calculate metrics
+    accuracy = accuracy_score(binary_labels, binary_predictions)
+    precision = precision_score(binary_labels, binary_predictions, zero_division=0)
+    recall = recall_score(binary_labels, binary_predictions, zero_division=0)
+    f1 = f1_score(binary_labels, binary_predictions, zero_division=0)
+    mcc = matthews_corrcoef(binary_labels, binary_predictions)
+
+    # Create confusion matrix plot with custom filename
+    temp_dir = tempfile.gettempdir()
+    save_path = os.path.join(temp_dir, plot_filename)
+    cm_plot_path = create_confusion_matrix_plot(binary_predictions, binary_labels, save_path=save_path)
+
+    metrics = {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'mcc': mcc,
+        'confusion_matrix_plot': cm_plot_path
+    }
+
+    # Add returns-based metrics if provided
+    if returns is not None and len(returns) == len(clean_predictions):
+        clean_returns = returns[mask]
+
+        # Calculate returns for each predicted class
+        long_returns = clean_returns[clean_predictions == 1]
+        short_returns = -clean_returns[clean_predictions == -1]  # Invert for shorts
+
+        metrics['avg_return_long'] = round(np.mean(long_returns), 4) if len(long_returns) > 0 else 0
+        metrics['avg_return_short'] = round(np.mean(short_returns), 4) if len(short_returns) > 0 else 0
+
+        # Hit rate: percentage of profitable trades
+        if len(long_returns) > 0:
+            metrics['hit_rate_long'] = round(np.sum(long_returns > 0) / len(long_returns), 4)
+        else:
+            metrics['hit_rate_long'] = 0
+
+        if len(short_returns) > 0:
+            metrics['hit_rate_short'] = round(np.sum(short_returns > 0) / len(short_returns), 4)
+        else:
+            metrics['hit_rate_short'] = 0
+
     return metrics

@@ -16,10 +16,10 @@ try:
     from .utils.feature_loader import FeatureLoader
     from .utils.feature_engineering import calculate_log_returns
     from .utils.validation import in_sample_permutation_test, walk_forward_validation, walk_forward_permutation_test
-    from .utils.evaluation_metrics import calculate_all_metrics
-    from .utils.plotting import save_plots_for_mlflow
+    from .utils.evaluation_metrics import calculate_all_metrics, create_confusion_matrix_plot, export_comprehensive_csv, create_model_summary, calculate_metrics_with_labels
+    from .utils.plotting import save_plots_for_mlflow, plot_feature_importance, plot_signal_comparison
     from .utils.transaction_costs import apply_transaction_costs, adjust_strategy_returns_for_costs
-    from .utils.triple_barrier import add_triple_barrier_labels, calculate_metrics_with_labels
+    from .utils.triple_barrier import add_triple_barrier_labels
     from .utils.normalization import ColumnNormalizer
 except ImportError:
     # Fall back to absolute imports (for direct execution)
@@ -27,10 +27,10 @@ except ImportError:
     from utils.feature_loader import FeatureLoader
     from utils.feature_engineering import calculate_log_returns
     from utils.validation import in_sample_permutation_test, walk_forward_validation, walk_forward_permutation_test
-    from utils.evaluation_metrics import calculate_all_metrics
-    from utils.plotting import save_plots_for_mlflow
+    from utils.evaluation_metrics import calculate_all_metrics, create_confusion_matrix_plot, export_comprehensive_csv, create_model_summary, calculate_metrics_with_labels
+    from utils.plotting import save_plots_for_mlflow, plot_feature_importance, plot_signal_comparison
     from utils.transaction_costs import apply_transaction_costs, adjust_strategy_returns_for_costs
-    from utils.triple_barrier import add_triple_barrier_labels, calculate_metrics_with_labels
+    from utils.triple_barrier import add_triple_barrier_labels
     from utils.normalization import ColumnNormalizer
 import mlflow
 import numpy as np
@@ -895,37 +895,20 @@ class RunGenerator:
             print(f"\n--- Step 8: Test Set Evaluation Complete ---")
             print(f"✅ Test metrics are captured in walk-forward results above.")
             
-            # Generate and log plots as artifacts
-            print(f"\n--- Generating Visualizations ---")
-            print(f"📊 Creating performance charts...")
+            # Generate artifacts based on strategy requirements
+            print(f"\n--- Generating Strategy Artifacts ---")
             try:
-                plot_files = save_plots_for_mlflow(
+                self._generate_universal_artifacts(
                     strategy_data=strategy_data,
                     optimization_results=optimization_result,
                     permutation_results=permutation_results,
                     wf_results=wf_results,
                     wf_perm_results=wf_perm_results,
-                    asset_name=self.asset_name,
-                    strategy_name=self.clean_strategy_name,
-                    start_date=train_start,  # Exclude warmup period from plots
-                    end_date=train_end  # For in-sample plots, show training period only
+                    train_start=train_start,
+                    train_end=train_end
                 )
-                
-                # Log plot files as MLflow artifacts
-                for plot_file in plot_files:
-                    mlflow.log_artifact(plot_file)
-                    print(f"  📊 Logged plot: {plot_file}")
-                
-                # Clean up temporary files
-                import os
-                for plot_file in plot_files:
-                    try:
-                        os.remove(plot_file)
-                    except:
-                        pass
-                        
             except Exception as e:
-                print(f"  ⚠️  Warning: Could not generate all plots: {e}")
+                print(f"  ⚠️  Warning: Could not generate all artifacts: {e}")
             
             
             # Create comprehensive summary and log as artifact
@@ -975,7 +958,188 @@ class RunGenerator:
                 'strategy_data': strategy_data,
                 'run_id': mlflow.active_run().info.run_id
             }
-    
+
+    def _generate_universal_artifacts(self, strategy_data, optimization_results, permutation_results,
+                                    wf_results, wf_perm_results, train_start, train_end):
+        """
+        Generate artifacts based on strategy requirements using get_required_artifacts().
+
+        This universal artifact generation system allows each strategy to declare
+        what artifacts it needs, while utilities implement the logic and generate_run orchestrates.
+        """
+        # Get required artifacts from strategy
+        required_artifacts = self.strategy.get_required_artifacts()
+        print(f"📦 Generating {len(required_artifacts)} required artifacts: {required_artifacts}")
+
+        # Artifact generation mapping
+        artifact_generators = {
+            'performance_plots': self._generate_performance_plots,
+            'returns_analysis': self._generate_returns_analysis,
+            'confusion_matrix': self._generate_confusion_matrix,
+            'signal_comparison': self._generate_signal_comparison,
+            'comprehensive_csv': self._generate_comprehensive_csv,
+            'model_summary': self._generate_model_summary,
+            'feature_importance': self._generate_feature_importance
+        }
+
+        # Generate each required artifact
+        for artifact_name in required_artifacts:
+            if artifact_name in artifact_generators:
+                try:
+                    print(f"  🔧 Generating {artifact_name}...")
+                    artifact_generators[artifact_name](
+                        strategy_data, optimization_results, permutation_results,
+                        wf_results, wf_perm_results, train_start, train_end
+                    )
+                    print(f"  ✅ Generated {artifact_name}")
+                except Exception as e:
+                    print(f"  ⚠️  Failed to generate {artifact_name}: {e}")
+            else:
+                print(f"  ❓ Unknown artifact type: {artifact_name}")
+
+    def _generate_performance_plots(self, strategy_data, optimization_results, permutation_results,
+                                  wf_results, wf_perm_results, train_start, train_end):
+        """Generate standard performance plots."""
+        plot_files = save_plots_for_mlflow(
+            strategy_data=strategy_data,
+            optimization_results=optimization_results,
+            permutation_results=permutation_results,
+            wf_results=wf_results,
+            wf_perm_results=wf_perm_results,
+            asset_name=self.asset_name,
+            strategy_name=self.clean_strategy_name,
+            start_date=train_start,
+            end_date=train_end
+        )
+
+        # Log plot files as MLflow artifacts
+        for plot_file in plot_files:
+            mlflow.log_artifact(plot_file)
+
+        # Clean up temporary files
+        import os
+        for plot_file in plot_files:
+            try:
+                os.remove(plot_file)
+            except:
+                pass
+
+    def _generate_returns_analysis(self, strategy_data, optimization_results, permutation_results,
+                                 wf_results, wf_perm_results, train_start, train_end):
+        """Generate returns analysis artifacts."""
+        # This is typically included in performance_plots, but can be extended for custom analysis
+        pass
+
+    def _generate_confusion_matrix(self, strategy_data, optimization_results, permutation_results,
+                                 wf_results, wf_perm_results, train_start, train_end):
+        """Generate confusion matrix for strategies with labels."""
+        if 'label' not in strategy_data.columns:
+            print("    ⚠️  No labels available for confusion matrix")
+            return
+
+        # Filter to training period for in-sample confusion matrix
+        train_data = strategy_data.loc[train_start:train_end]
+        labeled_data = train_data.dropna(subset=['label', 'signal'])
+
+        if len(labeled_data) == 0:
+            print("    ⚠️  No labeled data available for confusion matrix")
+            return
+
+        cm_plot_path = create_confusion_matrix_plot(
+            y_true=labeled_data['label'].values,
+            y_pred=labeled_data['signal'].values,
+            title=f"Confusion Matrix - {self.clean_strategy_name} (Training)",
+            save_path="confusion_matrix_train.png",
+            mlflow_log=True
+        )
+
+    def _generate_signal_comparison(self, strategy_data, optimization_results, permutation_results,
+                                  wf_results, wf_perm_results, train_start, train_end):
+        """Generate signal comparison plot for meta-models."""
+        if not hasattr(self.strategy, 'is_meta_model') or not self.strategy.is_meta_model:
+            print("    ⚠️  Signal comparison only available for meta-models")
+            return
+
+        # Get enhanced data from strategy if available
+        enhanced_data = getattr(self.strategy, 'enhanced_data', strategy_data)
+
+        plot_path = plot_signal_comparison(
+            data=enhanced_data,
+            primary_signal_col='primary_signal' if 'primary_signal' in enhanced_data.columns else 'signal',
+            meta_decision_col='meta_decision' if 'meta_decision' in enhanced_data.columns else None,
+            final_signal_col='signal',
+            asset_name=self.asset_name,
+            save_path="signal_comparison.png",
+            mlflow_log=True
+        )
+
+    def _generate_comprehensive_csv(self, strategy_data, optimization_results, permutation_results,
+                                  wf_results, wf_perm_results, train_start, train_end):
+        """Generate comprehensive CSV export."""
+        # Get enhanced data from strategy if available (for meta-models with features)
+        enhanced_data = getattr(self.strategy, 'enhanced_data', strategy_data)
+
+        csv_path = export_comprehensive_csv(
+            data=enhanced_data,
+            filename="comprehensive_strategy_data.csv",
+            mlflow_log=True
+        )
+
+    def _generate_model_summary(self, strategy_data, optimization_results, permutation_results,
+                              wf_results, wf_perm_results, train_start, train_end):
+        """Generate model performance summary."""
+        if not hasattr(self.strategy, 'model') or self.strategy.model is None:
+            print("    ⚠️  No trained model available for summary")
+            return
+
+        # Collect metrics from various results
+        all_metrics = {}
+        if wf_results:
+            all_metrics.update({f"wf_{k}": v for k, v in wf_results.items() if isinstance(v, (int, float))})
+        if optimization_results:
+            all_metrics.update({f"opt_{k}": v for k, v in optimization_results.items() if isinstance(v, (int, float))})
+
+        # Get feature importance if available
+        feature_importance = None
+        if hasattr(self.strategy.model, 'get_feature_importance'):
+            try:
+                feature_cols = getattr(self.strategy, 'feature_columns', [])
+                if feature_cols:
+                    importances = self.strategy.model.get_feature_importance()
+                    feature_importance = dict(zip(feature_cols, importances))
+            except:
+                pass
+
+        model_type = str(type(self.strategy.model)).split('.')[-1].replace("'>", "")
+
+        summary_path = create_model_summary(
+            model=self.strategy.model,
+            metrics=all_metrics,
+            feature_importance=feature_importance,
+            model_type=model_type,
+            mlflow_log=True
+        )
+
+    def _generate_feature_importance(self, strategy_data, optimization_results, permutation_results,
+                                   wf_results, wf_perm_results, train_start, train_end):
+        """Generate feature importance plot for ML models."""
+        if not hasattr(self.strategy, 'model') or self.strategy.model is None:
+            print("    ⚠️  No trained model available for feature importance")
+            return
+
+        feature_cols = getattr(self.strategy, 'feature_columns', [])
+        if not feature_cols:
+            print("    ⚠️  No feature columns available")
+            return
+
+        plot_path = plot_feature_importance(
+            model=self.strategy.model,
+            feature_names=feature_cols,
+            title=f"Feature Importance - {self.clean_strategy_name}",
+            save_path="feature_importance.png",
+            mlflow_log=True
+        )
+
     @staticmethod
     def discover_strategies():
         """Discover all available strategies by scanning directories."""

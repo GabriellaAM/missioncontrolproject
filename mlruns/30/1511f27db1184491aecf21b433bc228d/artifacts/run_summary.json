@@ -1,6 +1,6 @@
 {
   "run_info": {
-    "run_id": "18ac5322d597460da33f2b81ffdc83e8",
+    "run_id": "1511f27db1184491aecf21b433bc228d",
     "experiment_name": "bollinger_bands_cross",
     "strategy_type": "mean_reversion",
     "strategy_basis": "rules_based",

@@ -1,0 +1,12 @@
+{
+  "strategy_name": "bollinger_bands_cross",
+  "strategy_type": "mean_reversion",
+  "implementation_type": "rules_based",
+  "asset": "bitcoin",
+  "parameters": {
+    "period": 20,
+    "std_multiplier": 2.0
+  },
+  "feature_cols": [],
+  "strategy_class": "experiments.strategies.rules_based.bollinger_bands_cross.BollingerBandsCrossStrategy"
+}

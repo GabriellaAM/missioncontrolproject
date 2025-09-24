@@ -47,18 +47,38 @@ class BaseStrategy(ABC):
     def get_warmup_days(self, params: Dict = None) -> int:
         """
         Return number of days needed before start_date for indicator warmup.
-        
+
         Override this in strategies that use lagged indicators (SMA, EMA, etc.).
-        
+
         Args:
             params: Strategy parameters (optional). If provided, calculate
                     based on actual parameters. If None, return worst-case.
-        
+
         Returns:
             Number of days needed for warmup. Default is 0 for strategies
             without lagged indicators.
         """
         return 0  # Default: no warmup needed
+
+    def get_required_artifacts(self) -> list:
+        """
+        Return list of artifacts this strategy requires for comprehensive reporting.
+
+        Standard artifacts (always generated):
+        - performance_plots: Standard performance analysis charts
+        - returns_analysis: Cumulative returns and drawdown analysis
+
+        Optional artifacts (strategy-specific):
+        - feature_importance: Model feature importance (for ML strategies)
+        - confusion_matrix: Classification performance matrix
+        - signal_comparison: Signal evolution comparison (for meta-models)
+        - comprehensive_csv: Complete data export with all features/signals
+        - model_summary: Model-specific performance summary
+
+        Returns:
+            List of required artifact names
+        """
+        return ['performance_plots', 'returns_analysis']  # Standard artifacts for all strategies
     
     # Default crypto features used by most strategies
     used_crypto_features = ['close']
