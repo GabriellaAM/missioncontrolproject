@@ -1,0 +1,15 @@
+{
+  "strategy_name": "topo_catboost_bitcoin",
+  "strategy_type": null,
+  "implementation_type": "meta_model",
+  "asset": "bitcoin",
+  "parameters": {
+    "iterations": 193,
+    "learning_rate": 0.04411844617732506,
+    "depth": 6,
+    "l2_leaf_reg": 3.850216188516872,
+    "border_count": 244
+  },
+  "feature_cols": [],
+  "strategy_class": "experiments.strategies.meta_models.topo_catboost.TopoCatBoostStrategy"
+}

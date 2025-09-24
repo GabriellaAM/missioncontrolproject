@@ -12,9 +12,41 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 # Import after adding to path
 from utils.feature_loader import FeatureLoader
 
+def fractional_diff(series, d):
+    """
+    Compute fractional differentiation of a time series.
+    
+    Parameters:
+    series: pandas Series, the time series to differentiate
+    d: float, the fractional differentiation parameter (0 < d < 1)
+    
+    Returns:
+    pandas Series with fractionally differentiated values
+    """
+    from scipy.special import gamma
+    
+    # Convert to numpy array for computation
+    x = series.values
+    n = len(x)
+    
+    # Compute binomial coefficients for fractional differentiation
+    weights = np.zeros(n)
+    weights[0] = 1
+    
+    for k in range(1, n):
+        weights[k] = weights[k-1] * (d - k + 1) / k
+    
+    # Apply fractional differentiation
+    frac_diff = np.zeros(n)
+    for i in range(n):
+        frac_diff[i] = np.sum(weights[:i+1] * x[i::-1])
+    
+    # Return as pandas Series with original index
+    return pd.Series(frac_diff, index=series.index)
+
 asset = ['bitcoin']
 
-feats = FeatureLoader(start_date='2019-01-01', end_date='2025-05-30')
+feats = FeatureLoader(start_date='2017-01-01', end_date='2025-09-21')
 
 feats = feats.build_feature_set(
     crypto_assets=asset[0],
@@ -27,6 +59,9 @@ feats = feats.build_feature_set(
 feats.set_index('timestamp', inplace=True)
 
 feats['bitcoin_close_log_return_1'] = np.log(feats['bitcoin_close'] / feats['bitcoin_close'].shift(1))
+
+# Add fractionally differentiated bitcoin_close with parameter 0.4
+feats['bitcoin_close_fracdiff'] = fractional_diff(feats['bitcoin_close'], 0.4)
 
 # Generate lagged features for vix_close, move_close, creditspreads, treasury5yinflationexpectations
 lag_features = ['bitcoin_close', 'vix_close', 'move_close', 'creditspreads', 'treasury5yinflationexpectation', 'spread_2s10s']
@@ -45,6 +80,7 @@ for feature in lag_features:
 
 feats.dropna(inplace=True)
 
+feats['ema_10'] = feats['bitcoin_close'].ewm(span=10, adjust=False).mean()
 
 
 # %% 
@@ -74,7 +110,7 @@ def extract_topological_features(data, window_length, selected_cols, tau=3, embe
     """
     
     def time_delay_embedding(series, tau, m):
-        """Create time delay embedding of the series - FIXED to prevent future data leakage"""
+        """Create time delay embedding of the series"""
         n = len(series)
         if n < (m - 1) * tau + 1:
             return np.array([])
@@ -159,6 +195,10 @@ def extract_topological_features(data, window_length, selected_cols, tau=3, embe
                     # Persistence (death - birth) = hole lifetimes
                     persistence = finite_diagram[:, 1] - finite_diagram[:, 0]
                     
+                    # Sum of persistences
+                    sum_persistence = np.sum(persistence)
+                    features[f'sum_persistence_{dim}'] = sum_persistence
+                    
                     # Maximum hole lifetime
                     max_hole_lifetime = np.max(persistence)
                     features[f'max_hole_lifetime_{dim}'] = max_hole_lifetime
@@ -170,7 +210,7 @@ def extract_topological_features(data, window_length, selected_cols, tau=3, embe
                     # Number of relevant holes (persistence > threshold)
                     # Use a threshold based on the standard deviation of persistence values
                     if len(persistence) > 1:
-                        persistence_threshold = np.mean(persistence) + 0.5 * np.std(persistence)
+                        persistence_threshold = np.mean(persistence)# + 0.5 * np.std(persistence)
                     else:
                         persistence_threshold = np.mean(persistence)
                     
@@ -213,6 +253,7 @@ def extract_topological_features(data, window_length, selected_cols, tau=3, embe
                     features[f'std_persistence_{dim}'] = std_persistence
                 else:
                     # No finite persistence points
+                    features[f'sum_persistence_{dim}'] = 0
                     features[f'max_hole_lifetime_{dim}'] = 0
                     features[f'avg_hole_lifetime_{dim}'] = 0
                     features[f'num_relevant_holes_{dim}'] = 0
@@ -227,6 +268,7 @@ def extract_topological_features(data, window_length, selected_cols, tau=3, embe
                 # No topological features found
                 features[f'num_holes_{dim}'] = 0
                 features[f'betti_{dim}'] = 0
+                features[f'sum_persistence_{dim}'] = 0
                 features[f'max_hole_lifetime_{dim}'] = 0
                 features[f'avg_hole_lifetime_{dim}'] = 0
                 features[f'num_relevant_holes_{dim}'] = 0
@@ -302,6 +344,9 @@ def extract_topological_features(data, window_length, selected_cols, tau=3, embe
             # Rolling with min_periods ensures we don't use future data
             df[f'num_holes_{dim}_ma5'] = df[f'num_holes_{dim}'].rolling(window=5, min_periods=1).mean()
             df[f'num_holes_{dim}_ma10'] = df[f'num_holes_{dim}'].rolling(window=10, min_periods=1).mean()
+        if f'sum_persistence_{dim}' in df.columns:
+            df[f'sum_persistence_{dim}_ma5'] = df[f'sum_persistence_{dim}'].rolling(window=5, min_periods=1).mean()
+            df[f'sum_persistence_{dim}_ma10'] = df[f'sum_persistence_{dim}'].rolling(window=10, min_periods=1).mean()
         if f'max_hole_lifetime_{dim}' in df.columns:
             df[f'max_hole_lifetime_{dim}_ma5'] = df[f'max_hole_lifetime_{dim}'].rolling(window=5, min_periods=1).mean()
         if f'avg_hole_lifetime_{dim}' in df.columns:
@@ -316,6 +361,8 @@ def extract_topological_features(data, window_length, selected_cols, tau=3, embe
     
     # Calculate differences (first differences) for dimension 1 features
     if 1 <= max_dimension:
+        if f'sum_persistence_1' in df.columns:
+            df[f'sum_persistence_1_diff'] = df[f'sum_persistence_1'].diff()
         if f'l1_norm_1' in df.columns:
             df[f'l1_norm_1_diff'] = df[f'l1_norm_1'].diff()
         if f'l2_norm_1' in df.columns:
@@ -326,9 +373,12 @@ def extract_topological_features(data, window_length, selected_cols, tau=3, embe
     return df
 
 # Example usage with user-defined parameters
-window_length = 21  # User can modify this
+window_length = 50  # User can modify this
 
-selected_columns = ['bitcoin_close']  # User can modify this
+feats['log_ohlc'] = np.log((feats['bitcoin_open'] + feats['bitcoin_high'] + feats['bitcoin_low'] + feats['bitcoin_close'])/4)
+feats['log_ohlc_return_1'] = np.log(feats['bitcoin_close'] / feats['bitcoin_close'].shift(1))
+
+selected_columns = ['ema_10']  # User can modify this
 
 # Extract topological features with fixed tau
 topo_features = extract_topological_features(
@@ -344,76 +394,746 @@ print(topo_features.head())
 print(f"\nFeature columns: {topo_features.columns.tolist()}")
 
 
+################################################################################
+################################################################################    
+################################################################################
+################################################################################
+
 
 # %%
 
+from ripser import ripser
+from persim import PersistenceImager
+from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
+from scipy import stats
+import ipywidgets as widgets
+from IPython.display import display
 
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+def compute_persistence_images(data, window_length, selected_cols, tau=3, embedding_dim=3, max_dimension=1, 
+                             pixel_size=0.1, birth_range=(0, 10), pers_range=(0, 5), kernel_params={'sigma': 1.0}):
+    """
+    Compute persistence images from sliding windows of univariate time series data using time delay embedding.
+    
+    Parameters:
+    data: pandas DataFrame with time series data
+    window_length: int, length of sliding window
+    selected_cols: list of column names to use for topological analysis
+    tau: int, time delay for embedding (default=3)
+    embedding_dim: int, embedding dimension (default=3)
+    max_dimension: int, maximum homology dimension to compute (default=1)
+    pixel_size: float, resolution of persistence image (default=0.1)
+    birth_range: tuple, range for birth times (default=(0, 10))
+    pers_range: tuple, range for persistence values (default=(0, 5))
+    kernel_params: dict, parameters for Gaussian kernel (default={'sigma': 1.0})
+    
+    Returns:
+    dict containing persistence images for each dimension and window
+    """
+    
+    def time_delay_embedding(series, tau, m):
+        """Create time delay embedding of the series"""
+        n = len(series)
+        if n < (m - 1) * tau + 1:
+            return np.array([])
+        
+        embedded_length = n - (m - 1) * tau
+        embedded = np.zeros((embedded_length, m))
+        
+        for i in range(embedded_length):
+            for j in range(m):
+                embedded[i, j] = series[i + (m - 1 - j) * tau]
+        
+        return embedded
+    
+    # Select the univariate data
+    if len(selected_cols) > 1:
+        print("Warning: Multiple columns provided, using only the first one for univariate analysis")
+    
+    selected_data = data[selected_cols[0]].dropna()
+    
+    # Initialize persistence imager
+    pimgr = PersistenceImager(pixel_size=pixel_size, birth_range=birth_range, 
+                             pers_range=pers_range, kernel_params=kernel_params)
+    
+    # Store results - only for dimensions 0 and 1
+    persistence_images = {'dim_0': [], 'dim_1': []}
+    timestamps = []
+    
+    # Sliding window analysis
+    for i in range(window_length, len(selected_data) + 1):
+        window_data = selected_data.iloc[i-window_length:i]
+        
+        # Create time delay embedding
+        embedded_data = time_delay_embedding(window_data.values, tau, embedding_dim)
+        
+        if len(embedded_data) == 0:
+            # If embedding fails, append zeros
+            persistence_images['dim_0'].append(np.zeros((int(pers_range[1]/pixel_size), int(birth_range[1]/pixel_size))))
+            persistence_images['dim_1'].append(np.zeros((int(pers_range[1]/pixel_size), int(birth_range[1]/pixel_size))))
+            timestamps.append(window_data.index[-1])
+            continue
+        
+        # Standardize the embedded data
+        scaler = StandardScaler()
+        embedded_data_scaled = scaler.fit_transform(embedded_data)
+        
+        try:
+            # Compute persistent homology
+            diagrams = ripser(embedded_data_scaled, maxdim=max_dimension)['dgms']
+            
+            # Compute persistence images for dimensions 0 and 1 only
+            for dim in [0, 1]:
+                if dim < len(diagrams) and len(diagrams[dim]) > 0:
+                    # Filter out infinite persistence points
+                    finite_diagram = diagrams[dim][diagrams[dim][:, 1] != np.inf]
+                    
+                    if len(finite_diagram) > 0:
+                        # Compute persistence image
+                        pimg = pimgr.transform([finite_diagram])
+                        persistence_images[f'dim_{dim}'].append(pimg[0])
+                    else:
+                        # No finite persistence points
+                        persistence_images[f'dim_{dim}'].append(np.zeros((int(pers_range[1]/pixel_size), int(birth_range[1]/pixel_size))))
+                else:
+                    # No persistence points for this dimension
+                    persistence_images[f'dim_{dim}'].append(np.zeros((int(pers_range[1]/pixel_size), int(birth_range[1]/pixel_size))))
+            
+        except Exception as e:
+            print(f"Error computing persistence for window ending at {window_data.index[-1]}: {e}")
+            # Append zeros for dimensions 0 and 1
+            persistence_images['dim_0'].append(np.zeros((int(pers_range[1]/pixel_size), int(birth_range[1]/pixel_size))))
+            persistence_images['dim_1'].append(np.zeros((int(pers_range[1]/pixel_size), int(birth_range[1]/pixel_size))))
+        
+        timestamps.append(window_data.index[-1])
+    
+    return persistence_images, timestamps
+
+def extract_persistence_image_features(persistence_images, timestamps):
+    """
+    Extract statistical features from persistence images.
+    
+    Parameters:
+    persistence_images: dict containing persistence images for each dimension
+    timestamps: list of timestamps corresponding to each image
+    
+    Returns:
+    pandas DataFrame with extracted features
+    """
+    features_list = []
+    
+    for i, timestamp in enumerate(timestamps):
+        feature_dict = {'timestamp': timestamp}
+        
+        for dim_key, images in persistence_images.items():
+            img = images[i]
+            
+            # Extract statistical features from the persistence image
+            feature_dict[f'{dim_key}_mean'] = np.mean(img)
+            feature_dict[f'{dim_key}_std'] = np.std(img)
+            feature_dict[f'{dim_key}_max'] = np.max(img)
+            feature_dict[f'{dim_key}_sum'] = np.sum(img)
+            feature_dict[f'{dim_key}_entropy'] = -np.sum(img * np.log(img + 1e-10))  # Add small epsilon to avoid log(0)
+            
+            # Compute moments
+            feature_dict[f'{dim_key}_skewness'] = stats.skew(img.flatten())
+            feature_dict[f'{dim_key}_kurtosis'] = stats.kurtosis(img.flatten())
+            
+            # Compute percentiles
+            flat_img = img.flatten()
+            feature_dict[f'{dim_key}_p25'] = np.percentile(flat_img, 25)
+            feature_dict[f'{dim_key}_p50'] = np.percentile(flat_img, 50)
+            feature_dict[f'{dim_key}_p75'] = np.percentile(flat_img, 75)
+            feature_dict[f'{dim_key}_p90'] = np.percentile(flat_img, 90)
+            feature_dict[f'{dim_key}_p95'] = np.percentile(flat_img, 95)
+            
+            # Count non-zero pixels (active regions)
+            feature_dict[f'{dim_key}_nonzero_count'] = np.count_nonzero(img)
+            feature_dict[f'{dim_key}_nonzero_ratio'] = np.count_nonzero(img) / img.size
+        
+        features_list.append(feature_dict)
+    
+    return pd.DataFrame(features_list)
+
+# Enable matplotlib widget backend for interactive plots
+%matplotlib widget
+
+def create_interactive_persistence_viewer(persistence_images, timestamps, bitcoin_prices=None):
+    """
+    Create an interactive viewer for persistence images with a slider.
+    
+    Parameters:
+    persistence_images: dict containing persistence images for each dimension
+    timestamps: list of timestamps corresponding to each image
+    bitcoin_prices: optional pandas Series of bitcoin prices aligned with timestamps
+    """
+    
+    # Adjust figure layout based on whether bitcoin prices are provided
+    if bitcoin_prices is not None:
+        fig = plt.figure(figsize=(15, 10))
+        # Create grid layout with more space between subplots
+        gs = fig.add_gridspec(2, len(persistence_images), height_ratios=[2, 1], hspace=0.4)
+        
+        # Create persistence image subplots in the top row
+        axes = []
+        for i in range(len(persistence_images)):
+            ax = fig.add_subplot(gs[0, i])
+            axes.append(ax)
+        
+        # Create bitcoin price subplot in the bottom row, spanning all columns
+        price_ax = fig.add_subplot(gs[1, :])
+    else:
+        fig, axes = plt.subplots(1, len(persistence_images), figsize=(15, 5))
+        if len(persistence_images) == 1:
+            axes = [axes]
+    
+    # Initialize persistence image plots
+    im_objects = []
+    for i, (dim_key, images) in enumerate(persistence_images.items()):
+        im = axes[i].imshow(images[0], cmap='viridis', origin='lower', aspect='auto')
+        axes[i].set_title(f'{dim_key.replace("_", " ").title()}')
+        axes[i].set_xlabel('Birth')
+        axes[i].set_ylabel('Persistence')
+        im_objects.append(im)
+        
+        # Add colorbar
+        plt.colorbar(im, ax=axes[i])
+    
+    # Add bitcoin price subplot if provided
+    if bitcoin_prices is not None:
+        price_line, = price_ax.plot(timestamps, bitcoin_prices, 'b-', alpha=0.7)
+        price_marker, = price_ax.plot(timestamps[0], bitcoin_prices.iloc[0], 'ro', markersize=8)
+        price_ax.set_xlabel('Date')
+        price_ax.set_ylabel('Bitcoin Price')
+        price_ax.set_title('Bitcoin Price Timeline')
+        price_ax.grid(True, alpha=0.3)
+    
+    # Create slider
+    slider = widgets.IntSlider(
+        value=0,
+        min=0,
+        max=len(timestamps) - 1,
+        step=1,
+        description='Time Step:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='80%')
+    )
+    
+    # Create date display
+    date_display = widgets.HTML(
+        value=f"<b>Date:</b> {timestamps[0].strftime('%Y-%m-%d')}"
+    )
+    
+    # Update function
+    def update_images(change):
+        idx = change['new']
+        
+        # Update persistence images
+        for i, (dim_key, images) in enumerate(persistence_images.items()):
+            im_objects[i].set_array(images[idx])
+            im_objects[i].set_clim(vmin=images[idx].min(), vmax=images[idx].max())
+        
+        # Update date display
+        date_display.value = f"<b>Date:</b> {timestamps[idx].strftime('%Y-%m-%d')}"
+        
+        # Update bitcoin price marker if provided
+        if bitcoin_prices is not None:
+            price_marker.set_data([timestamps[idx]], [bitcoin_prices.iloc[idx]])
+        
+        fig.canvas.draw()
+    
+    # Connect slider to update function
+    slider.observe(update_images, names='value')
+    
+    # Display widgets
+    display(widgets.VBox([slider, date_display]))
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return fig, slider
+
+selected_columns = ['bitcoin_close']  # User can modify this
+window_length = 60
+# Compute persistence images
+print("Computing persistence images...")
+persistence_images, pi_timestamps = compute_persistence_images(
+    data=feats,
+    window_length=window_length,
+    selected_cols=selected_columns,
+    tau=5,
+    max_dimension=3,
+    pixel_size=0.08,
+    birth_range=(0, 3),
+    pers_range=(0, 3),
+    kernel_params={'sigma': 0.1}
+)
+
+# %%
+
+# Extract features from persistence images
+pi_features = extract_persistence_image_features(persistence_images, pi_timestamps)
+pi_features.set_index('timestamp', inplace=True)
+
+print("Persistence image features extracted:")
+print(pi_features.head())
+print(f"\nFeature columns: {pi_features.columns.tolist()}")
+
+# Get aligned bitcoin prices for the interactive viewer
+bitcoin_aligned = feats['bitcoin_close'].iloc[window_length-1:window_length-1+len(pi_timestamps)]
+
+# Create interactive persistence image viewer
+print("\nCreating interactive persistence image viewer...")
+fig, slider = create_interactive_persistence_viewer(
+    persistence_images, 
+    pi_timestamps, 
+    bitcoin_aligned
+)
+
+
+
+
+# %% 
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
 
 # Get the aligned timestamps for x-axis
 aligned_timestamps = feats.index[window_length-1:window_length-1+len(topo_features)]
 
 
+topo_features['l2_norm_1_ma7'] = topo_features['l2_norm_0'].rolling(window=7, min_periods=1).mean()
+topo_features['l1_norm_1_diff'] = topo_features['l1_norm_1'].diff(7)
 
-# Plot 1: Average hole lifetime for dimension 1
-color1 = 'tab:red'
-ax1.set_ylabel('Average Hole Lifetime (Dimension 1)', color=color1)
-ax1.plot(aligned_timestamps, topo_features['avg_hole_lifetime_1'], 
-         color=color1, linewidth=1.5, marker='o', markersize=2)
-ax1.tick_params(axis='y', labelcolor=color1)
-ax1.grid(True, alpha=0.3)
+# Calculate first differences of the norms
+l2_norm_diff = topo_features['sum_persistence_0']
+l1_norm_diff = topo_features['wasserstein_0']
 
-# Create second y-axis for bitcoin price on first subplot
-ax1_twin = ax1.twinx()
-color_btc = 'tab:blue'
-ax1_twin.set_ylabel('Bitcoin Close Price', color=color_btc)
+# Calculate quantiles for both norms
+l2_quantiles = np.quantile(l2_norm_diff.dropna(), [0.2, 0.4, 0.6, 0.8])
+l1_quantiles = np.quantile(l1_norm_diff.dropna(), [0.2, 0.4, 0.6, 0.8])
+
+# Create subplots with secondary y-axes
+fig = make_subplots(
+    rows=2, cols=1,
+    subplot_titles=('L2 Norm (Dimension 1) First Difference vs Bitcoin Close Price',
+                   'L1 Norm (Dimension 1) First Difference vs Bitcoin Close Price'),
+    specs=[[{"secondary_y": True}],
+           [{"secondary_y": True}]],
+    vertical_spacing=0.1
+)
+
+# Get bitcoin aligned data
 bitcoin_aligned = feats['bitcoin_close'].iloc[window_length-1:window_length-1+len(topo_features)]
-ax1_twin.plot(aligned_timestamps, bitcoin_aligned.values, color=color_btc, alpha=0.7)
-ax1_twin.tick_params(axis='y', labelcolor=color_btc)
 
-ax1.set_title('Average Hole Lifetime (Dimension 1) Through Time vs Bitcoin Close Price')
+# Plot 1: L2 Norm first difference for dimension 1
+fig.add_trace(
+    go.Scatter(x=aligned_timestamps, y=l2_norm_diff,
+               mode='lines+markers',
+               name='L2 Norm Diff (Dim 1)',
+               line=dict(color='red', width=1.5),
+               marker=dict(size=2)),
+    row=1, col=1, secondary_y=False
+)
 
-# Plot 2: Number of significant holes for dimension 1
-color2 = 'tab:green'
-ax2.set_xlabel('Date')
-ax2.set_ylabel('Number of Significant Holes (Dimension 1)', color=color2)
-ax2.plot(aligned_timestamps, topo_features['num_relevant_holes_1'], 
-         color=color2, linewidth=1.5, marker='s', markersize=2)
-ax2.tick_params(axis='y', labelcolor=color2)
-ax2.grid(True, alpha=0.3)
+# Add L2 quantile lines to first subplot
+for i, quantile in enumerate(l2_quantiles):
+    fig.add_hline(y=quantile, 
+                  line_dash="dash", 
+                  line_color="green", 
+                  opacity=0.5,
+                  annotation_text=f"Q{i+2}",
+                  annotation_position="right",
+                  row=1, col=1)
 
-# Create second y-axis for bitcoin price on second subplot
-ax2_twin = ax2.twinx()
-ax2_twin.set_ylabel('Bitcoin Close Price', color=color_btc)
-ax2_twin.plot(aligned_timestamps, bitcoin_aligned.values, color=color_btc, alpha=0.7)
-ax2_twin.tick_params(axis='y', labelcolor=color_btc)
+# Add Bitcoin price to first subplot
+fig.add_trace(
+    go.Scatter(x=aligned_timestamps, y=bitcoin_aligned.values,
+               mode='lines',
+               name='Bitcoin Close Price',
+               line=dict(color='blue', width=1.5),
+               opacity=0.7),
+    row=1, col=1, secondary_y=True
+)
 
-ax2.set_title('Number of Significant Holes (Dimension 1) Through Time vs Bitcoin Close Price')
+# Plot 2: L1 Norm first difference for dimension 1
+fig.add_trace(
+    go.Scatter(x=aligned_timestamps, y=l1_norm_diff,
+               mode='lines+markers',
+               name='L1 Norm Diff (Dim 1)',
+               line=dict(color='green', width=1.5),
+               marker=dict(size=2, symbol='square')),
+    row=2, col=1, secondary_y=False
+)
 
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
+# Add L1 quantile lines to second subplot
+for i, quantile in enumerate(l1_quantiles):
+    fig.add_hline(y=quantile, 
+                  line_dash="dash", 
+                  line_color="red", 
+                  opacity=0.5,
+                  annotation_text=f"Q{i+2}",
+                  annotation_position="right",
+                  row=2, col=1)
 
-# Print statistics for dimension 1
-print("\nDimension 1 Topological Features Statistics:")
-print(f"Average Hole Lifetime:")
-avg_lifetime = topo_features['avg_hole_lifetime_1']
-print(f"  Mean: {avg_lifetime.mean():.4f}")
-print(f"  Std: {avg_lifetime.std():.4f}")
-print(f"  Min: {avg_lifetime.min():.4f}")
-print(f"  Max: {avg_lifetime.max():.4f}")
-print(f"  Median: {avg_lifetime.median():.4f}")
+# Add Bitcoin price to second subplot
+fig.add_trace(
+    go.Scatter(x=aligned_timestamps, y=bitcoin_aligned.values,
+               mode='lines',
+               name='Bitcoin Close Price',
+               line=dict(color='blue', width=1.5),
+               opacity=0.7,
+               showlegend=False),
+    row=2, col=1, secondary_y=True
+)
 
-print(f"\nNumber of Significant Holes:")
-num_holes = topo_features['num_relevant_holes_1']
-print(f"  Mean: {num_holes.mean():.2f}")
-print(f"  Std: {num_holes.std():.2f}")
-print(f"  Min: {int(num_holes.min())}")
-print(f"  Max: {int(num_holes.max())}")
-print(f"  Median: {num_holes.median():.2f}")
-print(f"  Total periods with >0 holes: {(num_holes > 0).sum()}")
+# Update y-axes labels
+fig.update_yaxes(title_text="L2 Norm First Difference (Dimension 1)", title_font_color="red", 
+                 row=1, col=1, secondary_y=False)
+fig.update_yaxes(title_text="Bitcoin Close Price", title_font_color="blue", 
+                 row=1, col=1, secondary_y=True)
+fig.update_yaxes(title_text="L1 Norm First Difference (Dimension 1)", title_font_color="green", 
+                 row=2, col=1, secondary_y=False)
+fig.update_yaxes(title_text="Bitcoin Close Price", title_font_color="blue", 
+                 row=2, col=1, secondary_y=True)
 
+# Update x-axis label
+fig.update_xaxes(title_text="Date", row=2, col=1)
+
+# Update layout
+fig.update_layout(
+    height=800,
+    showlegend=True,
+    title_text="Topological Features First Differences vs Bitcoin Price"
+)
+
+fig.show()
+
+################################################################################
+################################################################################
+################################################################################
+
+# %%
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
+
+# Get the aligned timestamps for x-axis
+aligned_timestamps = feats.index[window_length-1:window_length-1+len(topo_features)]
+topo_features['norm_persistence'] = topo_features['mean_persistence_1'] / topo_features['std_persistence_1']
+
+# Get the original norms (not differences)
+l2_norm = topo_features['wasserstein_1'].copy()
+l1_norm = topo_features['betti_1'].copy()
+
+# Define rolling window for quintile calculation
+rolling_window = 30  # 1 year of trading days
+
+# Calculate rolling quintiles
+l2_rolling_quintiles = pd.Series(index=l2_norm.index, dtype=float)
+l1_rolling_quintiles = pd.Series(index=l1_norm.index, dtype=float)
+
+for i in range(rolling_window, len(l2_norm)):
+    # Get rolling window data
+    l2_window = l2_norm.iloc[i-rolling_window:i]
+    l1_window = l1_norm.iloc[i-rolling_window:i]
+    
+    # Calculate quintiles for the window
+    l2_quintile_thresholds = l2_window.quantile([0.2, 0.4, 0.6, 0.8])
+    l1_quintile_thresholds = l1_window.quantile([0.2, 0.4, 0.6, 0.8])
+    
+    # Classify current value
+    current_l2 = l2_norm.iloc[i]
+    current_l1 = l1_norm.iloc[i]
+    
+    # Assign quintile (1-5)
+    if current_l2 <= l2_quintile_thresholds[0.2]:
+        l2_rolling_quintiles.iloc[i] = 1
+    elif current_l2 <= l2_quintile_thresholds[0.4]:
+        l2_rolling_quintiles.iloc[i] = 2
+    elif current_l2 <= l2_quintile_thresholds[0.6]:
+        l2_rolling_quintiles.iloc[i] = 3
+    elif current_l2 <= l2_quintile_thresholds[0.8]:
+        l2_rolling_quintiles.iloc[i] = 4
+    else:
+        l2_rolling_quintiles.iloc[i] = 5
+    
+    if current_l1 <= l1_quintile_thresholds[0.2]:
+        l1_rolling_quintiles.iloc[i] = 1
+    elif current_l1 <= l1_quintile_thresholds[0.4]:
+        l1_rolling_quintiles.iloc[i] = 2
+    elif current_l1 <= l1_quintile_thresholds[0.6]:
+        l1_rolling_quintiles.iloc[i] = 3
+    elif current_l1 <= l1_quintile_thresholds[0.8]:
+        l1_rolling_quintiles.iloc[i] = 4
+    else:
+        l1_rolling_quintiles.iloc[i] = 5
+
+# Create new series where only 4th and 5th quintile values are kept, others set to 0
+l2_filtered_q5 = l2_norm.copy()
+l2_filtered_q4 = l2_norm.copy()
+l1_filtered_q5 = l1_norm.copy()
+l1_filtered_q4 = l1_norm.copy()
+
+# Set all non-5th quintile values to 0 for Q5 series
+l2_filtered_q5[l2_rolling_quintiles != 5] = 0
+l1_filtered_q5[l1_rolling_quintiles != 5] = 0
+
+# Set all non-4th quintile values to 0 for Q4 series
+l2_filtered_q4[l2_rolling_quintiles != 4] = 0
+l1_filtered_q4[l1_rolling_quintiles != 4] = 0
+
+# Create subplots with secondary y-axes
+fig = make_subplots(
+    rows=2, cols=1,
+    subplot_titles=('L2 Norm (Dimension 1) - 4th & 5th Rolling Quintiles vs Bitcoin Close Price',
+                   'L1 Norm (Dimension 1) - 4th & 5th Rolling Quintiles vs Bitcoin Close Price'),
+    specs=[[{"secondary_y": True}],
+           [{"secondary_y": True}]],
+    vertical_spacing=0.1
+)
+
+# Get bitcoin aligned data
+bitcoin_aligned = feats['bitcoin_close'].iloc[window_length-1:window_length-1+len(topo_features)]
+
+# Plot 1: L2 Norm for dimension 1 (5th quintile) as columns
+fig.add_trace(
+    go.Bar(x=aligned_timestamps, y=l2_filtered_q5,
+           name='L2 Norm (Dim 1) - Q5',
+           marker_color='red',
+           opacity=0.9),
+    row=1, col=1, secondary_y=False
+)
+
+# Plot 1: L2 Norm for dimension 1 (4th quintile) as columns
+fig.add_trace(
+    go.Bar(x=aligned_timestamps, y=l2_filtered_q4,
+           name='L2 Norm (Dim 1) - Q4',
+           marker_color='orange',
+           opacity=0.7),
+    row=1, col=1, secondary_y=False
+)
+
+# Add Bitcoin price to first subplot
+fig.add_trace(
+    go.Scatter(x=aligned_timestamps, y=bitcoin_aligned.values,
+               mode='lines',
+               name='Bitcoin Close Price',
+               line=dict(color='blue', width=1.5),
+               opacity=0.9),
+    row=1, col=1, secondary_y=True
+)
+
+# Plot 2: L1 Norm for dimension 1 (5th quintile) as columns
+fig.add_trace(
+    go.Bar(x=aligned_timestamps, y=l1_filtered_q5,
+           name='L1 Norm (Dim 1) - Q5',
+           marker_color='green',
+           opacity=0.9),
+    row=2, col=1, secondary_y=False
+)
+
+# Plot 2: L1 Norm for dimension 1 (4th quintile) as columns
+fig.add_trace(
+    go.Bar(x=aligned_timestamps, y=l1_filtered_q4,
+           name='L1 Norm (Dim 1) - Q4',
+           marker_color='lightgreen',
+           opacity=0.7),
+    row=2, col=1, secondary_y=False
+)
+
+# Add Bitcoin price to second subplot
+fig.add_trace(
+    go.Scatter(x=aligned_timestamps, y=bitcoin_aligned.values,
+               mode='lines',
+               name='Bitcoin Close Price',
+               line=dict(color='blue', width=1.5),
+               opacity=0.9,
+               showlegend=False),
+    row=2, col=1, secondary_y=True
+)
+
+# Update y-axes labels
+fig.update_yaxes(title_text="L2 Norm (Dimension 1) - Q4 & Q5", title_font_color="red", 
+                 row=1, col=1, secondary_y=False)
+fig.update_yaxes(title_text="Bitcoin Close Price", title_font_color="blue", 
+                 row=1, col=1, secondary_y=True)
+fig.update_yaxes(title_text="L1 Norm (Dimension 1) - Q4 & Q5", title_font_color="green", 
+                 row=2, col=1, secondary_y=False)
+fig.update_yaxes(title_text="Bitcoin Close Price", title_font_color="blue", 
+                 row=2, col=1, secondary_y=True)
+
+# Update x-axis label
+fig.update_xaxes(title_text="Date", row=2, col=1)
+
+# Update layout
+fig.update_layout(
+    height=800,
+    showlegend=True,
+    title_text="Topological Features vs Bitcoin Price (4th & 5th Rolling Quintiles)",
+    plot_bgcolor='white',
+    paper_bgcolor='white'
+)
+
+fig.show()
+
+# %% 
+
+import plotly.graph_objects as go
+import plotly.express as px
+import numpy as np
+from scipy import stats
+
+# User-defined confidence level
+confidence_level = 0.95  # 95% confidence interval (can be adjusted by user)
+
+# Calculate forward percentage changes for different horizons
+forward_days = [1, 5, 10, 20]  # Different forward-looking periods
+scatter_data = []
+
+for days in forward_days:
+    # Calculate forward percentage change
+    forward_pct_change = feats['bitcoin_close'].pct_change(periods=-days) * 100  # Negative for forward-looking
+    
+    # Align with topological features
+    aligned_forward_change = forward_pct_change.iloc[window_length-1:window_length-1+len(topo_features)]
+    
+    # Create scatter plot data
+    for i, (l2_norm, pct_change) in enumerate(zip(topo_features['l2_norm_1'], aligned_forward_change)):
+        if not pd.isna(pct_change) and not pd.isna(l2_norm):
+            scatter_data.append({
+                'L2_Norm_Dim1': l2_norm,
+                'Forward_Pct_Change': pct_change,
+                'Days_Forward': f'{days} days',
+                'Date': aligned_timestamps[i]
+            })
+
+# Convert to DataFrame for easier plotting
+scatter_df = pd.DataFrame(scatter_data)
+
+# Bin L2 Norm by quantiles for each forward period
+quantile_data = []
+n_quantiles = 5  # Number of quantiles (quintiles)
+
+for days in forward_days:
+    subset = scatter_df[scatter_df['Days_Forward'] == f'{days} days'].copy()
+    if len(subset) > 0:
+        # Create quantile bins
+        subset['L2_Quantile'] = pd.qcut(subset['L2_Norm_Dim1'], 
+                                       q=n_quantiles, 
+                                       labels=[f'Q{i+1}' for i in range(n_quantiles)],
+                                       duplicates='drop')
+        
+        # Calculate statistics for each quantile including confidence intervals
+        quantile_stats = []
+        for quantile in subset['L2_Quantile'].unique():
+            if pd.notna(quantile):
+                quantile_data_subset = subset[subset['L2_Quantile'] == quantile]['Forward_Pct_Change']
+                
+                mean_val = quantile_data_subset.mean()
+                std_val = quantile_data_subset.std()
+                count_val = len(quantile_data_subset)
+                
+                # Calculate confidence interval
+                if count_val > 1:
+                    # Use t-distribution for small samples
+                    alpha = 1 - confidence_level
+                    t_critical = stats.t.ppf(1 - alpha/2, df=count_val-1)
+                    margin_of_error = t_critical * (std_val / np.sqrt(count_val))
+                    ci_lower = mean_val - margin_of_error
+                    ci_upper = mean_val + margin_of_error
+                else:
+                    ci_lower = mean_val
+                    ci_upper = mean_val
+                
+                quantile_stats.append({
+                    'L2_Quantile': quantile,
+                    'mean': mean_val,
+                    'std': std_val,
+                    'count': count_val,
+                    'ci_lower': ci_lower,
+                    'ci_upper': ci_upper,
+                    'Days_Forward': f'{days} days'
+                })
+        
+        quantile_data.extend(quantile_stats)
+
+# Convert to DataFrame
+quantile_df = pd.DataFrame(quantile_data)
+
+# Create bar plot showing mean returns by quantile with confidence intervals
+fig = go.Figure()
+
+# Add bars for each forward period
+colors = px.colors.qualitative.Set1
+for i, days in enumerate(forward_days):
+    subset = quantile_df[quantile_df['Days_Forward'] == f'{days} days']
+    
+    # Calculate error bars (confidence interval bounds)
+    error_y_upper = subset['ci_upper'] - subset['mean']
+    error_y_lower = subset['mean'] - subset['ci_lower']
+    
+    fig.add_trace(go.Bar(
+        name=f'{days} days',
+        x=subset['L2_Quantile'],
+        y=subset['mean'],
+        error_y=dict(
+            type='data',
+            symmetric=False,
+            array=error_y_upper,
+            arrayminus=error_y_lower,
+            visible=True
+        ),
+        marker_color=colors[i % len(colors)],
+        offsetgroup=i
+    ))
+
+# Update layout
+fig.update_layout(
+    title=f'Mean Forward Bitcoin Returns by L2 Norm Quantiles<br><sub>{confidence_level*100:.0f}% Confidence Intervals</sub>',
+    xaxis_title="L2 Norm (Dimension 1) Quantile",
+    yaxis_title="Mean Forward Bitcoin Return (%)",
+    barmode='group',
+    height=600,
+    showlegend=True
+)
+
+fig.show()
+
+# Print quantile statistics with confidence intervals
+print(f"\nQuantile Analysis - Mean Forward Returns by L2 Norm Quantiles ({confidence_level*100:.0f}% CI):")
+print("=" * 80)
+for days in forward_days:
+    print(f"\n{days} days forward:")
+    subset = quantile_df[quantile_df['Days_Forward'] == f'{days} days']
+    for _, row in subset.iterrows():
+        print(f"  {row['L2_Quantile']}: {row['mean']:.2f}% [{row['ci_lower']:.2f}%, {row['ci_upper']:.2f}%] (±{row['std']:.2f}%, n={row['count']})")
+
+# Calculate correlation coefficients for each forward period
+print("\n" + "=" * 80)
+print("Correlation between L2 Norm (Dim 1) and Forward Price Changes:")
+for days in forward_days:
+    subset = scatter_df[scatter_df['Days_Forward'] == f'{days} days']
+    if len(subset) > 1:
+        correlation = subset['L2_Norm_Dim1'].corr(subset['Forward_Pct_Change'])
+        print(f"{days} days forward: {correlation:.4f}")
+
+# Calculate and show Sharpe ratio by quantile for each forward period
+print("\n" + "=" * 80)
+print("Sharpe Ratio by Quantile (Forward Returns):")
+for days in forward_days:
+    print(f"\n{days} days forward:")
+    subset = quantile_df[quantile_df['Days_Forward'] == f'{days} days']
+    for _, row in subset.iterrows():
+        if row['std'] > 0:  # Avoid division by zero
+            sharpe_ratio = row['mean'] / row['std']
+            print(f"  {row['L2_Quantile']}: {sharpe_ratio:.4f} (mean: {row['mean']:.2f}%, std: {row['std']:.2f}%, n={row['count']})")
+        else:
+            print(f"  {row['L2_Quantile']}: N/A (std=0, mean: {row['mean']:.2f}%, n={row['count']})")
+
+
+# %%
 
 # %%
 
@@ -449,6 +1169,195 @@ ax2.tick_params(axis='y', labelcolor=color)
 plt.title('Topological Feature vs Bitcoin Close Price')
 plt.tight_layout()
 plt.show()
+
+# %%
+
+import kmapper as km
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import DBSCAN
+import plotly.graph_objects as go
+
+# Prepare data for KMapper analysis
+# Get L2 norm dimension 1, L1 norm dimension 1, and forward 5-day returns
+l2_norm_dim1 = topo_features['l2_norm_1'].copy()
+l1_norm_dim1 = topo_features['l1_norm_1'].copy()
+
+# Calculate forward 5-day returns
+forward_5d_returns = feats['bitcoin_close'].pct_change(periods=-5) * 100  # Negative for forward-looking
+aligned_forward_returns = forward_5d_returns.iloc[window_length-1:window_length-1+len(topo_features)]
+
+# Create combined dataset, removing NaN values
+combined_data = pd.DataFrame({
+    'l2_norm_dim1': l2_norm_dim1,
+    'l1_norm_dim1': l1_norm_dim1,
+    'forward_5d_returns': aligned_forward_returns
+}).dropna()
+
+print(f"KMapper analysis with {len(combined_data)} data points")
+print(f"L2 Norm Dim1 - Mean: {combined_data['l2_norm_dim1'].mean():.4f}, Std: {combined_data['l2_norm_dim1'].std():.4f}")
+print(f"L1 Norm Dim1 - Mean: {combined_data['l1_norm_dim1'].mean():.4f}, Std: {combined_data['l1_norm_dim1'].std():.4f}")
+print(f"Forward 5d Returns - Mean: {combined_data['forward_5d_returns'].mean():.4f}, Std: {combined_data['forward_5d_returns'].std():.4f}")
+
+# Prepare data for KMapper - now including both L1 and L2 norms
+X = combined_data[['l2_norm_dim1', 'l1_norm_dim1', 'forward_5d_returns']].values
+
+# Standardize the data
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Initialize KMapper
+mapper = km.KeplerMapper(verbose=1)
+
+# Create lens function - we'll use both L2 and L1 norms as the lens
+lens = X_scaled[:, [0, 1]]  # L2 norm and L1 norm dimensions 1 as lens
+
+# Create the topological network
+graph = mapper.map(lens, 
+                   X_scaled,
+                   cover=km.Cover(n_cubes=10, perc_overlap=0.3),
+                   clusterer=DBSCAN(eps=0.5, min_samples=3))
+
+# Create visualization
+html_file = "kmapper_l2l1norm_forward_returns.html"
+mapper.visualize(graph, 
+                 path_html=html_file,
+                 title="KMapper: L2 & L1 Norm Dim1 vs Forward 5-Day Returns",
+                 custom_tooltips=combined_data['forward_5d_returns'].values)
+
+print(f"KMapper visualization saved to: {html_file}")
+
+# Analyze the graph structure
+print(f"\nGraph Analysis:")
+print(f"Number of nodes: {len(graph['nodes'])}")
+print(f"Number of edges: {len(graph['links'])}")
+
+# Analyze node statistics
+node_stats = []
+for node_id, node_members in graph['nodes'].items():
+    node_l2_norms = combined_data.iloc[node_members]['l2_norm_dim1']
+    node_l1_norms = combined_data.iloc[node_members]['l1_norm_dim1']
+    node_returns = combined_data.iloc[node_members]['forward_5d_returns']
+    
+    node_stats.append({
+        'node_id': node_id,
+        'size': len(node_members),
+        'mean_l2_norm': node_l2_norms.mean(),
+        'mean_l1_norm': node_l1_norms.mean(),
+        'mean_forward_return': node_returns.mean(),
+        'std_forward_return': node_returns.std()
+    })
+
+node_stats_df = pd.DataFrame(node_stats)
+print(f"\nTop 5 nodes by size:")
+print(node_stats_df.nlargest(5, 'size')[['node_id', 'size', 'mean_l2_norm', 'mean_l1_norm', 'mean_forward_return']])
+
+print(f"\nNodes with highest mean forward returns:")
+print(node_stats_df.nlargest(5, 'mean_forward_return')[['node_id', 'size', 'mean_l2_norm', 'mean_l1_norm', 'mean_forward_return']])
+
+print(f"\nNodes with lowest mean forward returns:")
+print(node_stats_df.nsmallest(5, 'mean_forward_return')[['node_id', 'size', 'mean_l2_norm', 'mean_l1_norm', 'mean_forward_return']])
+
+# Create a scatter plot colored by node membership (L2 vs L1 norms)
+fig = go.Figure()
+
+# Color each point by its node membership
+colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
+node_colors = {}
+
+for i, (node_id, node_members) in enumerate(graph['nodes'].items()):
+    color = colors[i % len(colors)]
+    node_colors[node_id] = color
+    
+    node_data = combined_data.iloc[node_members]
+    
+    fig.add_trace(go.Scatter(
+        x=node_data['l2_norm_dim1'],
+        y=node_data['l1_norm_dim1'],
+        mode='markers',
+        name=f'Node {node_id} (n={len(node_members)})',
+        marker=dict(color=color, size=8, opacity=0.7),
+        text=[f'Node: {node_id}<br>L2 Norm: {x:.4f}<br>L1 Norm: {y:.4f}<br>Return: {z:.2f}%' 
+              for x, y, z in zip(node_data['l2_norm_dim1'], node_data['l1_norm_dim1'], node_data['forward_5d_returns'])],
+        hovertemplate='%{text}<extra></extra>'
+    ))
+
+fig.update_layout(
+    title="KMapper Node Clustering: L2 Norm vs L1 Norm (Dim1)",
+    xaxis_title="L2 Norm (Dimension 1)",
+    yaxis_title="L1 Norm (Dimension 1)",
+    height=600,
+    showlegend=True
+)
+
+fig.show()
+
+# Create a second scatter plot: L2 norm vs forward returns
+fig2 = go.Figure()
+
+for i, (node_id, node_members) in enumerate(graph['nodes'].items()):
+    color = colors[i % len(colors)]
+    node_data = combined_data.iloc[node_members]
+    
+    fig2.add_trace(go.Scatter(
+        x=node_data['l2_norm_dim1'],
+        y=node_data['forward_5d_returns'],
+        mode='markers',
+        name=f'Node {node_id} (n={len(node_members)})',
+        marker=dict(color=color, size=8, opacity=0.7),
+        text=[f'Node: {node_id}<br>L2 Norm: {x:.4f}<br>L1 Norm: {y:.4f}<br>Return: {z:.2f}%' 
+              for x, y, z in zip(node_data['l2_norm_dim1'], node_data['l1_norm_dim1'], node_data['forward_5d_returns'])],
+        hovertemplate='%{text}<extra></extra>'
+    ))
+
+fig2.update_layout(
+    title="KMapper Node Clustering: L2 Norm Dim1 vs Forward 5-Day Returns",
+    xaxis_title="L2 Norm (Dimension 1)",
+    yaxis_title="Forward 5-Day Returns (%)",
+    height=600,
+    showlegend=True
+)
+
+fig2.show()
+
+# Create a third scatter plot: L1 norm vs forward returns
+fig3 = go.Figure()
+
+for i, (node_id, node_members) in enumerate(graph['nodes'].items()):
+    color = colors[i % len(colors)]
+    node_data = combined_data.iloc[node_members]
+    
+    fig3.add_trace(go.Scatter(
+        x=node_data['l1_norm_dim1'],
+        y=node_data['forward_5d_returns'],
+        mode='markers',
+        name=f'Node {node_id} (n={len(node_members)})',
+        marker=dict(color=color, size=8, opacity=0.7),
+        text=[f'Node: {node_id}<br>L2 Norm: {x:.4f}<br>L1 Norm: {y:.4f}<br>Return: {z:.2f}%' 
+              for x, y, z in zip(node_data['l2_norm_dim1'], node_data['l1_norm_dim1'], node_data['forward_5d_returns'])],
+        hovertemplate='%{text}<extra></extra>'
+    ))
+
+fig3.update_layout(
+    title="KMapper Node Clustering: L1 Norm Dim1 vs Forward 5-Day Returns",
+    xaxis_title="L1 Norm (Dimension 1)",
+    yaxis_title="Forward 5-Day Returns (%)",
+    height=600,
+    showlegend=True
+)
+
+fig3.show()
+
+# Additional analysis: correlation within nodes
+print(f"\nCorrelation analysis within nodes:")
+for node_id, node_members in graph['nodes'].items():
+    if len(node_members) > 3:  # Only analyze nodes with sufficient data
+        node_data = combined_data.iloc[node_members]
+        l2_correlation = node_data['l2_norm_dim1'].corr(node_data['forward_5d_returns'])
+        l1_correlation = node_data['l1_norm_dim1'].corr(node_data['forward_5d_returns'])
+        l1_l2_correlation = node_data['l1_norm_dim1'].corr(node_data['l2_norm_dim1'])
+        print(f"Node {node_id} (n={len(node_members)}): L2-Returns corr = {l2_correlation:.4f}, L1-Returns corr = {l1_correlation:.4f}, L1-L2 corr = {l1_l2_correlation:.4f}")
 
 
 # %% 

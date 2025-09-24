@@ -21,10 +21,10 @@ class TopoCatBoostStrategy(MetaStrategy):
         super().__init__(name, asset, primary_run_id)
 
         # Topological feature configuration
-        self.window_length = 21
+        self.window_length = 50
         self.tau = 3
         self.embedding_dim = 3
-        self.max_dimension = 1  # We only use dimension 1 features
+        self.max_dimension = 3  # We only use dimension 1 features
 
         # Model storage
         self.model = None
