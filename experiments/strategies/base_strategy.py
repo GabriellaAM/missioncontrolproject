@@ -60,6 +60,22 @@ class BaseStrategy(ABC):
         """
         return 0  # Default: no warmup needed
 
+    def enhance_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Enhance loaded features with strategy-specific calculations.
+
+        Called after initial feature loading but before optimization.
+        Override in strategies that need additional feature engineering
+        (e.g., topological features, custom indicators, meta-model features).
+
+        Args:
+            data: DataFrame with basic loaded features
+
+        Returns:
+            DataFrame with enhanced features (same or additional columns)
+        """
+        return data  # Default: no enhancement
+
     def get_required_artifacts(self) -> list:
         """
         Return list of artifacts this strategy requires for comprehensive reporting.

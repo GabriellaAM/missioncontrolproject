@@ -68,6 +68,18 @@ class TopoCatBoostStrategy(MetaStrategy):
         """
         return None
 
+    def enhance_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add topological features during feature loading stage (Step 1).
+
+        This ensures topological features are calculated once and reused throughout
+        the pipeline, preventing recalculation during optimization and walk-forward validation.
+        """
+        print(f"🔬 Adding topological features during feature loading...")
+        enhanced_data = self._add_topological_features_inplace(data.copy())
+        print(f"   Topological features added: {data.shape} -> {enhanced_data.shape}")
+        return enhanced_data
+
     def _apply_normalization(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Apply standard Z-Score normalization to base features before topological analysis.
@@ -264,12 +276,9 @@ class TopoCatBoostStrategy(MetaStrategy):
         if self.model is None:
             raise RuntimeError("Model not trained. Cannot generate meta-model signals.")
 
-        # Use the enhanced data with topological features that was created during training
-        if self.enhanced_data is None:
-            raise RuntimeError("Enhanced data not available. Model must be trained first.")
-
-        # Use the pre-computed enhanced data (includes all topological features)
-        enhanced_data = self.enhanced_data
+        # Use input data directly - it already contains all features including topological ones
+        # from the feature loading stage (Step 1)
+        enhanced_data = data.copy()
 
         # Prepare features using the same columns as training
         if self.feature_columns is None:
@@ -372,8 +381,8 @@ class TopoCatBoostStrategy(MetaStrategy):
 
         print(f"🌳 Training CatBoost meta-learner...")
 
-        # Add topological features to the data
-        enhanced_data = self._add_topological_features_inplace(data.copy())
+        # Use input data directly - it already contains topological features from feature loading stage
+        enhanced_data = data.copy()
 
         # VALIDATE SIGNALS: Primary signals should be correct as imported
         if 'signal' in enhanced_data.columns:

@@ -1,0 +1,56 @@
+artifact_path: /Users/valter.rebelo/MissionControl/mlruns/29/models/m-c58a4ed4c80141bcad80110f124a8357/artifacts
+flavors:
+  catboost:
+    catboost_version: 1.2.8
+    code: null
+    data: model.cb
+    model_type: CatBoostClassifier
+    save_format: cbm
+  python_function:
+    data: model.cb
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.catboost
+    python_version: 3.11.5
+is_signature_from_type_hint: false
+mlflow_version: 3.1.4
+model_id: m-c58a4ed4c80141bcad80110f124a8357
+model_size_bytes: 240491
+model_uuid: m-c58a4ed4c80141bcad80110f124a8357
+prompts: null
+run_id: ce9522cfadf24d1c8d99c8320ceec503
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+signature:
+  inputs: '[{"type": "double", "name": "bitcoin_close", "required": true}, {"type":
+    "long", "name": "signal", "required": true}, {"type": "long", "name": "label",
+    "required": true}, {"type": "double", "name": "bitcoin_log_return_1", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_num_holes_0", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_betti_0", "required": true},
+    {"type": "double", "name": "bitcoin_close_topo_max_hole_lifetime_0", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_avg_hole_lifetime_0", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_l1_norm_0", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_l2_norm_0", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_sum_hole_lifetimes_0", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_persistence_entropy_0",
+    "required": true}, {"type": "double", "name": "bitcoin_close_topo_std_persistence_0",
+    "required": true}, {"type": "double", "name": "bitcoin_close_topo_wasserstein_0",
+    "required": true}, {"type": "double", "name": "bitcoin_close_topo_num_holes_1",
+    "required": true}, {"type": "double", "name": "bitcoin_close_topo_betti_1", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_max_hole_lifetime_1", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_avg_hole_lifetime_1", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_l1_norm_1", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_l2_norm_1", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_sum_hole_lifetimes_1", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_persistence_entropy_1",
+    "required": true}, {"type": "double", "name": "bitcoin_close_topo_std_persistence_1",
+    "required": true}, {"type": "double", "name": "bitcoin_close_topo_wasserstein_1",
+    "required": true}]'
+  outputs: '[{"type": "tensor", "tensor-spec": {"dtype": "float64", "shape": [-1]}}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2025-09-24 21:23:44.560146'

@@ -234,8 +234,19 @@ class RunGenerator:
             # For regular strategies, ensure timestamp is index
             if 'timestamp' in features_df.columns:
                 features_df = features_df.set_index('timestamp')
-        
+
         print(f"Loaded {len(features_df)} rows with {len(features_df.columns)} features for {self.strategy_name}")
+
+        # Apply strategy-specific feature enhancement (topological, custom indicators, etc.)
+        print(f"🔧 Applying strategy-specific feature enhancements...")
+        enhanced_features = self.strategy.enhance_features(features_df)
+        if enhanced_features.shape != features_df.shape:
+            print(f"   Features enhanced: {features_df.shape} -> {enhanced_features.shape}")
+            print(f"   New columns added: {len(enhanced_features.columns) - len(features_df.columns)}")
+            features_df = enhanced_features
+        else:
+            print(f"   No feature enhancements applied by this strategy")
+
         return features_df
     
     def _setup_mlflow_tracking(self):
@@ -1024,14 +1035,14 @@ class RunGenerator:
             except:
                 pass
 
-    def _generate_returns_analysis(self, strategy_data, optimization_results, permutation_results,
-                                 wf_results, wf_perm_results, train_start, train_end):
+    def _generate_returns_analysis(self, _strategy_data, _optimization_results, _permutation_results,
+                                 _wf_results, _wf_perm_results, _train_start, _train_end):
         """Generate returns analysis artifacts."""
         # This is typically included in performance_plots, but can be extended for custom analysis
         pass
 
-    def _generate_confusion_matrix(self, strategy_data, optimization_results, permutation_results,
-                                 wf_results, wf_perm_results, train_start, train_end):
+    def _generate_confusion_matrix(self, strategy_data, _optimization_results, _permutation_results,
+                                 _wf_results, _wf_perm_results, train_start, train_end):
         """Generate confusion matrix for strategies with labels."""
         if 'label' not in strategy_data.columns:
             print("    ⚠️  No labels available for confusion matrix")
@@ -1053,8 +1064,8 @@ class RunGenerator:
             mlflow_log=True
         )
 
-    def _generate_signal_comparison(self, strategy_data, optimization_results, permutation_results,
-                                  wf_results, wf_perm_results, train_start, train_end):
+    def _generate_signal_comparison(self, strategy_data, _optimization_results, _permutation_results,
+                                  _wf_results, _wf_perm_results, _train_start, _train_end):
         """Generate signal comparison plot for meta-models."""
         if not hasattr(self.strategy, 'is_meta_model') or not self.strategy.is_meta_model:
             print("    ⚠️  Signal comparison only available for meta-models")
@@ -1073,8 +1084,8 @@ class RunGenerator:
             mlflow_log=True
         )
 
-    def _generate_comprehensive_csv(self, strategy_data, optimization_results, permutation_results,
-                                  wf_results, wf_perm_results, train_start, train_end):
+    def _generate_comprehensive_csv(self, strategy_data, _optimization_results, _permutation_results,
+                                  _wf_results, _wf_perm_results, _train_start, _train_end):
         """Generate comprehensive CSV export."""
         # Get enhanced data from strategy if available (for meta-models with features)
         enhanced_data = getattr(self.strategy, 'enhanced_data', strategy_data)
@@ -1085,8 +1096,8 @@ class RunGenerator:
             mlflow_log=True
         )
 
-    def _generate_model_summary(self, strategy_data, optimization_results, permutation_results,
-                              wf_results, wf_perm_results, train_start, train_end):
+    def _generate_model_summary(self, _strategy_data, optimization_results, _permutation_results,
+                              wf_results, _wf_perm_results, _train_start, _train_end):
         """Generate model performance summary."""
         if not hasattr(self.strategy, 'model') or self.strategy.model is None:
             print("    ⚠️  No trained model available for summary")
@@ -1120,8 +1131,8 @@ class RunGenerator:
             mlflow_log=True
         )
 
-    def _generate_feature_importance(self, strategy_data, optimization_results, permutation_results,
-                                   wf_results, wf_perm_results, train_start, train_end):
+    def _generate_feature_importance(self, _strategy_data, _optimization_results, _permutation_results,
+                                   _wf_results, _wf_perm_results, _train_start, _train_end):
         """Generate feature importance plot for ML models."""
         if not hasattr(self.strategy, 'model') or self.strategy.model is None:
             print("    ⚠️  No trained model available for feature importance")
