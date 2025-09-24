@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from strategies.meta_models.base_meta_strategy import MetaStrategy
 from utils.topological_features import extract_multi_series_topological_features
+from utils.plotting import create_feature_importance_plot
 
 class TopoCatBoostStrategy(MetaStrategy):
 
@@ -24,7 +25,7 @@ class TopoCatBoostStrategy(MetaStrategy):
         self.window_length = 50
         self.tau = 3
         self.embedding_dim = 3
-        self.max_dimension = 3  # We only use dimension 1 features
+        self.max_dimension = 2
 
         # Model storage
         self.model = None
@@ -134,10 +135,19 @@ class TopoCatBoostStrategy(MetaStrategy):
     def _add_topological_features_inplace(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Add topological features to the DataFrame and return the enhanced DataFrame.
-        Applies normalization to base features before topological analysis.
+        Applies EMA transformation and normalization to base features before topological analysis.
         """
-        # Apply normalization to base features before topological analysis
-        df_normalized = self._apply_normalization(df.copy())
+        # Transform asset_close using 10-period EMA before normalization
+        df_transformed = df.copy()
+        close_col = f'{self.asset}_close'
+
+        if close_col in df_transformed.columns:
+            # Apply 10-period EMA transformation
+            df_transformed[close_col] = df_transformed[close_col].ewm(span=10, min_periods=1).mean()
+            print(f"🔧 Applied 10-period EMA transformation to {close_col}")
+
+        # Apply normalization to transformed features before topological analysis
+        df_normalized = self._apply_normalization(df_transformed)
 
         # Create configuration for each series
         series_configs = {}
@@ -318,22 +328,9 @@ class TopoCatBoostStrategy(MetaStrategy):
 
             # Only process rows where we have clean features
             if len(X_clean) > 0:
-                # CRITICAL FIX: Apply scaler to features before prediction
-                if hasattr(self, 'scaler') and self.scaler is not None:
-                    # Scale features (excluding signal if it exists)
-                    feature_cols_for_scaling = [col for col in available_features if col != 'signal']
-                    if feature_cols_for_scaling:
-                        X_scaled = X_clean.copy()
-                        X_scaled[feature_cols_for_scaling] = self.scaler.transform(X_clean[feature_cols_for_scaling])
-                    else:
-                        X_scaled = self.scaler.transform(X_clean)
-                else:
-                    # Fallback: use features as-is
-                    X_scaled = X_clean
-                    print("   ⚠️  No scaler available - using raw features")
-
-                # Meta-model predicts {0, 1} - whether primary signal will be successful
-                meta_predictions = self.model.predict(X_scaled)
+                # Meta-model predicts {0, 1} directly on features - whether primary signal will be successful
+                # Features already processed correctly: topological features from normalized data
+                meta_predictions = self.model.predict(X_clean)
 
                 # Get indices where we made predictions (no NaN)
                 clean_indices = np.where(~nan_mask)[0]
@@ -526,9 +523,17 @@ class TopoCatBoostStrategy(MetaStrategy):
             )
             self.model.fit(X_train, y_train)
 
-            # Calculate training accuracy
+            # Calculate training and test accuracy
             train_pred = self.model.predict(X_train)
             train_score = balanced_accuracy_score(y_train, train_pred)
+
+            test_pred = self.model.predict(X_test)
+            test_score = balanced_accuracy_score(y_test, test_pred)
+            print(f"   ✅ Test accuracy: {test_score:.4f}")
+
+            # Log test performance
+            mlflow.log_metric("test_accuracy", test_score)
+            mlflow.log_metric("test_samples", len(X_test))
 
             # Create feature importance artifacts
             self._create_feature_importance_artifacts(self.model, feature_cols)
@@ -540,6 +545,7 @@ class TopoCatBoostStrategy(MetaStrategy):
                     'depth': 6
                 },
                 'best_value': train_score,
+                'test_score': test_score,
                 'study': None
             }
 
@@ -596,20 +602,17 @@ class TopoCatBoostStrategy(MetaStrategy):
         self.model = cb.CatBoostClassifier(**final_params)
         self.model.fit(X_train, y_train)
 
-        # CRITICAL FIX: Train and store scaler for feature normalization
-        from sklearn.preprocessing import StandardScaler
+        # Evaluate on test set
+        test_pred = self.model.predict(X_test)
+        test_score = balanced_accuracy_score(y_test, test_pred)
+        print(f"   ✅ Test accuracy: {test_score:.4f}")
 
-        # Fit scaler on training features (excluding signal column if it's non-topological)
-        feature_cols_for_scaling = [col for col in feature_cols if col != 'signal']
-        if feature_cols_for_scaling:
-            self.scaler = StandardScaler()
-            self.scaler.fit(X_train[feature_cols_for_scaling])
-            print(f"   ✅ Fitted scaler on {len(feature_cols_for_scaling)} feature columns")
-        else:
-            # Fallback: fit on all features
-            self.scaler = StandardScaler()
-            self.scaler.fit(X_train)
-            print(f"   ✅ Fitted scaler on all {len(feature_cols)} feature columns")
+        # Log test performance
+        mlflow.log_metric("test_accuracy", test_score)
+        mlflow.log_metric("test_samples", len(X_test))
+
+        # Create feature importance artifacts
+        self._create_feature_importance_artifacts(self.model, feature_cols)
 
         # Store enhanced data for artifact generation
         self.enhanced_data = enhanced_data
@@ -618,5 +621,38 @@ class TopoCatBoostStrategy(MetaStrategy):
         return {
             'best_params': best_params,
             'best_value': best_value,
+            'test_score': test_score,
             'study': study
         }
+
+    def _create_feature_importance_artifacts(self, model, feature_names):
+        """Create feature importance visualization and log as MLflow artifact."""
+        try:
+            import tempfile
+            import os
+
+            # Get feature importance
+            importance_values = model.get_feature_importance()
+
+            # Create temporary file for the plot
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+                temp_path = temp_file.name
+
+            # Create the plot using utility function
+            create_feature_importance_plot(
+                importance_values=importance_values,
+                feature_names=feature_names,
+                save_path=temp_path,
+                title="TopoCatBoost Feature Importance"
+            )
+
+            # Log as MLflow artifact
+            mlflow.log_artifact(temp_path, "feature_importance")
+
+            # Clean up temporary file
+            os.unlink(temp_path)
+
+            print("   ✅ Feature importance plot saved as MLflow artifact")
+
+        except Exception as e:
+            print(f"   ⚠️ Could not create feature importance artifacts: {e}")

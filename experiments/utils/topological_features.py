@@ -55,7 +55,7 @@ def extract_topological_features(
     selected_cols: List[str],
     tau: int = 3,
     embedding_dim: int = 3,
-    max_dimension: int = 1
+    max_dimension: int = 2
 ) -> pd.DataFrame:
     """
     Extract topological features from sliding windows of univariate time series data using time delay embedding.
@@ -127,9 +127,6 @@ def extract_topological_features(
         # Initialize features for this window with proper timestamp
         features = {
             'timestamp': window_end_timestamp,  # When these features become available
-            'window_start_idx': i,
-            'window_end_idx': i + window_length - 1,
-            'tau_used': tau
         }
 
         # Extract features for each dimension
@@ -157,15 +154,6 @@ def extract_topological_features(
                     avg_hole_lifetime = np.mean(persistence)
                     features[f'avg_hole_lifetime_{dim}'] = avg_hole_lifetime
 
-                    # Number of relevant holes (persistence > threshold)
-                    if len(persistence) > 1:
-                        persistence_threshold = np.mean(persistence) + 0.5 * np.std(persistence)
-                    else:
-                        persistence_threshold = np.mean(persistence)
-
-                    num_relevant_holes = np.sum(persistence > persistence_threshold)
-                    features[f'num_relevant_holes_{dim}'] = num_relevant_holes
-
                     # L1 norm of persistence
                     l1_norm = np.sum(persistence)
                     features[f'l1_norm_{dim}'] = l1_norm
@@ -174,9 +162,9 @@ def extract_topological_features(
                     l2_norm = np.sqrt(np.sum(persistence**2))
                     features[f'l2_norm_{dim}'] = l2_norm
 
-                    # L3 norm of persistence
-                    l3_norm = np.power(np.sum(persistence**3), 1/3)
-                    features[f'l3_norm_{dim}'] = l3_norm
+                    # Sum of hole lifetimes (same as L1 norm, but explicit)
+                    sum_hole_lifetimes = np.sum(persistence)
+                    features[f'sum_hole_lifetimes_{dim}'] = sum_hole_lifetimes
 
                     # Persistence entropy
                     if l1_norm > 0:
@@ -222,25 +210,6 @@ def extract_topological_features(
     if 'timestamp' in df.columns:
         df.set_index('timestamp', inplace=True)
 
-    # FIXED: Moving averages must also prevent future data leakage
-    # Use only past data for rolling calculations
-    for dim in range(max_dimension + 1):
-        if f'num_holes_{dim}' in df.columns:
-            # Rolling with min_periods ensures we don't use future data
-            df[f'num_holes_{dim}_ma5'] = df[f'num_holes_{dim}'].rolling(window=5, min_periods=1).mean()
-            df[f'num_holes_{dim}_ma10'] = df[f'num_holes_{dim}'].rolling(window=10, min_periods=1).mean()
-        if f'max_hole_lifetime_{dim}' in df.columns:
-            df[f'max_hole_lifetime_{dim}_ma5'] = df[f'max_hole_lifetime_{dim}'].rolling(window=5, min_periods=1).mean()
-        if f'avg_hole_lifetime_{dim}' in df.columns:
-            df[f'avg_hole_lifetime_{dim}_ma5'] = df[f'avg_hole_lifetime_{dim}'].rolling(window=5, min_periods=1).mean()
-        if f'num_relevant_holes_{dim}' in df.columns:
-            df[f'num_relevant_holes_{dim}_ma5'] = df[f'num_relevant_holes_{dim}'].rolling(window=5, min_periods=1).mean()
-        if f'l1_norm_{dim}' in df.columns:
-            df[f'l1_norm_{dim}_ma5'] = df[f'l1_norm_{dim}'].rolling(window=5, min_periods=1).mean()
-            df[f'l1_norm_{dim}_ma10'] = df[f'l1_norm_{dim}'].rolling(window=10, min_periods=1).mean()
-        if f'persistence_entropy_{dim}' in df.columns:
-            df[f'persistence_entropy_{dim}_ma5'] = df[f'persistence_entropy_{dim}'].rolling(window=5, min_periods=1).mean()
-
     return df
 
 
@@ -250,10 +219,9 @@ def _set_zero_features(features: Dict[str, Any], dim: int) -> None:
     features[f'betti_{dim}'] = 0
     features[f'max_hole_lifetime_{dim}'] = 0
     features[f'avg_hole_lifetime_{dim}'] = 0
-    features[f'num_relevant_holes_{dim}'] = 0
     features[f'l1_norm_{dim}'] = 0
     features[f'l2_norm_{dim}'] = 0
-    features[f'l3_norm_{dim}'] = 0
+    features[f'sum_hole_lifetimes_{dim}'] = 0
     features[f'persistence_entropy_{dim}'] = 0
     features[f'std_persistence_{dim}'] = 0
 

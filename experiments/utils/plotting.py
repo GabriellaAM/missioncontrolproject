@@ -751,6 +751,69 @@ def plot_feature_importance(model, features: list, model_type: str,
         return ""
 
 
+def create_feature_importance_plot(importance_values, feature_names, save_path, title="Feature Importance"):
+    """
+    Create feature importance plot with color coding for different feature types.
+
+    Args:
+        importance_values: Array of feature importance values
+        feature_names: List of feature names
+        save_path: Path to save the plot
+        title: Plot title
+
+    Returns:
+        str: Path to saved plot file
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Sort features by importance
+    sorted_indices = np.argsort(importance_values)
+    sorted_features = [feature_names[i] for i in sorted_indices]
+    sorted_importances = importance_values[sorted_indices]
+
+    # Define colors for different feature types
+    colors = []
+    for feature in sorted_features:
+        if 'topo_' in feature:
+            colors.append('skyblue')  # Topological features
+        elif 'signal' in feature:
+            colors.append('orange')   # Signal features
+        elif 'return' in feature:
+            colors.append('green')    # Return features
+        else:
+            colors.append('gray')     # Other features
+
+    # Create horizontal bar plot
+    plt.figure(figsize=(10, max(6, len(sorted_features) * 0.3)))
+    bars = plt.barh(range(len(sorted_features)), sorted_importances, color=colors)
+
+    plt.yticks(range(len(sorted_features)), sorted_features)
+    plt.xlabel('Feature Importance')
+    plt.title(title)
+    plt.grid(axis='x', alpha=0.3)
+
+    # Add value labels on bars
+    for i, (bar, importance) in enumerate(zip(bars, sorted_importances)):
+        plt.text(bar.get_width() + 0.001, bar.get_y() + bar.get_height()/2,
+                f'{importance:.3f}', ha='left', va='center', fontsize=8)
+
+    # Add legend
+    legend_elements = [
+        plt.Rectangle((0,0),1,1, facecolor='skyblue', label='Topological'),
+        plt.Rectangle((0,0),1,1, facecolor='orange', label='Signal'),
+        plt.Rectangle((0,0),1,1, facecolor='green', label='Returns'),
+        plt.Rectangle((0,0),1,1, facecolor='gray', label='Other')
+    ]
+    plt.legend(handles=legend_elements, loc='lower right')
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    return save_path
+
+
 def plot_signal_comparison(data: pd.DataFrame,
                           primary_signal_col: str = 'primary_signal',
                           meta_decision_col: str = 'meta_decision',
