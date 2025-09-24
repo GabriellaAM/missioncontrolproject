@@ -25,12 +25,13 @@ class TopoCatBoostStrategy(MetaStrategy):
         self.window_length = 50
         self.tau = 3
         self.embedding_dim = 3
-        self.max_dimension = 2
+        self.max_dimension = 1
 
         # Model storage
         self.model = None
         self.feature_columns = None
         self.enhanced_data = None  # Store processed data for artifact generation
+
 
         # Define univariate series for topological analysis
         self.topological_series = [
@@ -60,77 +61,66 @@ class TopoCatBoostStrategy(MetaStrategy):
 
         return base_artifacts + catboost_artifacts
 
-    def get_normalization_config(self) -> Dict:
+    def get_normalization_config(self) -> None:
         """
-        Configure normalization for raw features only.
-        Primary signals, labels, and topological features are excluded from normalization.
-        Topological features are calculated FROM normalized base features but are not normalized themselves.
+        TopoCatBoost handles normalization internally for topological feature preprocessing.
+        Return None to prevent system-wide EWMA normalization and avoid incorrect MLflow parameter logging.
         """
-        return {
-            'exclude': [
-                'signal',  # Primary model signal - never normalize
-                'label',   # Triple barrier label - never normalize
-                'timestamp',  # Time index
-                'barrier_touched', 'days_to_barrier', 'return_at_barrier',  # Label metadata
-                'bitcoin_log_return', 'log_return',  # Any return-based labels
-                'meta_decision', 'final_signal'  # Meta-model outputs
-            ],
-            'exclude_patterns': [
-                '_topo_'  # Exclude all topological features from normalization
-            ]
-        }
+        return None
 
     def _apply_normalization(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Apply standard Z-Score normalization to base features before topological analysis.
+        Only normalizes features needed for topological analysis, excluding signals and labels.
         """
         from sklearn.preprocessing import StandardScaler
 
-        # Get normalization configuration
-        normalization_config = self.get_normalization_config()
+        print(f"🔧 Applying standard normalization for topological analysis...")
 
-        if normalization_config:
-            print(f"🔧 Applying standard normalization for topological analysis...")
+        # Define columns to exclude from normalization (internal config)
+        excluded_cols = [
+            'signal',  # Primary model signal - never normalize
+            'label',   # Triple barrier label - never normalize
+            'timestamp',  # Time index
+            'barrier_touched', 'days_to_barrier', 'return_at_barrier',  # Label metadata
+            'bitcoin_log_return', 'log_return',  # Any return-based labels
+            'meta_decision', 'final_signal',  # Meta-model outputs
+            'primary_signal'  # Avoid duplicate signal columns
+        ]
+        excluded_patterns = ['_topo_']  # Exclude all topological features from normalization
 
-            # Get columns to exclude from normalization
-            excluded_cols = normalization_config.get('exclude', [])
-            excluded_patterns = normalization_config.get('exclude_patterns', [])
+        # Identify columns to normalize (exclude both explicit columns and pattern matches)
+        cols_to_normalize = []
+        for col in df.columns:
+            if col in excluded_cols:
+                continue
+            if any(pattern in col for pattern in excluded_patterns):
+                continue
+            cols_to_normalize.append(col)
 
-            # Identify columns to normalize (exclude both explicit columns and pattern matches)
-            cols_to_normalize = []
-            for col in df.columns:
-                if col in excluded_cols:
-                    continue
-                if any(pattern in col for pattern in excluded_patterns):
-                    continue
-                cols_to_normalize.append(col)
-
-            if not cols_to_normalize:
-                print(f"⚠️  No columns to normalize, using raw features")
-                return df
-
-            # Create a copy for normalization
-            df_normalized = df.copy()
-
-            # Apply standard scaling to each column individually
-            for col in cols_to_normalize:
-                if df[col].notna().sum() > 1:  # Need at least 2 non-NaN values
-                    # Get non-NaN values for fitting
-                    non_nan_mask = df[col].notna()
-                    values = df.loc[non_nan_mask, col].values.reshape(-1, 1)
-
-                    # Fit and transform
-                    scaler = StandardScaler()
-                    scaled_values = scaler.fit_transform(values)
-
-                    # Update the normalized dataframe
-                    df_normalized.loc[non_nan_mask, col] = scaled_values.flatten()
-
-            print(f"✅ Normalized {len(cols_to_normalize)} columns for topological features")
-            return df_normalized
-        else:
-            print(f"⚠️  No normalization config found, using raw features")
+        if not cols_to_normalize:
+            print(f"⚠️  No columns to normalize, using raw features")
             return df
+
+        # Create a copy for normalization
+        df_normalized = df.copy()
+
+        # Apply standard scaling to each column individually
+        for col in cols_to_normalize:
+            if df[col].notna().sum() > 1:  # Need at least 2 non-NaN values
+                # Get non-NaN values for fitting
+                non_nan_mask = df[col].notna()
+                values = df.loc[non_nan_mask, col].values.reshape(-1, 1)
+
+                # Fit and transform
+                scaler = StandardScaler()
+                scaled_values = scaler.fit_transform(values)
+
+                # Update the normalized dataframe
+                df_normalized.loc[non_nan_mask, col] = scaled_values.flatten()
+
+        print(f"✅ Normalized {len(cols_to_normalize)} columns for topological features")
+        return df_normalized
 
     def _add_topological_features_inplace(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -181,27 +171,19 @@ class TopoCatBoostStrategy(MetaStrategy):
                 if len(topo_features.columns) > 10:
                     print(f"      ... and {len(topo_features.columns) - 10} more")
 
-                # CRITICAL FIX: Prevent duplicate columns by using proper suffixes
-                # Check for potential column conflicts
+                # Check for column conflicts - topological features shouldn't conflict with base features
                 conflicting_cols = set(df.columns).intersection(set(topo_features.columns))
                 if conflicting_cols:
                     print(f"   ⚠️  Found {len(conflicting_cols)} conflicting columns: {list(conflicting_cols)[:5]}...")
-                    # Use suffixes to prevent automatic _x/_y naming
-                    df = df.merge(
-                        topo_features,
-                        left_index=True,
-                        right_index=True,
-                        how='left',
-                        suffixes=('_original', '_topo')  # Explicit control over naming
-                    )
-                else:
-                    # No conflicts, merge normally
-                    df = df.merge(
-                        topo_features,
-                        left_index=True,
-                        right_index=True,
-                        how='left'
-                    )
+                    print(f"   🔧 This suggests topological features may have been calculated before")
+
+                # Merge topological features - they should have unique names due to prefixing
+                df = df.merge(
+                    topo_features,
+                    left_index=True,
+                    right_index=True,
+                    how='left'
+                )
 
                 print(f"✅ Added topological features: {original_shape} -> {df.shape}")
                 print(f"   New columns: {len(topo_features.columns)}")
@@ -282,8 +264,12 @@ class TopoCatBoostStrategy(MetaStrategy):
         if self.model is None:
             raise RuntimeError("Model not trained. Cannot generate meta-model signals.")
 
-        # Add topological features
-        enhanced_data = self._add_topological_features_inplace(data.copy())
+        # Use the enhanced data with topological features that was created during training
+        if self.enhanced_data is None:
+            raise RuntimeError("Enhanced data not available. Model must be trained first.")
+
+        # Use the pre-computed enhanced data (includes all topological features)
+        enhanced_data = self.enhanced_data
 
         # Prepare features using the same columns as training
         if self.feature_columns is None:
@@ -366,7 +352,7 @@ class TopoCatBoostStrategy(MetaStrategy):
 
 
     def optimize(self, data: pd.DataFrame, train_start: str, train_end: str,
-                 n_trials: int = 1000, **kwargs) -> Dict:
+                 n_trials: int = 10, **kwargs) -> Dict:
         """
         Train CatBoost meta-learner on topological features + primary signals.
         """
@@ -389,36 +375,35 @@ class TopoCatBoostStrategy(MetaStrategy):
         # Add topological features to the data
         enhanced_data = self._add_topological_features_inplace(data.copy())
 
-        # FIX SIGNALS: Ensure primary signals are +1/-1 after warmup (no 0s)
+        # VALIDATE SIGNALS: Primary signals should be correct as imported
         if 'signal' in enhanced_data.columns:
-            # Store original signals first
-            enhanced_data['primary_signal'] = enhanced_data['signal'].copy()
+            signals = enhanced_data['signal'].copy()
 
-            # Convert to numpy array and handle NA values
-            signals = enhanced_data['signal'].values.copy()
+            # Handle floating point precision issues (-0.0 vs 0.0)
+            signals = signals.round(8)
+            signals[signals == -0.0] = 0.0
+            enhanced_data['signal'] = signals
 
-            # Handle pandas NA/NaN values
-            na_mask = pd.isna(signals)
-            signals_clean = np.where(na_mask, 0, signals)  # Replace NA with 0 temporarily
+            # Report signal distribution for validation
+            valid_signals = signals.dropna()
+            if len(valid_signals) > 0:
+                signal_dist = valid_signals.value_counts().sort_index().to_dict()
+                print(f"   📊 Primary signal distribution: {signal_dist}")
 
-            # Round and fix -0.0 issue
-            signals_clean = np.round(signals_clean, decimals=8)
-            signals_clean[signals_clean == -0.0] = 0.0
+                # Check if signals look reasonable (should be mostly -1, 0, 1)
+                unique_signals = set(valid_signals.unique())
+                expected_signals = {-1.0, 0.0, 1.0}
+                unexpected_signals = unique_signals - expected_signals
 
-            # Find first non-zero signal (end of warmup)
-            non_zero_indices = np.where(signals_clean != 0)[0]
-            if len(non_zero_indices) > 0:
-                first_valid_idx = non_zero_indices[0]
+                if unexpected_signals:
+                    print(f"   ⚠️  Unexpected signal values found: {unexpected_signals}")
 
-                # After warmup, ensure all signals are strictly +1 or -1 (no 0s)
-                for i in range(first_valid_idx, len(signals_clean)):
-                    if not na_mask[i] and signals_clean[i] != 0:  # Non-NA, non-zero signals
-                        signals_clean[i] = 1 if signals_clean[i] > 0 else -1
+                # Count zeros vs non-zeros to identify potential issues
+                zero_count = (valid_signals == 0).sum()
+                nonzero_count = (valid_signals != 0).sum()
+                print(f"   📈 Zero signals: {zero_count}, Non-zero signals: {nonzero_count}")
 
-            # Restore NA values where they originally were
-            signals_final = np.where(na_mask, np.nan, signals_clean)
-            enhanced_data['signal'] = signals_final
-            print(f"   ✅ Primary signals validated and fixed")
+            print(f"   ✅ Primary signals validated")
 
         # Filter to training period and get data with labels
         train_data = enhanced_data.loc[train_start:train_end]
@@ -537,6 +522,10 @@ class TopoCatBoostStrategy(MetaStrategy):
 
             # Create feature importance artifacts
             self._create_feature_importance_artifacts(self.model, feature_cols)
+
+            # Store enhanced data for artifact generation
+            self.enhanced_data = enhanced_data
+            print(f"   ✅ Stored enhanced data for artifacts: {enhanced_data.shape}")
 
             return {
                 'best_params': {
