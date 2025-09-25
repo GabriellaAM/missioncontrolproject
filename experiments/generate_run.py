@@ -1044,6 +1044,55 @@ class RunGenerator:
     def _generate_confusion_matrix(self, strategy_data, _optimization_results, _permutation_results,
                                  _wf_results, _wf_perm_results, train_start, train_end):
         """Generate confusion matrix for strategies with labels."""
+        # For meta-models, try to get enhanced data with meta_prediction column
+        if hasattr(self.strategy, 'is_meta_model') and self.strategy.is_meta_model:
+            # Get enhanced data from strategy if available (contains meta_prediction)
+            enhanced_data = getattr(self.strategy, 'enhanced_data', strategy_data)
+
+            if 'meta_prediction' in enhanced_data.columns:
+                # Use enhanced data for meta-model confusion matrix
+                train_data = enhanced_data.loc[train_start:train_end]
+                test_data = enhanced_data.loc[train_end:]
+
+                # Training confusion matrix (binary classification of meta-model predictions)
+                train_labeled = train_data.dropna(subset=['label', 'meta_prediction'])
+                if len(train_labeled) > 0:
+                    # Convert labels to binary (1 for successful, 0 for unsuccessful)
+                    # The meta-model predicts whether primary signal will be successful
+                    binary_labels_train = (train_labeled['label'] == 1).astype(int)
+
+                    cm_plot_path = create_confusion_matrix_plot(
+                        y_true=binary_labels_train.values,
+                        y_pred=train_labeled['meta_prediction'].values,
+                        title=f"Confusion Matrix - {self.clean_strategy_name} (Training)",
+                        save_path="confusion_matrix_train.png",
+                        log_to_mlflow=True,
+                        labels=[0, 1],  # Force binary classification
+                        label_names=['Unsuccessful', 'Successful']
+                    )
+                    print(f"    ✅ Generated training confusion matrix for meta-model")
+
+                # Test confusion matrix if test data available
+                test_labeled = test_data.dropna(subset=['label', 'meta_prediction'])
+                if len(test_labeled) > 0:
+                    binary_labels_test = (test_labeled['label'] == 1).astype(int)
+
+                    cm_plot_path_test = create_confusion_matrix_plot(
+                        y_true=binary_labels_test.values,
+                        y_pred=test_labeled['meta_prediction'].values,
+                        title=f"Confusion Matrix - {self.clean_strategy_name} (Test)",
+                        save_path="confusion_matrix_test.png",
+                        log_to_mlflow=True,
+                        labels=[0, 1],  # Force binary classification
+                        label_names=['Unsuccessful', 'Successful']
+                    )
+                    print(f"    ✅ Generated test confusion matrix for meta-model")
+                else:
+                    print("    ⚠️  No test data available for confusion matrix")
+
+                return  # Exit after processing meta-model
+
+        # Standard strategy confusion matrix (non-meta-models)
         if 'label' not in strategy_data.columns:
             print("    ⚠️  No labels available for confusion matrix")
             return
@@ -1051,6 +1100,9 @@ class RunGenerator:
         # Filter to training period for in-sample confusion matrix
         train_data = strategy_data.loc[train_start:train_end]
         labeled_data = train_data.dropna(subset=['label', 'signal'])
+
+        # Filter out zero signals for binary classification
+        labeled_data = labeled_data[labeled_data['signal'] != 0]
 
         if len(labeled_data) == 0:
             print("    ⚠️  No labeled data available for confusion matrix")
@@ -1061,7 +1113,7 @@ class RunGenerator:
             y_pred=labeled_data['signal'].values,
             title=f"Confusion Matrix - {self.clean_strategy_name} (Training)",
             save_path="confusion_matrix_train.png",
-            mlflow_log=True
+            log_to_mlflow=True
         )
 
     def _generate_signal_comparison(self, strategy_data, _optimization_results, _permutation_results,
@@ -1079,19 +1131,33 @@ class RunGenerator:
             primary_signal_col='primary_signal' if 'primary_signal' in enhanced_data.columns else 'signal',
             meta_decision_col='meta_decision' if 'meta_decision' in enhanced_data.columns else None,
             final_signal_col='signal',
-            asset_name=self.asset_name,
-            save_path="signal_comparison.png",
-            mlflow_log=True
+            title=f"Signal Evolution - {self.asset_name}",
+            save_path="signal_comparison.png"
         )
 
+        # Log to MLflow
+        if plot_path:
+            mlflow.log_artifact(plot_path, "signal_comparison")
+
     def _generate_comprehensive_csv(self, strategy_data, _optimization_results, _permutation_results,
-                                  _wf_results, _wf_perm_results, _train_start, _train_end):
+                                  _wf_results, _wf_perm_results, train_start, train_end):
         """Generate comprehensive CSV export."""
         # Get enhanced data from strategy if available (for meta-models with features)
         enhanced_data = getattr(self.strategy, 'enhanced_data', strategy_data)
 
+        # Filter data to exclude warmup period - only include actual strategy period
+        # Use the actual start_date and end_date from strategy parameters
+        start_date = self.start_date  # This is the actual strategy start date (excluding warmup)
+        end_date = self.end_date      # This is the actual strategy end date
+
+        # Filter the data to the actual strategy period
+        filtered_data = enhanced_data.loc[start_date:end_date]
+
+        print(f"    📊 Filtered comprehensive data from {len(enhanced_data)} to {len(filtered_data)} rows")
+        print(f"    📅 Date range: {start_date} to {end_date} (excluding warmup)")
+
         csv_path = export_comprehensive_csv(
-            data=enhanced_data,
+            data=filtered_data,
             filename="comprehensive_strategy_data.csv",
             mlflow_log=True
         )
@@ -1145,11 +1211,14 @@ class RunGenerator:
 
         plot_path = plot_feature_importance(
             model=self.strategy.model,
-            feature_names=feature_cols,
+            features=feature_cols,
+            model_type="feature_importance",
             title=f"Feature Importance - {self.clean_strategy_name}",
-            save_path="feature_importance.png",
-            mlflow_log=True
+            save_path="feature_importance.png"
         )
+
+        if plot_path and os.path.exists(plot_path):
+            mlflow.log_artifact(plot_path)
 
     @staticmethod
     def discover_strategies():

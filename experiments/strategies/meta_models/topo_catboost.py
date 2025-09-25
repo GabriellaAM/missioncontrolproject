@@ -11,7 +11,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from strategies.meta_models.base_meta_strategy import MetaStrategy
 from utils.topological_features import extract_multi_series_topological_features
-from utils.plotting import create_feature_importance_plot
 
 class TopoCatBoostStrategy(MetaStrategy):
 
@@ -525,16 +524,38 @@ class TopoCatBoostStrategy(MetaStrategy):
             test_score = balanced_accuracy_score(y_test, test_pred)
             print(f"   ✅ Test accuracy: {test_score:.4f}")
 
-            # Log test performance
-            mlflow.log_metric("test_accuracy", test_score)
-            mlflow.log_metric("test_samples", len(X_test))
+            # Log test performance (only if MLflow run is active)
+            try:
+                if mlflow.active_run() is not None:
+                    mlflow.log_metric("test_accuracy", test_score)
+                    mlflow.log_metric("test_samples", len(X_test))
+            except Exception as e:
+                # Silently skip if MLflow logging fails (e.g., during walk-forward validation)
+                pass
 
-            # Create feature importance artifacts
-            self._create_feature_importance_artifacts(self.model, feature_cols)
+            # Feature importance artifacts will be created by orchestrator
 
             # Store enhanced data for artifact generation
             self.enhanced_data = enhanced_data
+
+            # Store meta-model predictions for confusion matrix (binary classification)
+            # Add predictions for ALL data (train and test) for confusion matrix
+            enhanced_data['meta_prediction'] = np.nan
+
+            # Add train predictions
+            if len(X_train) > 0:
+                train_meta_predictions = self.model.predict(X_train)
+                train_indices = X_train.index
+                enhanced_data.loc[train_indices, 'meta_prediction'] = train_meta_predictions
+
+            # Add test predictions
+            if len(X_test) > 0:
+                test_meta_predictions = self.model.predict(X_test)
+                test_indices = X_test.index
+                enhanced_data.loc[test_indices, 'meta_prediction'] = test_meta_predictions
+
             print(f"   ✅ Stored enhanced data for artifacts: {enhanced_data.shape}")
+            print(f"   ✅ Stored meta-predictions for confusion matrix (train + test)")
 
             return {
                 'best_params': {
@@ -605,16 +626,38 @@ class TopoCatBoostStrategy(MetaStrategy):
         test_score = balanced_accuracy_score(y_test, test_pred)
         print(f"   ✅ Test accuracy: {test_score:.4f}")
 
-        # Log test performance
-        mlflow.log_metric("test_accuracy", test_score)
-        mlflow.log_metric("test_samples", len(X_test))
+        # Log test performance (only if MLflow run is active)
+        try:
+            if mlflow.active_run() is not None:
+                mlflow.log_metric("test_accuracy", test_score)
+                mlflow.log_metric("test_samples", len(X_test))
+        except Exception as e:
+            # Silently skip if MLflow logging fails (e.g., during walk-forward validation)
+            pass
 
-        # Create feature importance artifacts
-        self._create_feature_importance_artifacts(self.model, feature_cols)
+        # Feature importance artifacts will be created by orchestrator
 
         # Store enhanced data for artifact generation
         self.enhanced_data = enhanced_data
+
+        # Store meta-model predictions for confusion matrix (binary classification)
+        # Add predictions for ALL data (train and test) for confusion matrix
+        enhanced_data['meta_prediction'] = np.nan
+
+        # Add train predictions
+        if len(X_train) > 0:
+            train_meta_predictions = self.model.predict(X_train)
+            train_indices = X_train.index
+            enhanced_data.loc[train_indices, 'meta_prediction'] = train_meta_predictions
+
+        # Add test predictions
+        if len(X_test) > 0:
+            test_meta_predictions = self.model.predict(X_test)
+            test_indices = X_test.index
+            enhanced_data.loc[test_indices, 'meta_prediction'] = test_meta_predictions
+
         print(f"   ✅ Stored enhanced data for artifacts: {enhanced_data.shape}")
+        print(f"   ✅ Stored meta-predictions for confusion matrix (train + test)")
 
         return {
             'best_params': best_params,
@@ -623,34 +666,3 @@ class TopoCatBoostStrategy(MetaStrategy):
             'study': study
         }
 
-    def _create_feature_importance_artifacts(self, model, feature_names):
-        """Create feature importance visualization and log as MLflow artifact."""
-        try:
-            import tempfile
-            import os
-
-            # Get feature importance
-            importance_values = model.get_feature_importance()
-
-            # Create temporary file for the plot
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-                temp_path = temp_file.name
-
-            # Create the plot using utility function
-            create_feature_importance_plot(
-                importance_values=importance_values,
-                feature_names=feature_names,
-                save_path=temp_path,
-                title="TopoCatBoost Feature Importance"
-            )
-
-            # Log as MLflow artifact
-            mlflow.log_artifact(temp_path, "feature_importance")
-
-            # Clean up temporary file
-            os.unlink(temp_path)
-
-            print("   ✅ Feature importance plot saved as MLflow artifact")
-
-        except Exception as e:
-            print(f"   ⚠️ Could not create feature importance artifacts: {e}")
