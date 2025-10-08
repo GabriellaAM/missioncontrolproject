@@ -42,14 +42,14 @@ setup_mlflow()
 ########################################################
 
 # You can change this to any asset(s) supported by your FeatureLoader
-assets = ['chainlink']  # e.g., ['ethereum'], ['aapl'], ['gold'], etc.
+assets = ['bitcoin']  # e.g., ['ethereum'], ['aapl'], ['gold'], etc.
 
 # Helper: get the asset prefix for column names (assume first asset for single-asset analysis)
 asset = assets[0]
 prefix = f"{asset}_"  # e.g., 'bitcoin_', 'ethereum_', etc.
 
 # Initialize feature loader with global date range
-loader = FeatureLoader(start_date='2020-01-01', end_date='2025-08-10')
+loader = FeatureLoader(start_date='2024-01-01', end_date='2025-10-05')
 
 # Build feature set with selected asset(s) + macro features
 features_df = loader.build_feature_set(

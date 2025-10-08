@@ -46,7 +46,7 @@ def fractional_diff(series, d):
 
 asset = ['bitcoin']
 
-feats = FeatureLoader(start_date='2017-01-01', end_date='2025-09-21')
+feats = FeatureLoader(start_date='2017-01-01', end_date='2025-10-02')
 
 feats = feats.build_feature_set(
     crypto_assets=asset[0],
@@ -385,7 +385,7 @@ topo_features = extract_topological_features(
     data=feats,
     window_length=window_length,
     selected_cols=selected_columns,
-    tau=3,  # Fixed tau value
+    tau=4,  # Fixed tau value
     max_dimension=3
 )
 
@@ -690,7 +690,9 @@ fig, slider = create_interactive_persistence_viewer(
     bitcoin_aligned
 )
 
-
+################################################################################
+################################################################################
+################################################################################
 
 
 # %% 
@@ -707,7 +709,7 @@ topo_features['l2_norm_1_ma7'] = topo_features['l2_norm_0'].rolling(window=7, mi
 topo_features['l1_norm_1_diff'] = topo_features['l1_norm_1'].diff(7)
 
 # Calculate first differences of the norms
-l2_norm_diff = topo_features['sum_persistence_0']
+l2_norm_diff = topo_features['wasserstein_1']
 l1_norm_diff = topo_features['wasserstein_0']
 
 # Calculate quantiles for both norms
@@ -824,8 +826,8 @@ aligned_timestamps = feats.index[window_length-1:window_length-1+len(topo_featur
 topo_features['norm_persistence'] = topo_features['mean_persistence_1'] / topo_features['std_persistence_1']
 
 # Get the original norms (not differences)
-l2_norm = topo_features['wasserstein_1'].copy()
-l1_norm = topo_features['betti_1'].copy()
+l2_norm = topo_features['l1_norm_1'].copy()
+l1_norm = topo_features['l2_norm_1'].copy()
 
 # Define rolling window for quintile calculation
 rolling_window = 30  # 1 year of trading days
@@ -985,25 +987,38 @@ import plotly.express as px
 import numpy as np
 from scipy import stats
 
-# User-defined confidence level
-confidence_level = 0.95  # 95% confidence interval (can be adjusted by user)
+# --- USER CONFIGURABLE SECTION ---
+# Choose the topological feature to analyze (must be a column in topo_features)
+# Examples: 'l2_norm_1', 'avg_hole_lifetime_1', 'std_persistence_1', etc.
+topo_feature_col = 'avg_hole_lifetime_1'  # <-- Change this to any topological feature column you want
 
-# Calculate forward percentage changes for different horizons
-forward_days = [1, 5, 10, 20]  # Different forward-looking periods
+# Label for the feature (for axis and legend)
+topo_feature_label = topo_feature_col.replace('_', ' ').title()
+
+# Number of quantiles (quintiles by default)
+n_quantiles = 5
+
+# Confidence level for error bars
+confidence_level = 0.95
+
+# Forward return horizons (in days)
+forward_days = [1, 5, 10, 20]
+# --- END USER CONFIGURABLE SECTION ---
+
 scatter_data = []
 
 for days in forward_days:
     # Calculate forward percentage change
     forward_pct_change = feats['bitcoin_close'].pct_change(periods=-days) * 100  # Negative for forward-looking
-    
+
     # Align with topological features
     aligned_forward_change = forward_pct_change.iloc[window_length-1:window_length-1+len(topo_features)]
-    
+
     # Create scatter plot data
-    for i, (l2_norm, pct_change) in enumerate(zip(topo_features['l2_norm_1'], aligned_forward_change)):
-        if not pd.isna(pct_change) and not pd.isna(l2_norm):
+    for i, (feat_val, pct_change) in enumerate(zip(topo_features[topo_feature_col], aligned_forward_change)):
+        if not pd.isna(pct_change) and not pd.isna(feat_val):
             scatter_data.append({
-                'L2_Norm_Dim1': l2_norm,
+                'Topo_Feature': feat_val,
                 'Forward_Pct_Change': pct_change,
                 'Days_Forward': f'{days} days',
                 'Date': aligned_timestamps[i]
@@ -1012,32 +1027,45 @@ for days in forward_days:
 # Convert to DataFrame for easier plotting
 scatter_df = pd.DataFrame(scatter_data)
 
-# Bin L2 Norm by quantiles for each forward period
+# Bin the chosen topological feature by quantiles for each forward period
 quantile_data = []
-n_quantiles = 5  # Number of quantiles (quintiles)
 
 for days in forward_days:
     subset = scatter_df[scatter_df['Days_Forward'] == f'{days} days'].copy()
     if len(subset) > 0:
-        # Create quantile bins
-        subset['L2_Quantile'] = pd.qcut(subset['L2_Norm_Dim1'], 
-                                       q=n_quantiles, 
-                                       labels=[f'Q{i+1}' for i in range(n_quantiles)],
-                                       duplicates='drop')
-        
+        # Compute quantile edges
+        try:
+            quantile_edges = np.unique(np.nanpercentile(subset['Topo_Feature'], np.linspace(0, 100, n_quantiles + 1)))
+        except Exception as e:
+            print(f"Error computing quantile edges: {e}")
+            quantile_edges = None
+
+        # If not enough unique edges, fallback to no binning
+        if quantile_edges is not None and len(quantile_edges) > 1:
+            n_bins = len(quantile_edges) - 1
+            labels = [f'Q{i+1}' for i in range(n_bins)]
+            subset['Topo_Quantile'] = pd.cut(
+                subset['Topo_Feature'],
+                bins=quantile_edges,
+                labels=labels,
+                include_lowest=True,
+                duplicates='drop'
+            )
+        else:
+            subset['Topo_Quantile'] = 'Q1'
+
         # Calculate statistics for each quantile including confidence intervals
         quantile_stats = []
-        for quantile in subset['L2_Quantile'].unique():
+        for quantile in subset['Topo_Quantile'].unique():
             if pd.notna(quantile):
-                quantile_data_subset = subset[subset['L2_Quantile'] == quantile]['Forward_Pct_Change']
-                
+                quantile_data_subset = subset[subset['Topo_Quantile'] == quantile]['Forward_Pct_Change']
+
                 mean_val = quantile_data_subset.mean()
                 std_val = quantile_data_subset.std()
                 count_val = len(quantile_data_subset)
-                
+
                 # Calculate confidence interval
                 if count_val > 1:
-                    # Use t-distribution for small samples
                     alpha = 1 - confidence_level
                     t_critical = stats.t.ppf(1 - alpha/2, df=count_val-1)
                     margin_of_error = t_critical * (std_val / np.sqrt(count_val))
@@ -1046,9 +1074,9 @@ for days in forward_days:
                 else:
                     ci_lower = mean_val
                     ci_upper = mean_val
-                
+
                 quantile_stats.append({
-                    'L2_Quantile': quantile,
+                    'Topo_Quantile': quantile,
                     'mean': mean_val,
                     'std': std_val,
                     'count': count_val,
@@ -1056,7 +1084,7 @@ for days in forward_days:
                     'ci_upper': ci_upper,
                     'Days_Forward': f'{days} days'
                 })
-        
+
         quantile_data.extend(quantile_stats)
 
 # Convert to DataFrame
@@ -1069,14 +1097,14 @@ fig = go.Figure()
 colors = px.colors.qualitative.Set1
 for i, days in enumerate(forward_days):
     subset = quantile_df[quantile_df['Days_Forward'] == f'{days} days']
-    
+
     # Calculate error bars (confidence interval bounds)
     error_y_upper = subset['ci_upper'] - subset['mean']
     error_y_lower = subset['mean'] - subset['ci_lower']
-    
+
     fig.add_trace(go.Bar(
         name=f'{days} days',
-        x=subset['L2_Quantile'],
+        x=subset['Topo_Quantile'],
         y=subset['mean'],
         error_y=dict(
             type='data',
@@ -1091,8 +1119,8 @@ for i, days in enumerate(forward_days):
 
 # Update layout
 fig.update_layout(
-    title=f'Mean Forward Bitcoin Returns by L2 Norm Quantiles<br><sub>{confidence_level*100:.0f}% Confidence Intervals</sub>',
-    xaxis_title="L2 Norm (Dimension 1) Quantile",
+    title=f'Mean Forward Bitcoin Returns by {topo_feature_label} Quintiles<br><sub>{confidence_level*100:.0f}% Confidence Intervals</sub>',
+    xaxis_title=f"{topo_feature_label} Quintile",
     yaxis_title="Mean Forward Bitcoin Return (%)",
     barmode='group',
     height=600,
@@ -1102,21 +1130,21 @@ fig.update_layout(
 fig.show()
 
 # Print quantile statistics with confidence intervals
-print(f"\nQuantile Analysis - Mean Forward Returns by L2 Norm Quantiles ({confidence_level*100:.0f}% CI):")
+print(f"\nQuantile Analysis - Mean Forward Returns by {topo_feature_label} Quintiles ({confidence_level*100:.0f}% CI):")
 print("=" * 80)
 for days in forward_days:
     print(f"\n{days} days forward:")
     subset = quantile_df[quantile_df['Days_Forward'] == f'{days} days']
     for _, row in subset.iterrows():
-        print(f"  {row['L2_Quantile']}: {row['mean']:.2f}% [{row['ci_lower']:.2f}%, {row['ci_upper']:.2f}%] (±{row['std']:.2f}%, n={row['count']})")
+        print(f"  {row['Topo_Quantile']}: {row['mean']:.2f}% [{row['ci_lower']:.2f}%, {row['ci_upper']:.2f}%] (±{row['std']:.2f}%, n={row['count']})")
 
 # Calculate correlation coefficients for each forward period
 print("\n" + "=" * 80)
-print("Correlation between L2 Norm (Dim 1) and Forward Price Changes:")
+print(f"Correlation between {topo_feature_label} and Forward Price Changes:")
 for days in forward_days:
     subset = scatter_df[scatter_df['Days_Forward'] == f'{days} days']
     if len(subset) > 1:
-        correlation = subset['L2_Norm_Dim1'].corr(subset['Forward_Pct_Change'])
+        correlation = subset['Topo_Feature'].corr(subset['Forward_Pct_Change'])
         print(f"{days} days forward: {correlation:.4f}")
 
 # Calculate and show Sharpe ratio by quantile for each forward period
@@ -1128,9 +1156,9 @@ for days in forward_days:
     for _, row in subset.iterrows():
         if row['std'] > 0:  # Avoid division by zero
             sharpe_ratio = row['mean'] / row['std']
-            print(f"  {row['L2_Quantile']}: {sharpe_ratio:.4f} (mean: {row['mean']:.2f}%, std: {row['std']:.2f}%, n={row['count']})")
+            print(f"  {row['Topo_Quantile']}: {sharpe_ratio:.4f} (mean: {row['mean']:.2f}%, std: {row['std']:.2f}%, n={row['count']})")
         else:
-            print(f"  {row['L2_Quantile']}: N/A (std=0, mean: {row['mean']:.2f}%, n={row['count']})")
+            print(f"  {row['Topo_Quantile']}: N/A (std=0, mean: {row['mean']:.2f}%, n={row['count']})")
 
 
 # %%

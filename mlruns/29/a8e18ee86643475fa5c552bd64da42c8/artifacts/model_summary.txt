@@ -1,0 +1,37 @@
+Model Performance Summary
+Generated: 2025-09-30 07:23:38
+Model Type: CatBoostClassifier
+==================================================
+
+PERFORMANCE METRICS:
+--------------------
+wf_train_test_split: 0.8000
+wf_n_folds: 8.0000
+opt_best_value: 0.6839
+opt_test_score: 0.6951
+
+MODEL PARAMETERS:
+-----------------
+iterations: 236
+learning_rate: 0.011453377769059287
+depth: 3
+l2_leaf_reg: 8.968273820962281
+border_count: 51
+random_seed: 42
+verbose: False
+auto_class_weights: Balanced
+
+TOP 10 FEATURE IMPORTANCE:
+--------------------------
+signal: 85.8392
+bitcoin_close_topo_l2_norm_0: 1.5589
+bitcoin_close_topo_sum_hole_lifetimes_0: 1.3083
+bitcoin_close_topo_std_persistence_0: 1.2752
+bitcoin_close_topo_l1_norm_0: 1.1478
+bitcoin_close_topo_persistence_entropy_0: 1.1092
+bitcoin_close_topo_wasserstein_0: 1.0321
+bitcoin_close_topo_avg_hole_lifetime_0: 1.0189
+bitcoin_close_topo_wasserstein_1: 0.9936
+bitcoin_close_topo_max_hole_lifetime_0: 0.8009
+
+Tree Count: 236

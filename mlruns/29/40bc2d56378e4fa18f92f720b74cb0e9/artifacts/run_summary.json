@@ -1,0 +1,52 @@
+{
+  "run_info": {
+    "run_id": "40bc2d56378e4fa18f92f720b74cb0e9",
+    "experiment_name": "topo_catboost",
+    "strategy_type": null,
+    "strategy_basis": "meta_models",
+    "asset": "bitcoin",
+    "start_date": "2020-01-01",
+    "end_date": "2024-12-31",
+    "train_test_split": 0.8
+  },
+  "optimization": {
+    "best_params": {
+      "iterations": 50,
+      "learning_rate": 0.01210268337574999,
+      "depth": 9,
+      "l2_leaf_reg": 8.131755580998638,
+      "border_count": 237
+    },
+    "optimization_score": 0.6924249675630428
+  },
+  "validation": {
+    "permutation_results": {
+      "sharpe_ratio": {
+        "p_value": 0.001,
+        "passes_test": true
+      },
+      "information_ratio": {
+        "p_value": 0.001,
+        "passes_test": true
+      },
+      "max_drawdown": {
+        "p_value": 0.001,
+        "passes_test": true
+      }
+    },
+    "walk_forward_permutation": {
+      "sharpe": {
+        "p_value": 0.001,
+        "passes_test": true
+      },
+      "profit_factor": {
+        "p_value": 0.001,
+        "passes_test": true
+      }
+    }
+  },
+  "deployment": {
+    "model_artifact_path": "model",
+    "ready_for_registration": true
+  }
+}

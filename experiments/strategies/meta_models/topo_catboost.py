@@ -22,7 +22,7 @@ class TopoCatBoostStrategy(MetaStrategy):
 
         # Topological feature configuration
         self.window_length = 50
-        self.tau = 3
+        self.tau = 4
         self.embedding_dim = 3
         self.max_dimension = 1
 
@@ -368,7 +368,7 @@ class TopoCatBoostStrategy(MetaStrategy):
             import catboost as cb
             import optuna
             from sklearn.model_selection import TimeSeriesSplit
-            from sklearn.metrics import balanced_accuracy_score
+            from sklearn.metrics import log_loss
         except ImportError as e:
             print(f"⚠️  Missing required packages: {e}")
             print("   Install with: pip install catboost optuna")
@@ -516,18 +516,18 @@ class TopoCatBoostStrategy(MetaStrategy):
             )
             self.model.fit(X_train, y_train)
 
-            # Calculate training and test accuracy
-            train_pred = self.model.predict(X_train)
-            train_score = balanced_accuracy_score(y_train, train_pred)
+            # Calculate training and test log-loss
+            train_pred_proba = self.model.predict_proba(X_train)
+            train_score = log_loss(y_train, train_pred_proba)
 
-            test_pred = self.model.predict(X_test)
-            test_score = balanced_accuracy_score(y_test, test_pred)
-            print(f"   ✅ Test accuracy: {test_score:.4f}")
+            test_pred_proba = self.model.predict_proba(X_test)
+            test_score = log_loss(y_test, test_pred_proba)
+            print(f"   ✅ Test log-loss: {test_score:.4f}")
 
             # Log test performance (only if MLflow run is active)
             try:
                 if mlflow.active_run() is not None:
-                    mlflow.log_metric("test_accuracy", test_score)
+                    mlflow.log_metric("test_log_loss", test_score)
                     mlflow.log_metric("test_samples", len(X_test))
             except Exception as e:
                 # Silently skip if MLflow logging fails (e.g., during walk-forward validation)
@@ -593,23 +593,23 @@ class TopoCatBoostStrategy(MetaStrategy):
                     model = cb.CatBoostClassifier(**params)
                     model.fit(X_tr, y_tr)
 
-                    # Use balanced accuracy for imbalanced classes
-                    pred = model.predict(X_val)
-                    scores.append(balanced_accuracy_score(y_val, pred))
+                    # Use log-loss for optimization
+                    pred_proba = model.predict_proba(X_val)
+                    scores.append(log_loss(y_val, pred_proba))
                 except Exception:
-                    # If model fails, return poor score
-                    scores.append(0.0)
+                    # If model fails, return poor score (high log-loss)
+                    scores.append(10.0)
 
             return np.mean(scores)
 
-        # Create and optimize study
-        study = optuna.create_study(direction='maximize')
+        # Create and optimize study (minimize log-loss)
+        study = optuna.create_study(direction='minimize')
         study.optimize(objective, n_trials=min(n_trials, 200))  # Fewer trials for CatBoost
 
         best_params = study.best_params
         best_value = study.best_value
 
-        print(f"   Best CV score: {best_value:.4f}")
+        print(f"   Best CV log-loss: {best_value:.4f}")
         print(f"   Best params: {best_params}")
 
         # Train final model with best parameters
@@ -622,14 +622,14 @@ class TopoCatBoostStrategy(MetaStrategy):
         self.model.fit(X_train, y_train)
 
         # Evaluate on test set
-        test_pred = self.model.predict(X_test)
-        test_score = balanced_accuracy_score(y_test, test_pred)
-        print(f"   ✅ Test accuracy: {test_score:.4f}")
+        test_pred_proba = self.model.predict_proba(X_test)
+        test_score = log_loss(y_test, test_pred_proba)
+        print(f"   ✅ Test log-loss: {test_score:.4f}")
 
         # Log test performance (only if MLflow run is active)
         try:
             if mlflow.active_run() is not None:
-                mlflow.log_metric("test_accuracy", test_score)
+                mlflow.log_metric("test_log_loss", test_score)
                 mlflow.log_metric("test_samples", len(X_test))
         except Exception as e:
             # Silently skip if MLflow logging fails (e.g., during walk-forward validation)

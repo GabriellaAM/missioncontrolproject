@@ -228,7 +228,7 @@ def _set_zero_features(features: Dict[str, Any], dim: int) -> None:
 
 def _calculate_wasserstein_distance(prev_diagram: np.ndarray, curr_diagram: np.ndarray) -> float:
     """
-    Calculate simplified Wasserstein distance between two persistence diagrams.
+    Calculate Wasserstein distance between two persistence diagrams using optimal transport.
 
     Parameters:
     -----------
@@ -240,44 +240,65 @@ def _calculate_wasserstein_distance(prev_diagram: np.ndarray, curr_diagram: np.n
     Returns:
     --------
     float
-        Approximate Wasserstein distance
+        Wasserstein distance
     """
-    # Remove infinite persistence points for both diagrams
-    prev_finite = prev_diagram[prev_diagram[:, 1] != np.inf]
-    curr_finite = curr_diagram[curr_diagram[:, 1] != np.inf]
-
-    # Calculate Wasserstein distance (1-Wasserstein distance)
-    if len(prev_finite) > 0 and len(curr_finite) > 0:
-        # Simple approximation of 1-Wasserstein distance
-
-        # If diagrams have different sizes, pad the smaller one
-        if len(prev_finite) != len(curr_finite):
-            # Add points on the diagonal for padding
-            if len(prev_finite) < len(curr_finite):
-                # Pad previous diagram
-                n_pad = len(curr_finite) - len(prev_finite)
-                diagonal_points = np.array([[0, 0]] * n_pad)
-                prev_finite = np.vstack([prev_finite, diagonal_points])
-            else:
-                # Pad current diagram
-                n_pad = len(prev_finite) - len(curr_finite)
-                diagonal_points = np.array([[0, 0]] * n_pad)
-                curr_finite = np.vstack([curr_finite, diagonal_points])
-
-        # Calculate pairwise distances and find minimum matching
-        distances = cdist(prev_finite, curr_finite, metric='euclidean')
-        # Simple approximation: sum of minimum distances
-        wasserstein_dist = np.sum(np.min(distances, axis=1))
-    elif len(prev_finite) == 0 and len(curr_finite) == 0:
-        wasserstein_dist = 0
-    else:
-        # One diagram is empty, distance is the sum of persistence of the non-empty one
-        if len(curr_finite) > 0:
-            wasserstein_dist = np.sum(curr_finite[:, 1] - curr_finite[:, 0])
+    try:
+        from persim import wasserstein
+        
+        # Remove infinite persistence points for both diagrams
+        prev_finite = prev_diagram[prev_diagram[:, 1] != np.inf]
+        curr_finite = curr_diagram[curr_diagram[:, 1] != np.inf]
+        
+        # Calculate actual Wasserstein distance using persim
+        if len(prev_finite) == 0 and len(curr_finite) == 0:
+            return 0.0
+        elif len(prev_finite) == 0:
+            # Distance from empty diagram to curr_finite
+            return wasserstein(np.array([]).reshape(0, 2), curr_finite)
+        elif len(curr_finite) == 0:
+            # Distance from prev_finite to empty diagram
+            return wasserstein(prev_finite, np.array([]).reshape(0, 2))
         else:
-            wasserstein_dist = np.sum(prev_finite[:, 1] - prev_finite[:, 0])
-
-    return wasserstein_dist
+            # Both diagrams have points
+            return wasserstein(prev_finite, curr_finite)
+            
+    except ImportError:
+        # Fallback to scipy's implementation if persim is not available
+        from scipy.optimize import linear_sum_assignment
+        
+        # Remove infinite persistence points for both diagrams
+        prev_finite = prev_diagram[prev_diagram[:, 1] != np.inf]
+        curr_finite = curr_diagram[curr_diagram[:, 1] != np.inf]
+        
+        if len(prev_finite) == 0 and len(curr_finite) == 0:
+            return 0.0
+        
+        # Add diagonal projections for unmatched points
+        # For each point (b, d), its diagonal projection is ((b+d)/2, (b+d)/2)
+        prev_diag = np.array([[(p[0] + p[1])/2, (p[0] + p[1])/2] for p in prev_finite])
+        curr_diag = np.array([[(p[0] + p[1])/2, (p[0] + p[1])/2] for p in curr_finite])
+        
+        # Create extended diagrams with diagonal projections
+        if len(prev_finite) > 0 and len(curr_finite) > 0:
+            extended_prev = np.vstack([prev_finite, curr_diag])
+            extended_curr = np.vstack([curr_finite, prev_diag])
+        elif len(prev_finite) > 0:
+            # Only previous has points
+            extended_prev = prev_finite
+            extended_curr = prev_diag
+        else:
+            # Only current has points
+            extended_prev = curr_diag
+            extended_curr = curr_finite
+        
+        # Calculate cost matrix (L-infinity norm)
+        cost_matrix = cdist(extended_prev, extended_curr, metric='chebyshev')
+        
+        # Solve assignment problem
+        row_indices, col_indices = linear_sum_assignment(cost_matrix)
+        
+        # Return total cost
+        return cost_matrix[row_indices, col_indices].sum()
 
 
 def extract_multi_series_topological_features(

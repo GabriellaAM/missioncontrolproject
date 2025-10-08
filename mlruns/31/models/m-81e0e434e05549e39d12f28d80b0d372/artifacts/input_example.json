@@ -1,0 +1,1 @@
+{"columns": ["bitcoin_close", "signal", "label", "bitcoin_log_return_1", "bitcoin_close_topo_persistence_entropy_0", "bitcoin_close_topo_wasserstein_0", "bitcoin_close_topo_betti_1", "bitcoin_close_topo_max_hole_lifetime_1", "bitcoin_close_topo_persistence_entropy_1", "bitcoin_close_topo_wasserstein_1"], "data": [[50000.0, 1, 1, 0.01, 0.8, 0.3, 2.0, 0.15, 0.8, 0.3]]}

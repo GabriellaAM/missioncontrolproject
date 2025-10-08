@@ -1,0 +1,42 @@
+artifact_path: /Users/valter.rebelo/MissionControl/mlruns/31/models/m-81e0e434e05549e39d12f28d80b0d372/artifacts
+flavors:
+  catboost:
+    catboost_version: 1.2.8
+    code: null
+    data: model.cb
+    model_type: CatBoostClassifier
+    save_format: cbm
+  python_function:
+    data: model.cb
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.catboost
+    python_version: 3.11.5
+is_signature_from_type_hint: false
+mlflow_version: 3.1.4
+model_id: m-81e0e434e05549e39d12f28d80b0d372
+model_size_bytes: 36477
+model_uuid: m-81e0e434e05549e39d12f28d80b0d372
+prompts: null
+run_id: 87c9bf64c8a6433dbd17ef9752094a5d
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+signature:
+  inputs: '[{"type": "double", "name": "bitcoin_close", "required": true}, {"type":
+    "long", "name": "signal", "required": true}, {"type": "long", "name": "label",
+    "required": true}, {"type": "double", "name": "bitcoin_log_return_1", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_persistence_entropy_0",
+    "required": true}, {"type": "double", "name": "bitcoin_close_topo_wasserstein_0",
+    "required": true}, {"type": "double", "name": "bitcoin_close_topo_betti_1", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_max_hole_lifetime_1", "required":
+    true}, {"type": "double", "name": "bitcoin_close_topo_persistence_entropy_1",
+    "required": true}, {"type": "double", "name": "bitcoin_close_topo_wasserstein_1",
+    "required": true}]'
+  outputs: '[{"type": "tensor", "tensor-spec": {"dtype": "float64", "shape": [-1]}}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2025-09-30 08:20:58.530060'

@@ -14,7 +14,7 @@ class BollingerBandsStrategy(BaseStrategy):
         self.asset = asset
         self.period_range = [10, 50]
         self.std_dev_range = [1.5, 3.0]
-        self.default_params = {'period': 20, 'std_multiplier': 2.0}
+        self.default_params = {'period': 50, 'std_multiplier': 2.5}
     
     @property
     def strategy_type(self) -> str:
