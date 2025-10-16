@@ -46,7 +46,7 @@ def fractional_diff(series, d):
 
 asset = ['bitcoin']
 
-feats = FeatureLoader(start_date='2017-01-01', end_date='2025-10-02')
+feats = FeatureLoader(start_date='2017-01-01', end_date='2025-10-14')
 
 feats = feats.build_feature_set(
     crypto_assets=asset[0],
@@ -386,7 +386,7 @@ topo_features = extract_topological_features(
     window_length=window_length,
     selected_cols=selected_columns,
     tau=4,  # Fixed tau value
-    max_dimension=3
+    max_dimension=2
 )
 
 print("Topological features extracted:")
@@ -705,8 +705,8 @@ import numpy as np
 aligned_timestamps = feats.index[window_length-1:window_length-1+len(topo_features)]
 
 
-topo_features['l2_norm_1_ma7'] = topo_features['l2_norm_0'].rolling(window=7, min_periods=1).mean()
-topo_features['l1_norm_1_diff'] = topo_features['l1_norm_1'].diff(7)
+topo_features['l2_norm_1_ma7'] = topo_features['avg_hole_lifetime_1'].rolling(window=7, min_periods=1).mean()
+topo_features['l1_norm_1_diff'] = topo_features['avg_hole_lifetime_0'].diff(7)
 
 # Calculate first differences of the norms
 l2_norm_diff = topo_features['wasserstein_1']
@@ -990,7 +990,7 @@ from scipy import stats
 # --- USER CONFIGURABLE SECTION ---
 # Choose the topological feature to analyze (must be a column in topo_features)
 # Examples: 'l2_norm_1', 'avg_hole_lifetime_1', 'std_persistence_1', etc.
-topo_feature_col = 'avg_hole_lifetime_1'  # <-- Change this to any topological feature column you want
+topo_feature_col = 'l1_norm_1'  # <-- Change this to any topological feature column you want
 
 # Label for the feature (for axis and legend)
 topo_feature_label = topo_feature_col.replace('_', ' ').title()

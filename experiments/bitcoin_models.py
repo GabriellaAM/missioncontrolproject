@@ -49,7 +49,7 @@ asset = assets[0]
 prefix = f"{asset}_"  # e.g., 'bitcoin_', 'ethereum_', etc.
 
 # Initialize feature loader with global date range
-loader = FeatureLoader(start_date='2024-01-01', end_date='2025-10-05')
+loader = FeatureLoader(start_date='2024-01-01', end_date='2025-10-12')
 
 # Build feature set with selected asset(s) + macro features
 features_df = loader.build_feature_set(
