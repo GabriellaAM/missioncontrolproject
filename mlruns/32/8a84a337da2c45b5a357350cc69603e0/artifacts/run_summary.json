@@ -1,0 +1,68 @@
+{
+  "run_info": {
+    "run_id": "8a84a337da2c45b5a357350cc69603e0",
+    "experiment_name": "ema_crossover_stop",
+    "strategy_type": "trend_following",
+    "strategy_basis": "rules_based",
+    "asset": "bitcoin",
+    "start_date": "2020-01-01",
+    "end_date": "2025-06-30",
+    "train_test_split": 0.8
+  },
+  "optimization": {
+    "best_params": {
+      "fast_period": 13,
+      "slow_period": 65,
+      "volatility_multiplier": 1.0
+    },
+    "optimization_score": 1.4644815544865135
+  },
+  "validation": {
+    "permutation_results": {
+      "profit_factor": {
+        "original_value": 1.438261010305739,
+        "permuted_values": "[0.72023971 1.26511244 1.07964378 1.10459646 0.75464063 0.67056867\n 1.36221538 0.93795423 0.99214573]",
+        "p_value": 0.0,
+        "percentile": 100.0,
+        "passes_test": "True",
+        "n_permutations": 9,
+        "permuted_mean": 0.9874574474476459,
+        "permuted_std": 0.22809737285274717
+      },
+      "sharpe_ratio": {
+        "original_value": 1.9165370403160045,
+        "permuted_values": "[-2.04674633  1.53789377  0.46288703  0.66788382 -1.62922491 -2.49183218\n  1.93989488 -0.40798008 -0.04790909]",
+        "p_value": 0.1111111111111111,
+        "percentile": 88.88888888888889,
+        "passes_test": "False",
+        "n_permutations": 9,
+        "permuted_mean": -0.22390367693243263,
+        "permuted_std": 1.47418383677282
+      }
+    },
+    "walk_forward_permutation": {
+      "sharpe": {
+        "original": -0.8882116225783847,
+        "permuted_values": "[ 0.76369954 -0.45404764 -0.58424247 -1.36518801 -0.01762049 -0.10373708\n  0.04068253 -0.24520182 -0.16024844  0.14523923]",
+        "permuted_mean": -0.1980664640521733,
+        "permuted_std": 0.5217082924536101,
+        "p_value": 0.9,
+        "passes_test": "False",
+        "n_permutations": 10
+      },
+      "profit_factor": {
+        "original": 0.6423135296771176,
+        "permuted_values": "[1.17093009 0.852976   0.86074661 0.61216123 0.99339268 0.96746274\n 1.0121351  0.92952064 0.9482608  1.04013042]",
+        "permuted_mean": 0.9387716326692948,
+        "permuted_std": 0.13916133148525492,
+        "p_value": 0.9,
+        "passes_test": "False",
+        "n_permutations": 10
+      }
+    }
+  },
+  "deployment": {
+    "model_artifact_path": "model",
+    "ready_for_registration": true
+  }
+}

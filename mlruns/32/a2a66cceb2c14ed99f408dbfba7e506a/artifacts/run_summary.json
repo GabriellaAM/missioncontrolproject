@@ -1,0 +1,68 @@
+{
+  "run_info": {
+    "run_id": "a2a66cceb2c14ed99f408dbfba7e506a",
+    "experiment_name": "ema_crossover_stop",
+    "strategy_type": "trend_following",
+    "strategy_basis": "rules_based",
+    "asset": "bitcoin",
+    "start_date": "2020-01-01",
+    "end_date": "2025-06-30",
+    "train_test_split": 0.8
+  },
+  "optimization": {
+    "best_params": {
+      "fast_period": 15,
+      "slow_period": 46,
+      "volatility_multiplier": 2.6
+    },
+    "optimization_score": 0.07673763784557937
+  },
+  "validation": {
+    "permutation_results": {
+      "profit_factor": {
+        "original_value": 1.2726398222219537,
+        "permuted_values": "[0.96924323 0.93272969]",
+        "p_value": 0.0,
+        "percentile": 100.0,
+        "passes_test": "True",
+        "n_permutations": 2,
+        "permuted_mean": 0.9509864614334576,
+        "permuted_std": 0.018256768920063837
+      },
+      "sharpe_ratio": {
+        "original_value": 1.4934466358539464,
+        "permuted_values": "[-0.19157142 -0.446515  ]",
+        "p_value": 0.0,
+        "percentile": 100.0,
+        "passes_test": "True",
+        "n_permutations": 2,
+        "permuted_mean": -0.3190432122078415,
+        "permuted_std": 0.1274717889600174
+      }
+    },
+    "walk_forward_permutation": {
+      "sharpe": {
+        "original": -0.851838244903236,
+        "permuted_values": "[ 0.5332848   0.42379951 -0.37146371 -0.03101274 -0.18166522 -0.49836062\n -0.16514583  2.37864837 -0.76970643  0.33990755]",
+        "permuted_mean": 0.16582856755268796,
+        "permuted_std": 0.8368121980853845,
+        "p_value": 1.0,
+        "passes_test": "False",
+        "n_permutations": 10
+      },
+      "profit_factor": {
+        "original": 0.8160554408555816,
+        "permuted_values": "[1.08904614 1.08854104 0.9297292  0.99490695 0.97055372 0.91967602\n 0.9590015  1.45351422 0.86276631 1.05623684]",
+        "permuted_mean": 1.0323971938117997,
+        "permuted_std": 0.1571329337806874,
+        "p_value": 1.0,
+        "passes_test": "False",
+        "n_permutations": 10
+      }
+    }
+  },
+  "deployment": {
+    "model_artifact_path": "model",
+    "ready_for_registration": true
+  }
+}

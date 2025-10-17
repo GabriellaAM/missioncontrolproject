@@ -1,0 +1,68 @@
+{
+  "run_info": {
+    "run_id": "0b37fd04a0b1443bbfce965b123c299f",
+    "experiment_name": "ema_crossover_stop",
+    "strategy_type": "trend_following",
+    "strategy_basis": "rules_based",
+    "asset": "bitcoin",
+    "start_date": "2020-01-01",
+    "end_date": "2025-06-30",
+    "train_test_split": 0.8
+  },
+  "optimization": {
+    "best_params": {
+      "fast_period": 19,
+      "slow_period": 48,
+      "volatility_multiplier": 2.5
+    },
+    "optimization_score": 0.07574733666842204
+  },
+  "validation": {
+    "permutation_results": {
+      "profit_factor": {
+        "original_value": 1.4236434601968075,
+        "permuted_values": "[]",
+        "p_value": 1.0,
+        "percentile": 0.0,
+        "passes_test": false,
+        "n_permutations": 0,
+        "permuted_mean": 0.0,
+        "permuted_std": 0.0
+      },
+      "sharpe_ratio": {
+        "original_value": 2.123901416504057,
+        "permuted_values": "[]",
+        "p_value": 1.0,
+        "percentile": 0.0,
+        "passes_test": false,
+        "n_permutations": 0,
+        "permuted_mean": 0.0,
+        "permuted_std": 0.0
+      }
+    },
+    "walk_forward_permutation": {
+      "sharpe": {
+        "original": -0.7994864627551801,
+        "permuted_values": "[-2.39459697  1.12639056 -0.8752303  -0.35919211 -0.59202687 -0.92004458\n -0.32563641  1.36428188 -0.65788911  0.7846879 ]",
+        "permuted_mean": -0.28492560104727427,
+        "permuted_std": 1.0629631486639328,
+        "p_value": 0.7,
+        "passes_test": "False",
+        "n_permutations": 10
+      },
+      "profit_factor": {
+        "original": 0.7969253239802151,
+        "permuted_values": "[0.54916561 1.31054588 0.70737379 0.91521842 0.86341186 0.79691469\n 0.89786454 1.3736292  0.83957722 1.22400364]",
+        "permuted_mean": 0.9477704850913241,
+        "permuted_std": 0.2551612596720931,
+        "p_value": 0.7,
+        "passes_test": "False",
+        "n_permutations": 10
+      }
+    }
+  },
+  "deployment": {
+    "model_artifact_path": "model",
+    "ready_for_registration": true
+  }
+}

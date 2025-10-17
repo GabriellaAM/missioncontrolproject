@@ -80,21 +80,22 @@ class BaseStrategy(ABC):
         """
         Return list of artifacts this strategy requires for comprehensive reporting.
 
-        Standard artifacts (always generated):
-        - performance_plots: Standard performance analysis charts
-        - returns_analysis: Cumulative returns and drawdown analysis
+        MANDATORY ARTIFACTS (Tier 1 - all strategies):
+        - performance_plots: cumulative_returns.png, walk_forward_analysis.png
+        - confusion_matrix: confusion_matrix_train.png, confusion_matrix_test.png (if labels available)
+        - comprehensive_csv: comprehensive_strategy_data.csv
+        - model_summary: run_summary.json, model_summary.txt (if ML model)
 
-        Optional artifacts (strategy-specific):
-        - feature_importance: Model feature importance (for ML strategies)
-        - confusion_matrix: Classification performance matrix
-        - signal_comparison: Signal evolution comparison (for meta-models)
-        - comprehensive_csv: Complete data export with all features/signals
-        - model_summary: Model-specific performance summary
+        OPTIONAL ARTIFACTS (Tier 2+ - strategy-specific):
+        - feature_importance: feature_importance.png (for ML strategies with features)
+        - signal_comparison: signal_comparison.png (for meta-models)
+        - permutation_tests: permutation_tests.png (for primary strategies)
 
         Returns:
             List of required artifact names
         """
-        return ['performance_plots', 'returns_analysis']  # Standard artifacts for all strategies
+        # Mandatory artifacts for all strategies
+        return ['performance_plots', 'confusion_matrix', 'comprehensive_csv', 'model_summary']
     
     # Default crypto features used by most strategies
     used_crypto_features = ['close']

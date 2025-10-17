@@ -46,7 +46,7 @@ def fractional_diff(series, d):
 
 asset = ['bitcoin']
 
-feats = FeatureLoader(start_date='2017-01-01', end_date='2025-10-14')
+feats = FeatureLoader(start_date='2017-01-01', end_date='2025-10-15')
 
 feats = feats.build_feature_set(
     crypto_assets=asset[0],

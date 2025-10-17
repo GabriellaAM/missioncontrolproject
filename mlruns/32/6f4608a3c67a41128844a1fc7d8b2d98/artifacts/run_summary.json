@@ -1,0 +1,68 @@
+{
+  "run_info": {
+    "run_id": "6f4608a3c67a41128844a1fc7d8b2d98",
+    "experiment_name": "ema_crossover_stop",
+    "strategy_type": "trend_following",
+    "strategy_basis": "rules_based",
+    "asset": "bitcoin",
+    "start_date": "2020-01-01",
+    "end_date": "2025-06-30",
+    "train_test_split": 0.8
+  },
+  "optimization": {
+    "best_params": {
+      "fast_period": 5,
+      "slow_period": 88,
+      "volatility_multiplier": 2.6
+    },
+    "optimization_score": 0.07356259539887247
+  },
+  "validation": {
+    "permutation_results": {
+      "profit_factor": {
+        "original_value": 1.4393101013392988,
+        "permuted_values": "[0.9279893  1.20969937 0.87472546 0.88996604]",
+        "p_value": 0.0,
+        "percentile": 100.0,
+        "passes_test": "True",
+        "n_permutations": 4,
+        "permuted_mean": 0.9755950437899537,
+        "permuted_std": 0.13654499438864262
+      },
+      "sharpe_ratio": {
+        "original_value": 2.40506317201615,
+        "permuted_values": "[-0.46918826  1.08328432 -0.87068701 -0.73202009]",
+        "p_value": 0.0,
+        "percentile": 100.0,
+        "passes_test": "True",
+        "n_permutations": 4,
+        "permuted_mean": -0.2471527612786361,
+        "permuted_std": 0.7815455627810004
+      }
+    },
+    "walk_forward_permutation": {
+      "sharpe": {
+        "original": -0.3767490701625577,
+        "permuted_values": "[ 1.34433379 -0.08492615  0.54202496 -0.12903702 -0.52712106 -0.30502832\n  0.15150382 -0.03199392  0.24479022 -0.70529001]",
+        "permuted_mean": 0.049925631266390255,
+        "permuted_std": 0.552466637514577,
+        "p_value": 0.8,
+        "passes_test": "False",
+        "n_permutations": 10
+      },
+      "profit_factor": {
+        "original": 0.8579539729490312,
+        "permuted_values": "[1.34268553 0.98305446 1.10796736 0.96007575 0.87187218 0.910181\n 1.05906088 0.99252738 1.07269881 0.83653256]",
+        "permuted_mean": 1.013665591325115,
+        "permuted_std": 0.13752776961563629,
+        "p_value": 0.9,
+        "passes_test": "False",
+        "n_permutations": 10
+      }
+    }
+  },
+  "deployment": {
+    "model_artifact_path": "model",
+    "ready_for_registration": true
+  }
+}

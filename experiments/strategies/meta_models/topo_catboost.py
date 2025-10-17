@@ -49,16 +49,17 @@ class TopoCatBoostStrategy(MetaStrategy):
         """
         Return list of artifacts required for CatBoost meta-model.
 
-        Inherits meta-model artifacts from base class and adds CatBoost-specific ones.
+        Inherits mandatory artifacts from base class and adds meta-model-specific ones.
         """
         base_artifacts = super().get_required_artifacts()
 
-        # Add CatBoost-specific artifacts
-        catboost_artifacts = [
-            'feature_importance'  # CatBoost feature importance visualization
+        # Add CatBoost meta-model-specific artifacts
+        metamodel_artifacts = [
+            'feature_importance',  # CatBoost feature importance visualization
+            'signal_comparison'    # Compare primary vs meta-model filtered signals
         ]
 
-        return base_artifacts + catboost_artifacts
+        return base_artifacts + metamodel_artifacts
 
     def get_normalization_config(self) -> None:
         """

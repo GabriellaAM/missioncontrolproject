@@ -301,23 +301,43 @@ def in_sample_permutation_test(features_df: pd.DataFrame,
             # Recalculate log returns for permuted close prices
             permuted_df[log_return_col] = np.log(permuted_df[ohlc_cols['close']] / permuted_df[ohlc_cols['close']].shift(1))
             
-            # Apply strategy to permuted data  
+            # Apply strategy to permuted data
             permuted_strategy_data = strategy_func(
-                permuted_df, 
+                permuted_df,
                 **strategy_only_params,
                 price_col=strategy_params['price_col'],
                 log_return_col=strategy_params['log_return_col']
             )
-            permuted_train_data = permuted_strategy_data.loc[train_start:train_end].dropna()
-            
+            permuted_train_data_full = permuted_strategy_data.loc[train_start:train_end]
+
+            # DEBUG: Check what columns have NaN values and why
+            if i < 3:  # Only for first 3 permutations
+                print(f"\n  DEBUG Permutation {i}:")
+                print(f"    Rows before dropna: {len(permuted_train_data_full)}")
+                print(f"    NaN count by column:")
+                for col in permuted_train_data_full.columns:
+                    nan_count = permuted_train_data_full[col].isna().sum()
+                    if nan_count > 0:
+                        print(f"      {col}: {nan_count} NaNs ({100*nan_count/len(permuted_train_data_full):.1f}%)")
+
+            # Only drop NaNs in essential columns (signal and returns)
+            essential_cols = ['signal', 'strategy_returns']
+            permuted_train_data = permuted_train_data_full.dropna(subset=essential_cols)
+
+            if i < 3:
+                print(f"    Rows after dropna(subset={essential_cols}): {len(permuted_train_data)}")
+                print(f"    Original train data rows: {len(train_data)}")
+
             if len(permuted_train_data) == 0:
                 continue
-            
+
             permuted_strategy_returns = permuted_train_data['strategy_returns'].values
             permuted_benchmark_returns = permuted_train_data[log_return_col].values
-            
-            # Validate we have valid returns
-            if len(permuted_strategy_returns) != len(original_strategy_returns):
+
+            # Validate we have similar amount of returns (allow some variation)
+            if len(permuted_strategy_returns) < 0.5 * len(original_strategy_returns):
+                if i < 3:
+                    print(f"    REJECTED: Too few returns ({len(permuted_strategy_returns)} < 50% of {len(original_strategy_returns)})")
                 continue
             
             valid_permutations += 1

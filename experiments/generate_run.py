@@ -562,15 +562,8 @@ class RunGenerator:
                         print(f"   Test labels: {test_label_count}")
                         print(f"   Total labels: {train_label_count + test_label_count}")
 
-                        # Create separate artifacts for clarity:
-
-                        # 1. Primary signals artifact (for meta-models) - signals only, full period
-                        primary_signals_path = 'primary_signals.csv'
-                        full_signals.to_csv(primary_signals_path, index_label='timestamp')
-                        mlflow.log_artifact(primary_signals_path)
-                        print(f"   Saved primary signals: {len(full_signals)} rows ({self.start_date} to {self.end_date}, no warmup)")
-
-                        # 2. Triple barrier labels artifact - signals + labels for FULL period
+                        # Create triple barrier labels artifact - signals + labels for FULL period
+                        # This single artifact contains everything meta-models need
                         artifact_data = full_signals.merge(
                             full_labels,
                             left_index=True,
@@ -581,13 +574,12 @@ class RunGenerator:
                         labels_csv_path = 'triple_barrier_labels.csv'
                         artifact_data.to_csv(labels_csv_path, index_label='timestamp')
                         mlflow.log_artifact(labels_csv_path)
-                        print(f"   Saved combined artifact: {len(artifact_data)} rows with columns: {list(artifact_data.columns)}")
-                        print(f"   Labels: full period ({full_labels['label'].notna().sum()} total labels for train + test)")
-                        
-                        # Clean up temporary files
+                        print(f"   Saved triple_barrier_labels.csv: {len(artifact_data)} rows with columns: {list(artifact_data.columns)}")
+                        print(f"   Contains signals (full period) + labels (train + test): {full_labels['label'].notna().sum()} total labels")
+
+                        # Clean up temporary file
                         try:
                             os.remove(labels_csv_path)
-                            os.remove(primary_signals_path)
                         except:
                             pass
                     
@@ -1097,24 +1089,44 @@ class RunGenerator:
             print("    ⚠️  No labels available for confusion matrix")
             return
 
-        # Filter to training period for in-sample confusion matrix
+        # Training confusion matrix
         train_data = strategy_data.loc[train_start:train_end]
-        labeled_data = train_data.dropna(subset=['label', 'signal'])
+        train_labeled_data = train_data.dropna(subset=['label', 'signal'])
 
         # Filter out zero signals for binary classification
-        labeled_data = labeled_data[labeled_data['signal'] != 0]
+        train_labeled_data = train_labeled_data[train_labeled_data['signal'] != 0]
 
-        if len(labeled_data) == 0:
-            print("    ⚠️  No labeled data available for confusion matrix")
-            return
+        if len(train_labeled_data) > 0:
+            cm_plot_path = create_confusion_matrix_plot(
+                y_true=train_labeled_data['label'].values,
+                y_pred=train_labeled_data['signal'].values,
+                title=f"Confusion Matrix - {self.clean_strategy_name} (Training)",
+                save_path="confusion_matrix_train.png",
+                log_to_mlflow=True
+            )
+            print(f"    ✅ Generated training confusion matrix for primary strategy")
+        else:
+            print("    ⚠️  No labeled training data available for confusion matrix")
 
-        cm_plot_path = create_confusion_matrix_plot(
-            y_true=labeled_data['label'].values,
-            y_pred=labeled_data['signal'].values,
-            title=f"Confusion Matrix - {self.clean_strategy_name} (Training)",
-            save_path="confusion_matrix_train.png",
-            log_to_mlflow=True
-        )
+        # Test confusion matrix - get test period start date
+        test_start_date = train_end
+        test_data = strategy_data.loc[test_start_date:]
+        test_labeled_data = test_data.dropna(subset=['label', 'signal'])
+
+        # Filter out zero signals for binary classification
+        test_labeled_data = test_labeled_data[test_labeled_data['signal'] != 0]
+
+        if len(test_labeled_data) > 0:
+            cm_plot_path_test = create_confusion_matrix_plot(
+                y_true=test_labeled_data['label'].values,
+                y_pred=test_labeled_data['signal'].values,
+                title=f"Confusion Matrix - {self.clean_strategy_name} (Test)",
+                save_path="confusion_matrix_test.png",
+                log_to_mlflow=True
+            )
+            print(f"    ✅ Generated test confusion matrix for primary strategy")
+        else:
+            print("    ⚠️  No labeled test data available for confusion matrix")
 
     def _generate_signal_comparison(self, strategy_data, _optimization_results, _permutation_results,
                                   _wf_results, _wf_perm_results, _train_start, _train_end):

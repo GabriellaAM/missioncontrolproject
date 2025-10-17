@@ -1,0 +1,13 @@
+{
+  "strategy_name": "ema_crossover",
+  "strategy_type": "trend_following",
+  "implementation_type": "rules_based",
+  "asset": "bitcoin",
+  "parameters": {
+    "fast_period": 15,
+    "slow_period": 46,
+    "volatility_multiplier": 2.6
+  },
+  "feature_cols": [],
+  "strategy_class": "experiments.strategies.rules_based.ema_crossover_stop.EMACrossoverWithTrailingStopStrategy"
+}

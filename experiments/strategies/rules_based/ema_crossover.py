@@ -36,8 +36,6 @@ class EMACrossoverStrategy(BaseStrategy):
             'calculated_features': None
         }
     
-    # EMA crossover only uses close price
-    used_crypto_features = ['close']
     
     def get_warmup_days(self, params: Dict = None) -> int:
         """Return warmup days needed for EMAs to converge."""
