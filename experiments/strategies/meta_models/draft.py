@@ -46,7 +46,7 @@ def fractional_diff(series, d):
 
 asset = ['bitcoin']
 
-feats = FeatureLoader(start_date='2017-01-01', end_date='2025-10-15')
+feats = FeatureLoader(start_date='2017-01-01', end_date='2025-10-21')
 
 feats = feats.build_feature_set(
     crypto_assets=asset[0],
@@ -826,7 +826,7 @@ aligned_timestamps = feats.index[window_length-1:window_length-1+len(topo_featur
 topo_features['norm_persistence'] = topo_features['mean_persistence_1'] / topo_features['std_persistence_1']
 
 # Get the original norms (not differences)
-l2_norm = topo_features['l1_norm_1'].copy()
+l2_norm = topo_features['avg_hole_lifetime_0'].copy()
 l1_norm = topo_features['l2_norm_1'].copy()
 
 # Define rolling window for quintile calculation
@@ -990,7 +990,7 @@ from scipy import stats
 # --- USER CONFIGURABLE SECTION ---
 # Choose the topological feature to analyze (must be a column in topo_features)
 # Examples: 'l2_norm_1', 'avg_hole_lifetime_1', 'std_persistence_1', etc.
-topo_feature_col = 'l1_norm_1'  # <-- Change this to any topological feature column you want
+topo_feature_col = 'num_relevant_holes_1'  # <-- Change this to any topological feature column you want
 
 # Label for the feature (for axis and legend)
 topo_feature_label = topo_feature_col.replace('_', ' ').title()
@@ -1179,7 +1179,7 @@ aligned_timestamps = feats.index[window_length-1:window_length-1+len(topo_featur
 color = 'tab:red'
 ax1.set_xlabel('Date')
 ax1.set_ylabel('L2 Norm (Dimension 1)', color=color)
-ax1.plot(aligned_timestamps, topo_features['std_persistence_1'], color=color)
+ax1.plot(aligned_timestamps, topo_features['l1_norm_1'], color=color)
 ax1.tick_params(axis='y', labelcolor=color)
 ax1.grid(True)
 
@@ -1200,421 +1200,286 @@ plt.show()
 
 # %%
 
-import kmapper as km
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import DBSCAN
+import matplotlib.pyplot as plt
+
+def plot_information_coefficient(topo_features, target_data, feature_names, horizons=[5, 10, 20, 30, 40, 50], vol_window=20):
+    """
+    Calculate and plot the Information Coefficient (IC) between multiple topological features
+    and future returns over multiple horizons using non-overlapping returns and volatility normalization.
+    Each feature gets a subplot with a line chart showing IC vs. return horizons.
+    
+    Parameters:
+    topo_features: DataFrame containing the topological features
+    target_data: DataFrame containing the target data (e.g., Bitcoin close prices)
+    feature_names: list of str, names of the topological features to analyze
+    horizons: list, number of days forward to calculate returns for
+    vol_window: int, window size for calculating rolling volatility for normalization
+    """
+    # Calculate log returns for each horizon
+    returns_dict = {}
+    sample_counts = {}
+    for h in horizons:
+        # Non-overlapping returns by taking every h-th return
+        log_returns = np.log(target_data['bitcoin_close'] / target_data['bitcoin_close'].shift(h))
+        # Select every h-th return to avoid overlap
+        log_returns = log_returns[::h]
+        returns_dict[f'return_{h}d'] = log_returns
+        sample_counts[h] = log_returns.dropna().count()
+    
+    # Calculate rolling volatility for normalization
+    vol = np.log(target_data['bitcoin_close'] / target_data['bitcoin_close'].shift(1)).rolling(window=vol_window).std() * np.sqrt(252)
+    
+    # Set up subplots - one for each feature
+    n_features = len(feature_names)
+    fig, axes = plt.subplots(n_features, 1, figsize=(10, 4 * n_features), sharex=True)
+    
+    # If there's only one feature, wrap axes in a list for iteration
+    if n_features == 1:
+        axes = [axes]
+    
+    # Calculate and plot IC for each feature
+    for idx, feature_name in enumerate(feature_names):
+        # Align the feature data with returns
+        ic_results = {}
+        for h in horizons:
+            returns = returns_dict[f'return_{h}d']
+            # Align the feature with the returns by reindexing
+            aligned_feature = topo_features[feature_name].reindex(returns.index, method='ffill')
+            aligned_vol = vol.reindex(returns.index, method='ffill')
+            
+            # Volatility normalize the returns
+            normalized_returns = returns / aligned_vol
+            
+            # Calculate correlation (Information Coefficient)
+            ic = aligned_feature.corr(normalized_returns)
+            ic_results[h] = ic
+        
+        # Plotting as a line chart
+        horizons_list = list(ic_results.keys())
+        ic_values = list(ic_results.values())
+        
+        axes[idx].plot(horizons_list, ic_values, marker='o', color='skyblue', linewidth=2, markersize=8)
+        axes[idx].set_ylabel('Information Coefficient')
+        axes[idx].set_title(f'IC of {feature_name} vs Vol-Normalized Bitcoin Returns')
+        axes[idx].grid(True, linestyle='--', alpha=0.7)
+        
+        # Add value labels on top of points
+        for x, y in zip(horizons_list, ic_values):
+            axes[idx].text(x, y, f'{y:.3f}', ha='center', va='bottom' if y >= 0 else 'top')
+        
+        # Adjust y-axis limits to make room for labels
+        y_abs_max = max(abs(min(ic_values)), abs(max(ic_values)))
+        axes[idx].set_ylim(-y_abs_max*1.2, y_abs_max*1.2)
+        
+        # Print results for this feature
+        print(f"Information Coefficients for {feature_name}:")
+        for h, ic in ic_results.items():
+            print(f"  {h}-day horizon: {ic:.3f} (samples: {sample_counts[h]})")
+    
+    # Set x-label on the bottom subplot
+    axes[-1].set_xlabel('Return Horizon (Days)')
+    
+    # Add text box with sample counts in the upper left corner of the last subplot to avoid collisions
+    sample_text = "Sample Counts:\n" + "\n".join([f"{h}d: {sample_counts[h]}" for h in horizons])
+    axes[-1].text(0.02, 0.98, sample_text, transform=axes[-1].transAxes, 
+                  verticalalignment='top', horizontalalignment='left', 
+                  bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.show()
+
+# Example usage:
+# Choose topological features to analyze
+features_to_analyze = ['num_relevant_holes_1', 'l1_norm_1', 'persistence_entropy_1']  # Add more features as needed
+plot_information_coefficient(topo_features, feats, features_to_analyze)
+
+# %%
+
+# Simulate an advanced trading strategy based on the Information Coefficient (IC) of num_relevant_holes_1
+# Given the IC of -0.29 on a 30-day horizon, this suggests a negative correlation, 
+# meaning higher values of num_relevant_holes_1 are associated with lower future returns.
+# Strategy: Implement a dynamic position sizing strategy with volatility adjustment and stop-loss/take-profit levels.
+# Additionally, combine with a trend filter (EMA) to avoid trading against the major trend, enhancing signal quality.
+
+import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 
-# Prepare data for KMapper analysis
-# Get L2 norm dimension 1, L1 norm dimension 1, and forward 5-day returns
-l2_norm_dim1 = topo_features['l2_norm_1'].copy()
-l1_norm_dim1 = topo_features['l1_norm_1'].copy()
+# Define the feature to use for the strategy
+feature_name = 'persistence_entropy_1'
+horizon = 30  # 30-day horizon based on IC analysis
 
-# Calculate forward 5-day returns
-forward_5d_returns = feats['bitcoin_close'].pct_change(periods=-5) * 100  # Negative for forward-looking
-aligned_forward_returns = forward_5d_returns.iloc[window_length-1:window_length-1+len(topo_features)]
+# Create a copy of the topological features DataFrame for strategy simulation
+strategy_df = topo_features[[feature_name]].copy()
 
-# Create combined dataset, removing NaN values
-combined_data = pd.DataFrame({
-    'l2_norm_dim1': l2_norm_dim1,
-    'l1_norm_dim1': l1_norm_dim1,
-    'forward_5d_returns': aligned_forward_returns
-}).dropna()
+# Align Bitcoin prices with the topological features
+aligned_bitcoin_prices = feats['bitcoin_close'].reindex(strategy_df.index, method='ffill')
 
-print(f"KMapper analysis with {len(combined_data)} data points")
-print(f"L2 Norm Dim1 - Mean: {combined_data['l2_norm_dim1'].mean():.4f}, Std: {combined_data['l2_norm_dim1'].std():.4f}")
-print(f"L1 Norm Dim1 - Mean: {combined_data['l1_norm_dim1'].mean():.4f}, Std: {combined_data['l1_norm_dim1'].std():.4f}")
-print(f"Forward 5d Returns - Mean: {combined_data['forward_5d_returns'].mean():.4f}, Std: {combined_data['forward_5d_returns'].std():.4f}")
+# Calculate forward returns for the horizon (30 days forward) - for analysis purposes
+forward_returns = aligned_bitcoin_prices.pct_change(periods=-horizon) * 100  # Negative for forward-looking
 
-# Prepare data for KMapper - now including both L1 and L2 norms
-X = combined_data[['l2_norm_dim1', 'l1_norm_dim1', 'forward_5d_returns']].values
+# Calculate a trend filter using EMA (50-day EMA as a simple trend indicator)
+ema_50 = aligned_bitcoin_prices.rolling(window=50, min_periods=1).mean()
 
-# Standardize the data
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+# Strategy logic: Use rolling quintiles to determine high/low values of the feature
+rolling_window = 30  # Use a 30-day rolling window for quintile calculation
+quintiles = pd.Series(index=strategy_df.index, dtype=float)
 
-# Initialize KMapper
-mapper = km.KeplerMapper(verbose=1)
-
-# Create lens function - we'll use both L2 and L1 norms as the lens
-lens = X_scaled[:, [0, 1]]  # L2 norm and L1 norm dimensions 1 as lens
-
-# Create the topological network
-graph = mapper.map(lens, 
-                   X_scaled,
-                   cover=km.Cover(n_cubes=10, perc_overlap=0.3),
-                   clusterer=DBSCAN(eps=0.5, min_samples=3))
-
-# Create visualization
-html_file = "kmapper_l2l1norm_forward_returns.html"
-mapper.visualize(graph, 
-                 path_html=html_file,
-                 title="KMapper: L2 & L1 Norm Dim1 vs Forward 5-Day Returns",
-                 custom_tooltips=combined_data['forward_5d_returns'].values)
-
-print(f"KMapper visualization saved to: {html_file}")
-
-# Analyze the graph structure
-print(f"\nGraph Analysis:")
-print(f"Number of nodes: {len(graph['nodes'])}")
-print(f"Number of edges: {len(graph['links'])}")
-
-# Analyze node statistics
-node_stats = []
-for node_id, node_members in graph['nodes'].items():
-    node_l2_norms = combined_data.iloc[node_members]['l2_norm_dim1']
-    node_l1_norms = combined_data.iloc[node_members]['l1_norm_dim1']
-    node_returns = combined_data.iloc[node_members]['forward_5d_returns']
+for i in range(rolling_window, len(strategy_df)):
+    window_data = strategy_df[feature_name].iloc[i-rolling_window:i]
+    quintile_thresholds = window_data.quantile([0.2, 0.4, 0.6, 0.8])
+    current_value = strategy_df[feature_name].iloc[i]
     
-    node_stats.append({
-        'node_id': node_id,
-        'size': len(node_members),
-        'mean_l2_norm': node_l2_norms.mean(),
-        'mean_l1_norm': node_l1_norms.mean(),
-        'mean_forward_return': node_returns.mean(),
-        'std_forward_return': node_returns.std()
-    })
+    # Assign quintile (1-5)
+    if current_value <= quintile_thresholds[0.2]:
+        quintiles.iloc[i] = 1
+    elif current_value <= quintile_thresholds[0.4]:
+        quintiles.iloc[i] = 2
+    elif current_value <= quintile_thresholds[0.6]:
+        quintiles.iloc[i] = 3
+    elif current_value <= quintile_thresholds[0.8]:
+        quintiles.iloc[i] = 4
+    else:
+        quintiles.iloc[i] = 5
 
-node_stats_df = pd.DataFrame(node_stats)
-print(f"\nTop 5 nodes by size:")
-print(node_stats_df.nlargest(5, 'size')[['node_id', 'size', 'mean_l2_norm', 'mean_l1_norm', 'mean_forward_return']])
+# Calculate rolling volatility for position sizing (20-day rolling standard deviation of returns)
+volatility = aligned_bitcoin_prices.pct_change().rolling(window=20, min_periods=1).std() * np.sqrt(252)  # Annualized volatility
+volatility_target = 0.15  # Target annualized volatility of 15% for position sizing
 
-print(f"\nNodes with highest mean forward returns:")
-print(node_stats_df.nlargest(5, 'mean_forward_return')[['node_id', 'size', 'mean_l2_norm', 'mean_l1_norm', 'mean_forward_return']])
+# Generate signals based on quintiles with dynamic position sizing and trend filter
+signals = pd.Series(index=strategy_df.index, dtype=float)
+position_sizes = pd.Series(index=strategy_df.index, dtype=float)
 
-print(f"\nNodes with lowest mean forward returns:")
-print(node_stats_df.nsmallest(5, 'mean_forward_return')[['node_id', 'size', 'mean_l2_norm', 'mean_l1_norm', 'mean_forward_return']])
+for i in range(len(strategy_df)):
+    if i < rolling_window:
+        signals.iloc[i] = 0
+        position_sizes.iloc[i] = 0
+        continue
+    
+    current_price = aligned_bitcoin_prices.iloc[i]
+    current_ema = ema_50.iloc[i]
+    current_vol = volatility.iloc[i]
+    current_quintile = quintiles.iloc[i]
+    
+    # Calculate position size based on volatility targeting (inverse volatility weighting)
+    if current_vol > 0:
+        position_size = volatility_target / current_vol
+        position_size = min(position_size, 1.0)  # Cap at 100% exposure to avoid excessive leverage
+    else:
+        position_size = 0
+    
+    # Determine signal direction based on quintile and trend filter
+    if current_quintile == 5 and current_price < current_ema:  # Short only if below EMA (bearish trend)
+        signals.iloc[i] = -1
+        position_sizes.iloc[i] = position_size
+    elif current_quintile == 1 and current_price > current_ema:  # Long only if above EMA (bullish trend)
+        signals.iloc[i] = 1
+        position_sizes.iloc[i] = position_size
+    else:
+        signals.iloc[i] = 0
+        position_sizes.iloc[i] = 0
 
-# Create a scatter plot colored by node membership (L2 vs L1 norms)
+# Calculate strategy returns with dynamic position sizing
+# Shift signals and position sizes by 1 to avoid look-ahead bias (trade on next day's close)
+daily_returns = aligned_bitcoin_prices.pct_change()
+strategy_returns = signals.shift(1) * position_sizes.shift(1) * daily_returns
+
+# Implement stop-loss and take-profit logic (5% stop-loss, 10% take-profit per trade)
+stop_loss = 0.05
+take_profit = 0.10
+adjusted_strategy_returns = strategy_returns.copy()
+active_position = 0
+entry_price = 0
+
+for i in range(1, len(strategy_df)):
+    if active_position == 0:  # No position
+        if signals.iloc[i-1] != 0:  # New position initiated
+            active_position = signals.iloc[i-1]
+            entry_price = aligned_bitcoin_prices.iloc[i]
+        adjusted_strategy_returns.iloc[i] = strategy_returns.iloc[i]
+    else:  # Active position
+        current_price = aligned_bitcoin_prices.iloc[i]
+        pct_change_since_entry = (current_price - entry_price) / entry_price
+        
+        # Check stop-loss or take-profit for long position
+        if active_position == 1:
+            if pct_change_since_entry <= -stop_loss:  # Stop-loss triggered
+                adjusted_strategy_returns.iloc[i] = -stop_loss * position_sizes.iloc[i-1]
+                active_position = 0
+            elif pct_change_since_entry >= take_profit:  # Take-profit triggered
+                adjusted_strategy_returns.iloc[i] = take_profit * position_sizes.iloc[i-1]
+                active_position = 0
+            else:
+                adjusted_strategy_returns.iloc[i] = strategy_returns.iloc[i]
+        # Check stop-loss or take-profit for short position
+        elif active_position == -1:
+            if pct_change_since_entry >= stop_loss:  # Stop-loss triggered
+                adjusted_strategy_returns.iloc[i] = -stop_loss * position_sizes.iloc[i-1]
+                active_position = 0
+            elif pct_change_since_entry <= -take_profit:  # Take-profit triggered
+                adjusted_strategy_returns.iloc[i] = take_profit * position_sizes.iloc[i-1]
+                active_position = 0
+            else:
+                adjusted_strategy_returns.iloc[i] = strategy_returns.iloc[i]
+                
+        # Check if signal changes (close position)
+        if signals.iloc[i-1] != active_position:
+            active_position = 0
+
+# Calculate cumulative returns for the strategy
+cumulative_strategy_returns = (1 + adjusted_strategy_returns).cumprod() - 1
+cumulative_bitcoin_returns = (1 + aligned_bitcoin_prices.pct_change()).cumprod() - 1
+
+# Plot the strategy performance
 fig = go.Figure()
+fig.add_trace(go.Scatter(
+    x=cumulative_strategy_returns.index,
+    y=cumulative_strategy_returns * 100,
+    mode='lines',
+    name='Strategy Returns (Vol-Adjusted + Stops)',
+    line=dict(color='green', width=2)
+))
+fig.add_trace(go.Scatter(
+    x=cumulative_bitcoin_returns.index,
+    y=cumulative_bitcoin_returns * 100,
+    mode='lines',
+    name='Bitcoin Buy & Hold',
+    line=dict(color='blue', width=2)
+))
 
-# Color each point by its node membership
-colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
-node_colors = {}
-
-for i, (node_id, node_members) in enumerate(graph['nodes'].items()):
-    color = colors[i % len(colors)]
-    node_colors[node_id] = color
-    
-    node_data = combined_data.iloc[node_members]
-    
-    fig.add_trace(go.Scatter(
-        x=node_data['l2_norm_dim1'],
-        y=node_data['l1_norm_dim1'],
-        mode='markers',
-        name=f'Node {node_id} (n={len(node_members)})',
-        marker=dict(color=color, size=8, opacity=0.7),
-        text=[f'Node: {node_id}<br>L2 Norm: {x:.4f}<br>L1 Norm: {y:.4f}<br>Return: {z:.2f}%' 
-              for x, y, z in zip(node_data['l2_norm_dim1'], node_data['l1_norm_dim1'], node_data['forward_5d_returns'])],
-        hovertemplate='%{text}<extra></extra>'
-    ))
-
+# Update layout
 fig.update_layout(
-    title="KMapper Node Clustering: L2 Norm vs L1 Norm (Dim1)",
-    xaxis_title="L2 Norm (Dimension 1)",
-    yaxis_title="L1 Norm (Dimension 1)",
+    title=f'Advanced Strategy Performance: {feature_name} (30-Day Horizon, IC: -0.29)',
+    xaxis_title='Date',
+    yaxis_title='Cumulative Return (%)',
     height=600,
-    showlegend=True
+    showlegend=True,
+    plot_bgcolor='white',
+    paper_bgcolor='white'
 )
 
 fig.show()
 
-# Create a second scatter plot: L2 norm vs forward returns
-fig2 = go.Figure()
+# Calculate and display performance metrics
+annualized_return = adjusted_strategy_returns.mean() * 252 * 100  # Assuming 252 trading days in a year
+annualized_volatility = adjusted_strategy_returns.std() * np.sqrt(252) * 100
+sharpe_ratio = annualized_return / annualized_volatility if annualized_volatility > 0 else 0
+total_return = cumulative_strategy_returns.iloc[-1] * 100
+bitcoin_total_return = cumulative_bitcoin_returns.iloc[-1] * 100
 
-for i, (node_id, node_members) in enumerate(graph['nodes'].items()):
-    color = colors[i % len(colors)]
-    node_data = combined_data.iloc[node_members]
-    
-    fig2.add_trace(go.Scatter(
-        x=node_data['l2_norm_dim1'],
-        y=node_data['forward_5d_returns'],
-        mode='markers',
-        name=f'Node {node_id} (n={len(node_members)})',
-        marker=dict(color=color, size=8, opacity=0.7),
-        text=[f'Node: {node_id}<br>L2 Norm: {x:.4f}<br>L1 Norm: {y:.4f}<br>Return: {z:.2f}%' 
-              for x, y, z in zip(node_data['l2_norm_dim1'], node_data['l1_norm_dim1'], node_data['forward_5d_returns'])],
-        hovertemplate='%{text}<extra></extra>'
-    ))
+# Additional metrics: Win rate and average trade duration
+trades = signals.diff().abs().dropna()
+num_trades = len(trades[trades != 0])
+trade_returns = adjusted_strategy_returns[signals.shift(1).abs() > 0]
+win_rate = len(trade_returns[trade_returns > 0]) / len(trade_returns) if len(trade_returns) > 0 else 0
 
-fig2.update_layout(
-    title="KMapper Node Clustering: L2 Norm Dim1 vs Forward 5-Day Returns",
-    xaxis_title="L2 Norm (Dimension 1)",
-    yaxis_title="Forward 5-Day Returns (%)",
-    height=600,
-    showlegend=True
-)
-
-fig2.show()
-
-# Create a third scatter plot: L1 norm vs forward returns
-fig3 = go.Figure()
-
-for i, (node_id, node_members) in enumerate(graph['nodes'].items()):
-    color = colors[i % len(colors)]
-    node_data = combined_data.iloc[node_members]
-    
-    fig3.add_trace(go.Scatter(
-        x=node_data['l1_norm_dim1'],
-        y=node_data['forward_5d_returns'],
-        mode='markers',
-        name=f'Node {node_id} (n={len(node_members)})',
-        marker=dict(color=color, size=8, opacity=0.7),
-        text=[f'Node: {node_id}<br>L2 Norm: {x:.4f}<br>L1 Norm: {y:.4f}<br>Return: {z:.2f}%' 
-              for x, y, z in zip(node_data['l2_norm_dim1'], node_data['l1_norm_dim1'], node_data['forward_5d_returns'])],
-        hovertemplate='%{text}<extra></extra>'
-    ))
-
-fig3.update_layout(
-    title="KMapper Node Clustering: L1 Norm Dim1 vs Forward 5-Day Returns",
-    xaxis_title="L1 Norm (Dimension 1)",
-    yaxis_title="Forward 5-Day Returns (%)",
-    height=600,
-    showlegend=True
-)
-
-fig3.show()
-
-# Additional analysis: correlation within nodes
-print(f"\nCorrelation analysis within nodes:")
-for node_id, node_members in graph['nodes'].items():
-    if len(node_members) > 3:  # Only analyze nodes with sufficient data
-        node_data = combined_data.iloc[node_members]
-        l2_correlation = node_data['l2_norm_dim1'].corr(node_data['forward_5d_returns'])
-        l1_correlation = node_data['l1_norm_dim1'].corr(node_data['forward_5d_returns'])
-        l1_l2_correlation = node_data['l1_norm_dim1'].corr(node_data['l2_norm_dim1'])
-        print(f"Node {node_id} (n={len(node_members)}): L2-Returns corr = {l2_correlation:.4f}, L1-Returns corr = {l1_correlation:.4f}, L1-L2 corr = {l1_l2_correlation:.4f}")
-
-
-# %% 
-%matplotlib widget
-
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, Button
-from mpl_toolkits.mplot3d import Axes3D
-from scipy.spatial.distance import pdist, squareform
-from sklearn.preprocessing import StandardScaler
-from matplotlib.collections import LineCollection
-
-# --- Step 1: Select single univariate series for time delay embedding ---
-col = 'bitcoin_close'  # Single column for univariate analysis
-series_data = feats[col].copy()
-dates = feats.index.to_numpy()  # assumes feats has DateTimeIndex
-
-# Convert to numpy array and handle NaN values
-series = series_data.values
-series = pd.Series(series).fillna(method='ffill').values  # Forward fill NaN values
-
-# EWMA smoothing
-def ewma_normalize(data, span):
-    df = pd.Series(data)
-    return df.ewm(span=span).mean().values
-
-span = 21
-series = ewma_normalize(series, span)
-
-# Standardize the series
-scaler = StandardScaler()
-series = scaler.fit_transform(series.reshape(-1, 1)).flatten()
-
-# --- Step 2: Time delay embedding ---
-def time_delay_embedding(data, tau, embedding_dim):
-    """
-    Create time delay embedding of univariate time series.
-    
-    Parameters:
-    data: 1D array of time series data
-    tau: time delay
-    embedding_dim: embedding dimension (2 or 3)
-    
-    Returns:
-    embedded: array of shape (n_samples - (embedding_dim-1)*tau, embedding_dim)
-    """
-    n = len(data)
-    n_embedded = n - (embedding_dim - 1) * tau
-    
-    if n_embedded <= 0:
-        raise ValueError("Time series too short for given tau and embedding_dim")
-    
-    embedded = np.zeros((n_embedded, embedding_dim))
-    for i in range(embedding_dim):
-        embedded[:, i] = data[i * tau:i * tau + n_embedded]
-    
-    return embedded
-
-# --- Step 3: Sliding window on time delay embedded data ---
-def sliding_window_embedding(embedded_data, w):
-    """
-    Apply sliding window to already time-delay embedded data.
-    """
-    n_samples, n_features = embedded_data.shape
-    windowed = np.zeros((n_samples - w + 1, w * n_features))
-    for i in range(n_samples - w + 1):
-        windowed[i] = embedded_data[i:i+w].flatten()
-    return windowed
-
-# Parameters for time delay embedding
-tau = 3  # time delay
-embedding_dim = 3  # can be 2 or 3
-w = 21  # sliding window size
-
-# Create time delay embedding
-embedded_series = time_delay_embedding(series, tau, embedding_dim)
-
-# Apply sliding window to embedded data
-windowed_embedded = sliding_window_embedding(embedded_series, w)
-
-# Pre-compute global bounds for reset functionality
-all_windows = windowed_embedded.reshape(-1, w, embedding_dim)
-global_min = np.min(all_windows, axis=(0, 1))
-global_max = np.max(all_windows, axis=(0, 1))
-margin = 0.1 * (global_max - global_min)
-global_bounds = {
-    'x': (global_min[0] - margin[0], global_max[0] + margin[0]),
-    'y': (global_min[1] - margin[1], global_max[1] + margin[1])
-}
-if embedding_dim == 3:
-    global_bounds['z'] = (global_min[2] - margin[2], global_max[2] + margin[2])
-
-# --- Step 4: Interactive visualization with sliders ---
-idx0 = 0
-eps0 = 0.3
-
-def get_window_dates(idx):
-    # Account for the offset due to time delay embedding and sliding window
-    start_idx = idx + (embedding_dim - 1) * tau
-    end_idx = start_idx + w - 1
-    start = pd.to_datetime(dates[start_idx]).strftime("%Y-%m-%d")
-    end = pd.to_datetime(dates[end_idx]).strftime("%Y-%m-%d")
-    return start, end
-
-def get_color_by_time(window_data):
-    """
-    Color points based on their temporal position within the window.
-    Earlier points are darker, later points are lighter.
-    """
-    n_points = len(window_data)
-    colors = plt.cm.viridis(np.linspace(0, 1, n_points))
-    return colors
-
-window0 = windowed_embedded[idx0].reshape(w, embedding_dim)
-start_date, end_date = get_window_dates(idx0)
-point_colors0 = get_color_by_time(window0)
-
-fig = plt.figure(figsize=(14, 10))
-fig.patch.set_facecolor('black')
-
-if embedding_dim == 2:
-    ax = fig.add_subplot(111, facecolor='black')
-    scatter = ax.scatter(window0[:, 0], window0[:, 1], s=30, c=point_colors0, alpha=0.8, edgecolors='white', linewidth=0.5)
-    ax.set_title(f"2D Time Delay Embedding (τ={tau}, window {idx0}, {start_date} → {end_date}, ε={eps0})\nColors: dark=early, light=late", color='white')
-    ax.set_xlabel(f"{col}(t)", color='white')
-    ax.set_ylabel(f"{col}(t-{tau})", color='white')
-    ax.tick_params(colors='white')
-elif embedding_dim == 3:
-    ax = fig.add_subplot(111, projection='3d', facecolor='black')
-    scatter = ax.scatter(window0[:, 0], window0[:, 1], window0[:, 2], s=30, c=point_colors0, alpha=0.8, edgecolors='white', linewidth=0.5)
-    ax.set_title(f"3D Time Delay Embedding (τ={tau}, window {idx0}, {start_date} → {end_date}, ε={eps0})\nColors: dark=early, light=late", color='white')
-    ax.set_xlabel(f"{col}(t)", color='white')
-    ax.set_ylabel(f"{col}(t-{tau})", color='white')
-    ax.set_zlabel(f"{col}(t-{2*tau})", color='white')
-    ax.tick_params(colors='white')
-    ax.xaxis.pane.fill = False
-    ax.yaxis.pane.fill = False
-    ax.zaxis.pane.fill = False
-
-edge_lines = []
-
-# --- Sliders ---
-max_slider_val = windowed_embedded.shape[0] - 1
-ax_slider_w = plt.axes([0.15, 0.02, 0.7, 0.03])
-slider_w = Slider(ax_slider_w, "Window", 0, max_slider_val, valinit=idx0, valstep=1)
-
-ax_slider_eps = plt.axes([0.15, 0.06, 0.7, 0.03])
-slider_eps = Slider(ax_slider_eps, "Epsilon", 0.01, 1.0, valinit=eps0, valstep=0.01)
-
-resetax = plt.axes([0.8, 0.92, 0.15, 0.05])
-button = Button(resetax, 'Reset Zoom')
-
-def set_consistent_bounds():
-    if embedding_dim == 2:
-        ax.set_xlim(global_bounds['x'])
-        ax.set_ylim(global_bounds['y'])
-    elif embedding_dim == 3:
-        ax.set_xlim(global_bounds['x'])
-        ax.set_ylim(global_bounds['y'])
-        ax.set_zlim(global_bounds['z'])
-
-def draw_complex(window, eps):
-    global edge_lines
-    for line in edge_lines:
-        line.remove()
-    edge_lines.clear()
-
-    D = squareform(pdist(window))
-    i_indices, j_indices = np.where((D <= eps) & (D > 0))
-    mask = i_indices < j_indices
-    i_indices, j_indices = i_indices[mask], j_indices[mask]
-
-    if len(i_indices) > 0:
-        if embedding_dim == 2:
-            segments = np.stack([window[i_indices], window[j_indices]], axis=1)
-            line_collection = LineCollection(segments, colors='yellow', linewidths=2, alpha=0.8)
-            ax.add_collection(line_collection)
-            edge_lines.append(line_collection)
-        elif embedding_dim == 3:
-            for i, j in zip(i_indices, j_indices):
-                line, = ax.plot([window[i, 0], window[j, 0]],
-                                [window[i, 1], window[j, 1]],
-                                [window[i, 2], window[j, 2]],
-                                c="yellow", lw=2, alpha=0.8)
-                edge_lines.append(line)
-
-def update(val):
-    idx = int(slider_w.val)
-    eps = slider_eps.val
-    window = windowed_embedded[idx].reshape(w, embedding_dim)
-    start_date, end_date = get_window_dates(idx)
-    
-    # Update colors based on temporal position
-    point_colors = get_color_by_time(window)
-
-    if embedding_dim == 2:
-        scatter.set_offsets(window)
-        scatter.set_color(point_colors)
-        ax.set_title(f"2D Time Delay Embedding (τ={tau}, window {idx}, {start_date} → {end_date}, ε={eps:.2f})\nColors: dark=early, light=late", color='white')
-    elif embedding_dim == 3:
-        scatter._offsets3d = (window[:, 0], window[:, 1], window[:, 2])
-        scatter.set_color(point_colors)
-        ax.set_title(f"3D Time Delay Embedding (τ={tau}, window {idx}, {start_date} → {end_date}, ε={eps:.2f})\nColors: dark=early, light=late", color='white')
-
-    draw_complex(window, eps)
-    fig.canvas.draw_idle()
-
-def reset(event):
-    set_consistent_bounds()
-    fig.canvas.draw_idle()
-
-slider_w.on_changed(update)
-slider_eps.on_changed(update)
-button.on_clicked(reset)
-
-# Initial setup
-set_consistent_bounds()
-draw_complex(window0, eps0)
-plt.tight_layout()
-plt.show()
-
-# Print information about the embedding
-print(f"\nTime Delay Embedding Information:")
-print(f"Original series: {col}")
-print(f"Time delay (τ): {tau}")
-print(f"Embedding dimension: {embedding_dim}")
-print(f"Sliding window size: {w}")
-print(f"Total embedded windows: {windowed_embedded.shape[0]}")
-
-# %%
+print(f"Advanced Strategy Performance Metrics for {feature_name} (30-Day Horizon):")
+print(f"Total Return: {total_return:.2f}%")
+print(f"Annualized Return: {annualized_return:.2f}%")
+print(f"Annualized Volatility: {annualized_volatility:.2f}%")
+print(f"Sharpe Ratio: {sharpe_ratio:.2f}")
+print(f"Win Rate: {win_rate*100:.2f}%")
+print(f"Number of Trades: {num_trades}")
+print(f"Bitcoin Buy & Hold Total Return: {bitcoin_total_return:.2f}%")

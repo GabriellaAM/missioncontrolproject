@@ -1,0 +1,16 @@
+{
+  "dataframe_split": {
+    "columns": [
+      "bitcoin_close",
+      "bitcoin_high",
+      "bitcoin_low"
+    ],
+    "data": [
+      [
+        50000.0,
+        100.0,
+        100.0
+      ]
+    ]
+  }
+}

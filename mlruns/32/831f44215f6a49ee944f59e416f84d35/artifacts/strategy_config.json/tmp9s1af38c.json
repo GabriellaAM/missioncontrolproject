@@ -1,0 +1,11 @@
+{
+  "strategy_name": "ema_crossover_trail_reentry",
+  "strategy_type": "trend_following",
+  "implementation_type": "rules_based",
+  "asset": "bitcoin",
+  "parameters": {
+    "volatility_multiplier": 3.0
+  },
+  "feature_cols": [],
+  "strategy_class": "experiments.strategies.rules_based.ema_crossover_stop.EMACrossoverWithTrailingStopStrategy"
+}
