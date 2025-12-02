@@ -109,16 +109,16 @@ print("\n" + "="*80)
 print("ETHEREUM OPEN INTEREST DROP ANALYSIS - FORWARD RETURNS REPORT")
 print("="*80)
 
-print(f"\n1. VISÃO GERAL DA AMOSTRA")
+print(f"\n1. SAMPLE OVERVIEW")
 print(f"   {'─'*70}")
-print(f"   Total de eventos de queda de OI analisados: {len(results_df)}")
-print(f"   Período: {results_df['event_date'].min().strftime('%Y-%m-%d')} até " +
+print(f"   Total OI drop events analyzed: {len(results_df)}")
+print(f"   Period: {results_df['event_date'].min().strftime('%Y-%m-%d')} to " +
       f"{results_df['event_date'].max().strftime('%Y-%m-%d')}")
-print(f"   Magnitude média da queda de OI: {results_df['oi_drop_pct'].mean():.2f}%")
-print(f"   Magnitude mediana da queda de OI: {results_df['oi_drop_pct'].median():.2f}%")
-print(f"   Maior queda de OI: {results_df['oi_drop_pct'].min():.2f}%")
+print(f"   Average OI drop magnitude: {results_df['oi_drop_pct'].mean():.2f}%")
+print(f"   Median OI drop magnitude: {results_df['oi_drop_pct'].median():.2f}%")
+print(f"   Largest OI drop: {results_df['oi_drop_pct'].min():.2f}%")
 
-print(f"\n2. RESUMO DOS RETORNOS FUTUROS")
+print(f"\n2. FORWARD RETURNS SUMMARY")
 print(f"   {'─'*70}")
 
 for horizon in horizons:
@@ -134,15 +134,15 @@ for horizon in horizons:
     positive_count = (returns > 0).sum()
     negative_count = (returns < 0).sum()
 
-    print(f"\n   Retornos Futuros de {horizon} Dias:")
-    print(f"      • Retorno médio: {avg_return:+.2f}%")
-    print(f"      • Retorno mediano: {median_return:+.2f}%")
-    print(f"      • Taxa de acerto: {win_rate:.1f}% ({positive_count} positivos, {negative_count} negativos)")
-    print(f"      • Melhor caso: {returns.max():+.2f}%")
-    print(f"      • Pior caso: {returns.min():+.2f}%")
-    print(f"      • Desvio padrão: {returns.std():.2f}%")
+    print(f"\n   {horizon} Day Forward Returns:")
+    print(f"      • Average Return: {avg_return:+.2f}%")
+    print(f"      • Median Return: {median_return:+.2f}%")
+    print(f"      • Win Rate: {win_rate:.1f}% ({positive_count} positive, {negative_count} negative)")
+    print(f"      • Best Case: {returns.max():+.2f}%")
+    print(f"      • Worst Case: {returns.min():+.2f}%")
+    print(f"      • Standard Deviation: {returns.std():.2f}%")
 
-print(f"\n3. PRINCIPAIS DESCOBERTAS - Ser Baixista Foi Lucrativo?")
+print(f"\n3. KEY FINDINGS - Was Being Bearish Profitable?")
 print(f"   {'─'*70}")
 
 for horizon in horizons:
@@ -156,17 +156,17 @@ for horizon in horizons:
     win_rate = (returns > 0).sum() / len(returns) * 100
 
     if avg < 0 and win_rate < 50:
-        verdict = "✓ SIM - Baixista estava correto (retorno médio negativo, taxa de acerto <50%)"
+        verdict = "✓ YES - Bearish was correct (negative avg return, win rate <50%)"
     elif avg > 0 and win_rate > 50:
-        verdict = "✗ NÃO - Na verdade ALTISTA (retorno médio positivo, taxa de acerto >50%)"
+        verdict = "✗ NO - Actually BULLISH (positive avg return, win rate >50%)"
     else:
-        verdict = "~ Sinais MISTOS (média e taxa de acerto discordam)"
+        verdict = "~ MIXED signals (average and win rate disagree)"
 
-    print(f"\n   Horizonte de {horizon} dias: {verdict}")
-    print(f"      Retorno médio: {avg:+.2f}%")
-    print(f"      Taxa de acerto: {win_rate:.1f}%")
+    print(f"\n   {horizon} Day Horizon: {verdict}")
+    print(f"      Average Return: {avg:+.2f}%")
+    print(f"      Win Rate: {win_rate:.1f}%")
 
-print(f"\n4. SIGNIFICÂNCIA ESTATÍSTICA")
+print(f"\n4. STATISTICAL SIGNIFICANCE")
 print(f"   {'─'*70}")
 
 from scipy import stats
@@ -179,24 +179,24 @@ for horizon in horizons:
         continue
 
     t_stat, p_value = stats.ttest_1samp(returns, 0)
-    significance = "Estatisticamente significativo" if p_value < 0.05 else "Não estatisticamente significativo"
-    direction = "positivo" if returns.mean() > 0 else "negativo"
+    significance = "Statistically significant" if p_value < 0.05 else "Not statistically significant"
+    direction = "positive" if returns.mean() > 0 else "negative"
 
-    print(f"   {horizon} dias: {significance} viés {direction} (p={p_value:.4f}, t={t_stat:.2f})")
+    print(f"   {horizon} days: {significance} {direction} bias (p={p_value:.4f}, t={t_stat:.2f})")
 
-print(f"\n5. EVENTOS INDIVIDUAIS")
+print(f"\n5. INDIVIDUAL EVENTS")
 print(f"   {'─'*70}")
-print(f"\n   Todos os Eventos de Queda de OI:")
+print(f"\n   All OI Drop Events:")
 
 for idx, row in results_df.iterrows():
-    print(f"\n   {idx+1}. Evento: {row['event_date'].strftime('%Y-%m-%d')}")
-    print(f"      • Queda de OI: {row['oi_drop_pct']:.2f}%")
-    print(f"      • Preço ETH no evento: ${row['event_price']:,.2f}")
+    print(f"\n   {idx+1}. Event: {row['event_date'].strftime('%Y-%m-%d')}")
+    print(f"      • OI Drop: {row['oi_drop_pct']:.2f}%")
+    print(f"      • ETH Price at Event: ${row['event_price']:,.2f}")
     for horizon in horizons:
         ret = row[f'return_{horizon}d']
         if not pd.isna(ret):
             emoji = "📈" if ret > 0 else "📉"
-            print(f"      • Retorno em {horizon}d: {ret:+.2f}% {emoji}")
+            print(f"      • Return at {horizon}d: {ret:+.2f}% {emoji}")
 
 print(f"\n{'='*80}\n")
 
@@ -204,26 +204,26 @@ print(f"\n{'='*80}\n")
 print("\nCreating visualizations...")
 
 fig, axes = plt.subplots(3, 2, figsize=(16, 14))
-fig.suptitle('Quedas de Open Interest do Ethereum: Análise de Retornos Futuros',
+fig.suptitle('Ethereum Open Interest Drops: Forward Returns Analysis',
              fontsize=16, fontweight='bold')
 
 # 1. OI over time with drop events
 ax1 = axes[0, 0]
 ax1.plot(df_clean['date'], df_clean['open_interest'], label='Open Interest', linewidth=1, alpha=0.7)
 ax1.scatter(results_df['event_date'], results_df['oi_value'],
-           color='red', s=100, marker='v', label='Eventos de Queda de OI (≥30%)', zorder=5)
-ax1.set_title('Open Interest do Ethereum com Eventos de Queda', fontweight='bold')
+           color='red', s=100, marker='v', label='OI Drop Events (≥30%)', zorder=5)
+ax1.set_title('Ethereum Open Interest with Drop Events', fontweight='bold')
 ax1.set_ylabel('Open Interest')
 ax1.legend()
 ax1.grid(True, alpha=0.3)
 
 # 2. Price over time with drop events
 ax2 = axes[0, 1]
-ax2.plot(df_clean['date'], df_clean['price'], label='Preço ETH', linewidth=1, alpha=0.7)
+ax2.plot(df_clean['date'], df_clean['price'], label='ETH Price', linewidth=1, alpha=0.7)
 ax2.scatter(results_df['event_date'], results_df['event_price'],
-           color='red', s=100, marker='v', label='Eventos de Queda de OI', zorder=5)
-ax2.set_title('Preço do Ethereum nos Eventos de Queda de OI', fontweight='bold')
-ax2.set_ylabel('Preço (USD)')
+           color='red', s=100, marker='v', label='OI Drop Events', zorder=5)
+ax2.set_title('Ethereum Price at OI Drop Events', fontweight='bold')
+ax2.set_ylabel('Price (USD)')
 ax2.set_yscale('log')
 ax2.legend()
 ax2.grid(True, alpha=0.3)
@@ -237,10 +237,10 @@ bp = ax3.boxplot(box_data, labels=[f'{h}d' for h in horizons], patch_artist=True
 for patch in bp['boxes']:
     patch.set_facecolor('lightblue')
 
-ax3.axhline(y=0, color='red', linestyle='--', linewidth=2, alpha=0.7, label='Retorno Zero')
-ax3.set_title('Distribuição dos Retornos Futuros Após Quedas de OI', fontweight='bold')
-ax3.set_xlabel('Horizonte Temporal')
-ax3.set_ylabel('Retorno (%)')
+ax3.axhline(y=0, color='red', linestyle='--', linewidth=2, alpha=0.7, label='Zero Return')
+ax3.set_title('Distribution of Forward Returns After OI Drops', fontweight='bold')
+ax3.set_xlabel('Time Horizon')
+ax3.set_ylabel('Return (%)')
 ax3.legend()
 ax3.grid(True, alpha=0.3)
 
@@ -256,9 +256,9 @@ for bar, val in zip(bars, avg_returns):
             f'{val:.1f}%', ha='center', va='bottom' if val > 0 else 'top', fontweight='bold')
 
 ax4.axhline(y=0, color='black', linestyle='-', linewidth=1)
-ax4.set_title('Retornos Médios Futuros Após Quedas de OI', fontweight='bold')
-ax4.set_xlabel('Horizonte Temporal')
-ax4.set_ylabel('Retorno Médio (%)')
+ax4.set_title('Average Forward Returns After OI Drops', fontweight='bold')
+ax4.set_xlabel('Time Horizon')
+ax4.set_ylabel('Average Return (%)')
 ax4.grid(True, alpha=0.3, axis='y')
 
 # 5. Win rate
@@ -272,10 +272,10 @@ for bar, val in zip(bars, win_rates):
     ax5.text(bar.get_x() + bar.get_width()/2., height,
             f'{val:.0f}%', ha='center', va='bottom', fontweight='bold')
 
-ax5.axhline(y=50, color='red', linestyle='--', linewidth=2, label='50% (Aleatório)')
-ax5.set_title('Taxa de Acerto (% de Retornos Positivos)', fontweight='bold')
-ax5.set_xlabel('Horizonte Temporal')
-ax5.set_ylabel('Taxa de Acerto (%)')
+ax5.axhline(y=50, color='red', linestyle='--', linewidth=2, label='50% (Random)')
+ax5.set_title('Win Rate (% of Positive Returns)', fontweight='bold')
+ax5.set_xlabel('Time Horizon')
+ax5.set_ylabel('Win Rate (%)')
 ax5.set_ylim(0, 100)
 ax5.legend()
 ax5.grid(True, alpha=0.3, axis='y')
@@ -301,9 +301,9 @@ for idx, horizon in enumerate(horizons):
              markeredgecolor='white')
 
 ax6.axhline(y=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
-ax6.set_title('Retornos Futuros por Data do Evento', fontweight='bold')
-ax6.set_xlabel('Data do Evento')
-ax6.set_ylabel('Retorno Futuro (%)')
+ax6.set_title('Forward Returns by Event Date', fontweight='bold')
+ax6.set_xlabel('Event Date')
+ax6.set_ylabel('Forward Return (%)')
 ax6.legend(loc='best', framealpha=0.9)
 ax6.grid(True, alpha=0.3)
 
