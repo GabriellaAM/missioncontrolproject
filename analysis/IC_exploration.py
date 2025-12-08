@@ -22,17 +22,18 @@ asset = 'bitcoin'
 prefix = f"{asset}_"
 loader = FeatureLoader(start_date='2018-01-01', end_date='2025-12-01')
 features_df = loader.build_feature_set(
-    crypto_assets=[asset],
-    fred_indicators={'creditSpreads': 'credit_spread', 
-                     'treasury5YInflationExpectation': 'inflation_expectation_5y'},
-    yahoo_tickers={'vix': 'vix', 'move': 'move'},
-    calculated_features={'rty_ym_ratio': 'rty_ym_ratio'}
+    crypto_assets=['bitcoin', 'dogecoin'],
+    #fred_indicators={'creditSpreads': 'credit_spread', 
+    #                'treasury5YInflationExpectation': 'inflation_expectation_5y'},
+    #yahoo_tickers={'vix': 'vix', 'move': 'move'},
+    #calculated_features={'rty_ym_ratio': 'rty_ym_ratio'}
 )
 
 # %%
 
-features_df.head()
-features_df.set_index('timestamp', inplace=True)
+features_df.head(20)
+
+
 
 # %%
 def calculate_information_coefficient(df, feature_column, return_column=f'{prefix}close', periods=[5, 10, 15, 20, 25, 30]):
