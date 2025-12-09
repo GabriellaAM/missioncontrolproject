@@ -42,7 +42,7 @@ def main():
     data_entrada = validar_data(data_entrada, "Data de entrada")
     
     preco_entrada = obter_input("Preço de entrada: ", tipo=float, obrigatorio=True)
-    coingecko_id = obter_input("CoinGecko ID (ex: bitcoin, ethereum) [opcional]: ", obrigatorio=False)
+    coingecko_id = obter_input("CoinGecko ID (ex: bitcoin, ethereum): ", obrigatorio=False)
     
     # Abrir posição
     p = PosicaoService.abrir(
