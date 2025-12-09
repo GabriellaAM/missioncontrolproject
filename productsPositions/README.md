@@ -46,16 +46,14 @@ Cria ou atualiza a carteira de um produto com 3 opções:
 2. Automática (calcula a partir das posições)
 3. Com capital inicial (recalcula tudo)
 
-#### 6. Consultar Dados
+#### 6. Visualizar Dados
 ```bash
-python scripts/consultar_dados.py
+python scripts/visualizar_dados.py
 ```
-Consulta e visualiza dados do sistema:
-- Posições abertas/fechadas
-- Alocações
-- Carteira
-- Valores diários
-- Resumo completo
+Visualiza dados do sistema com tabelas formatadas e gráficos interativos:
+- Dados formatados (produtos, posições, carteira, alocações)
+- Gráficos interativos (evolução de preços, composição da carteira, etc.)
+- Dashboard completo
 
 ## Estrutura
 
@@ -73,7 +71,7 @@ productsPositions/
     ├── adicionar_stop.py
     ├── criar_alocacao.py
     ├── criar_carteira.py
-    └── consultar_dados.py
+    └── visualizar_dados.py
 ```
 
 ## Fluxo Recomendado
@@ -83,7 +81,7 @@ productsPositions/
 3. **Adicionar stops** (opcional): `python scripts/adicionar_stop.py`
 4. **Criar alocação** (opcional): `python scripts/criar_alocacao.py`
 5. **Criar carteira** (opcional): `python scripts/criar_carteira.py`
-6. **Consultar dados**: `python scripts/consultar_dados.py`
+6. **Visualizar dados**: `python scripts/visualizar_dados.py`
 
 ## Dados
 
@@ -92,8 +90,69 @@ Todos os dados são armazenados em Parquet em:
 data_parquet/products_positions/
 ```
 
+## Análise em Notebooks Jupyter
+
+O sistema inclui utilitários para análise visual em notebooks Jupyter.
+
+### Instalação de Dependências
+
+```bash
+pip install pandas plotly jupyter
+```
+
+### Uso Básico
+
+```python
+import sys
+from pathlib import Path
+
+# Adicionar ao path
+sys.path.insert(0, str(Path.cwd() / 'productsPositions'))
+
+from analytics.notebook_utils import *
+from analytics.charts import *
+
+# Listar produtos
+produtos = display_produtos()
+
+# Visualizar posições abertas
+posicoes = display_posicoes_abertas(produto_id=1)
+
+# Visualizar carteira
+carteira = display_carteira(produto_id=1)
+
+# Gráfico de evolução de preço
+df_valores = get_valores_ativo("BTC")
+fig = grafico_valores(df_valores, ativo="BTC")
+fig.show()
+
+# Dashboard completo
+fig = dashboard_produto(produto_id=1)
+fig.show()
+```
+
+### Funções Disponíveis
+
+**notebook_utils.py:**
+- `display_produtos()` - Lista todos os produtos
+- `display_posicoes_abertas(produto_id)` - Posições abertas formatadas
+- `display_carteira(produto_id)` - Carteira formatada
+- `display_alocacoes(produto_id)` - Alocações formatadas
+- `display_resumo_completo(produto_id)` - Resumo completo
+- `get_valores_ativo(ativo)` - Valores diários de um ativo
+- `get_valores_posicao(posicao_id)` - Valores diários de uma posição
+
+**charts.py:**
+- `grafico_valores(df, ativo)` - Gráfico de linha de evolução de preço
+- `grafico_carteira(produto_id)` - Gráfico de barras da carteira
+- `grafico_alocacoes(produto_id)` - Gráfico de pizza das alocações
+- `grafico_comparativo_ativos(ativos)` - Comparativo de múltiplos ativos
+- `dashboard_produto(produto_id)` - Dashboard completo com múltiplos gráficos
+
+
 ## Notas
 
 - Cada script é independente e pode ser executado separadamente
-- Valores diários são importados automaticamente do CoinGecko quando `coingecko_id` é fornecido
+- Valores diários são lidos automaticamente do CoinGecko quando `coingecko_id` está disponível
+- Todas as queries retornam DataFrames do pandas, prontos para análise em notebooks
 
