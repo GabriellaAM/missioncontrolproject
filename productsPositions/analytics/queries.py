@@ -20,9 +20,9 @@ def valores_do_ativo(ativo, data_inicio=None, data_fim=None):
     valores = repo.obter_valores_diarios_ativo(ativo, data_inicio, data_fim)
     
     if not valores:
-        return pd.DataFrame(columns=['data', 'preco', 'valor_usd'])
+        return pd.DataFrame(columns=['data', 'preco'])
     
-    return pd.DataFrame(valores, columns=['data', 'preco', 'valor_usd'])
+    return pd.DataFrame(valores, columns=['data', 'preco'])
 
 def valores_da_posicao(posicao_id):
     """Retorna valores diários de uma posição (via JOIN com ativo)"""
@@ -112,6 +112,7 @@ def resumo_completo_produto(produto_id):
         'produto_nome': produto['nome'],
         'data_inicio': produto['data_inicio'],
         'tipo': produto['tipo'],
+        'capital_inicial': produto.get('capital_inicial', 0.0),
         'valor_disponivel': carteira.valor_disponivel if carteira else None,
         'valor_investido': carteira.valor_investido if carteira else None,
         'pnl_nao_realizado': carteira.pnl_nao_realizado if carteira else None,

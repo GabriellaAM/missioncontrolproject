@@ -1,5 +1,6 @@
 import pandas as pd
 import uuid
+import json
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -49,13 +50,9 @@ class ParquetRepo:
             pd.DataFrame(columns=['nome', 'descricao', 'data_criacao']).to_parquet(
                 self.tipos_path, index=False
             )
-            # Inserir tipos padrão
-            tipos_padrao = pd.DataFrame([
-                {'nome': 'Cripto', 'descricao': 'Criptomoedas', 'data_criacao': datetime.now().strftime("%Y-%m-%d")},
-                {'nome': 'Ações', 'descricao': 'Ações de empresas', 'data_criacao': datetime.now().strftime("%Y-%m-%d")},
-                {'nome': 'Forex', 'descricao': 'Moedas estrangeiras', 'data_criacao': datetime.now().strftime("%Y-%m-%d")},
-            ])
-            tipos_padrao.to_parquet(self.tipos_path, index=False)
+        
+        # Garantir que tipos essenciais (Perpétuos e Spot) sempre existam
+        self._garantir_tipos_essenciais()
         
         if not self.ativos_path.exists():
             pd.DataFrame(columns=['nome', 'coingecko_id']).to_parquet(
@@ -63,14 +60,14 @@ class ParquetRepo:
             )
         
         if not self.produtos_path.exists():
-            pd.DataFrame(columns=['id', 'nome', 'data_inicio', 'tipo']).to_parquet(
+            pd.DataFrame(columns=['id', 'nome', 'data_inicio', 'tipo', 'capital_inicial']).to_parquet(
                 self.produtos_path, index=False
             )
         
         if not self.posicoes_path.exists():
             pd.DataFrame(columns=[
                 'id', 'produto_id', 'ativo', 'coingecko_id', 'side', 'data_entrada', 
-                'preco_entrada', 'data_saida', 'preco_saida', 'status'
+                'preco_entrada', 'data_saida', 'preco_saida', 'status', 'stops'
             ]).to_parquet(self.posicoes_path, index=False)
         
         if not self.alocacoes_path.exists():
@@ -148,6 +145,31 @@ class ParquetRepo:
         return True
     
     # ========== TIPOS ==========
+    
+    def _garantir_tipos_essenciais(self):
+        """Garante que os tipos essenciais (Perpétuos e Spot) sempre existam"""
+        df = self._carregar_df(self.tipos_path)
+        
+        tipos_essenciais = [
+            {'nome': 'Perpétuos', 'descricao': 'Contratos perpétuos de criptomoedas'},
+            {'nome': 'Spot', 'descricao': 'Trading spot de criptomoedas'}
+        ]
+        
+        tipos_existentes = set(df['nome'].values) if not df.empty else set()
+        
+        novos_tipos = []
+        for tipo in tipos_essenciais:
+            if tipo['nome'] not in tipos_existentes:
+                novos_tipos.append({
+                    'nome': tipo['nome'],
+                    'descricao': tipo['descricao'],
+                    'data_criacao': datetime.now().strftime("%Y-%m-%d")
+                })
+        
+        if novos_tipos:
+            df_novos = pd.DataFrame(novos_tipos)
+            df = pd.concat([df, df_novos], ignore_index=True)
+            self._salvar_df(df, self.tipos_path)
     
     def registrar_tipo(self, nome, descricao=None):
         """Registra um novo tipo (se não existir)"""
@@ -229,7 +251,8 @@ class ParquetRepo:
             'id': produto_id,
             'nome': produto.nome,
             'data_inicio': produto.data_inicio,
-            'tipo': produto.tipo.nome
+            'tipo': produto.tipo.nome,
+            'capital_inicial': produto.capital_inicial
         }])
         
         df = pd.concat([df, novo_registro], ignore_index=True)
@@ -238,12 +261,34 @@ class ParquetRepo:
         return produto_id
     
     def carregar_produto(self, produto_id):
-        """Carrega um produto por ID"""
+        """Carrega um produto por ID (retorna dict)"""
         df = self._carregar_df(self.produtos_path)
         resultado = df[df['id'] == produto_id]
         if not resultado.empty:
             return resultado.iloc[0].to_dict()
         return None
+    
+    def carregar_produto_objeto(self, produto_id):
+        """Carrega um produto por ID e retorna objeto Produto"""
+        from domain.produto import Produto
+        from domain.tipo import Tipo
+        
+        produto_dict = self.carregar_produto(produto_id)
+        if not produto_dict:
+            return None
+        
+        tipo = Tipo(produto_dict['tipo'])
+        capital_inicial = produto_dict.get('capital_inicial', 0.0)
+        if pd.isna(capital_inicial):
+            capital_inicial = 0.0
+        
+        produto = Produto(
+            nome=produto_dict['nome'],
+            data_inicio=produto_dict['data_inicio'],
+            tipo=tipo,
+            capital_inicial=float(capital_inicial)
+        )
+        return produto
     
     def listar_produtos(self):
         """Lista todos os produtos"""
@@ -277,10 +322,25 @@ class ParquetRepo:
             else:
                 # Registrar novo ativo
                 self.registrar_ativo(posicao.ativo, posicao.coingecko_id)
+            
+            # Importar valores diários automaticamente do CoinGecko
+            try:
+                from services.valor_diario_service import ValorDiarioService
+                resultado = ValorDiarioService.importar_do_coingecko(
+                    ativo=posicao.ativo,
+                    coingecko_id=posicao.coingecko_id
+                )
+                # Log silencioso - valores importados automaticamente
+            except Exception as e:
+                # Não falhar se não conseguir importar (arquivo pode não existir)
+                pass
         
         df = self._carregar_df(self.posicoes_path)
         
         posicao_id = self._gerar_id()
+        # Serializar stops como JSON string
+        stops_json = json.dumps(posicao.stops) if posicao.stops else "[]"
+        
         novo_registro = pd.DataFrame([{
             'id': posicao_id,
             'produto_id': produto_id,
@@ -291,7 +351,8 @@ class ParquetRepo:
             'preco_entrada': posicao.preco_entrada,
             'data_saida': posicao.data_saida,
             'preco_saida': posicao.preco_saida,
-            'status': posicao.status
+            'status': posicao.status,
+            'stops': stops_json
         }])
         
         df = pd.concat([df, novo_registro], ignore_index=True)
@@ -320,7 +381,14 @@ class ParquetRepo:
         df = self._carregar_df(self.posicoes_path)
         resultado = df[df['id'] == posicao_id]
         if not resultado.empty:
-            return resultado.iloc[0].to_dict()
+            posicao_dict = resultado.iloc[0].to_dict()
+            # Deserializar stops
+            stops_json = posicao_dict.get('stops', '[]')
+            try:
+                posicao_dict['stops'] = json.loads(stops_json) if stops_json else []
+            except (json.JSONDecodeError, TypeError):
+                posicao_dict['stops'] = []
+            return posicao_dict
         return None
     
     def atualizar_posicao(self, posicao_id, **kwargs):
@@ -332,12 +400,19 @@ class ParquetRepo:
         
         # Atualizar campos permitidos
         campos_permitidos = ['ativo', 'coingecko_id', 'side', 'data_entrada', 
-                            'preco_entrada', 'data_saida', 'preco_saida', 'status']
+                            'preco_entrada', 'data_saida', 'preco_saida', 'status', 'stops']
         
         mask = df['id'] == posicao_id
         for campo, valor in kwargs.items():
             if campo in campos_permitidos:
-                df.loc[mask, campo] = valor
+                # Se for stops, serializar como JSON
+                if campo == 'stops':
+                    if isinstance(valor, list):
+                        df.loc[mask, campo] = json.dumps(valor)
+                    else:
+                        df.loc[mask, campo] = valor
+                else:
+                    df.loc[mask, campo] = valor
             else:
                 raise ValueError(f"Campo '{campo}' não é permitido para atualização")
         
@@ -351,6 +426,45 @@ class ParquetRepo:
                 self.registrar_ativo(posicao['ativo'], kwargs['coingecko_id'])
         
         self._salvar_df(df, self.posicoes_path)
+        return posicao_id
+    
+    def adicionar_stop_posicao(self, posicao_id, data, valor):
+        """
+        Adiciona um novo stop a uma posição existente
+        
+        Args:
+            posicao_id: ID da posição
+            data: Data do stop (YYYY-MM-DD)
+            valor: Valor do stop
+        
+        Returns:
+            int: ID da posição atualizada
+        """
+        df = self._carregar_df(self.posicoes_path)
+        
+        if df.empty or posicao_id not in df['id'].values:
+            raise ValueError(f"Posição com ID {posicao_id} não existe")
+        
+        mask = df['id'] == posicao_id
+        posicao_row = df[mask].iloc[0]
+        
+        # Carregar stops existentes
+        stops_json = posicao_row.get('stops', '[]')
+        try:
+            stops = json.loads(stops_json) if stops_json else []
+        except (json.JSONDecodeError, TypeError):
+            stops = []
+        
+        # Adicionar novo stop
+        novo_stop = {"data": data, "valor": float(valor)}
+        stops.append(novo_stop)
+        # Ordenar por data
+        stops.sort(key=lambda x: x["data"])
+        
+        # Atualizar
+        df.loc[mask, 'stops'] = json.dumps(stops)
+        self._salvar_df(df, self.posicoes_path)
+        
         return posicao_id
     
     # ========== ALOCAÇÕES ==========
@@ -582,7 +696,7 @@ class ParquetRepo:
         if parquet_file.exists():
             df_existente = pd.read_parquet(parquet_file)
         else:
-            df_existente = pd.DataFrame(columns=['ativo', 'data', 'preco', 'valor_usd', 'data_insercao'])
+            df_existente = pd.DataFrame(columns=['ativo', 'data', 'preco', 'data_insercao'])
         
         # Converter valores para DataFrame
         novos_dados = []
@@ -595,11 +709,9 @@ class ParquetRepo:
             if isinstance(valor, dict):
                 data = valor.get('data')
                 preco = valor.get('preco')
-                valor_usd = valor.get('valor_usd')
             else:
                 data = valor.data
                 preco = valor.preco
-                valor_usd = valor.valor_usd
             
             # Verificar duplicação
             if not df_existente.empty:
@@ -614,7 +726,6 @@ class ParquetRepo:
                 'ativo': ativo,
                 'data': data,
                 'preco': preco,
-                'valor_usd': valor_usd,
                 'data_insercao': data_insercao
             })
             inseridos += 1
@@ -651,5 +762,5 @@ class ParquetRepo:
             df = df[df['data'] <= data_fim]
         
         df = df.sort_values('data')
-        return [tuple(row) for row in df[['data', 'preco', 'valor_usd']].values]
+        return [tuple(row) for row in df[['data', 'preco']].values]
 
