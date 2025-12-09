@@ -2,7 +2,9 @@ from domain.carteira import Carteira
 from domain.produto import Produto
 from storage.parquet_repo import ParquetRepo
 from services.calculadora import Calculadora
+from services.valor_diario_service import ValorDiarioService
 from datetime import datetime
+import pandas as pd
 
 # Serviço responsável por gerenciar carteiras de produtos
 class CarteiraService:
@@ -48,6 +50,29 @@ class CarteiraService:
         )
 
     @staticmethod
+    def _obter_preco_atual_automatico(coingecko_id):
+        """
+        Busca automaticamente o preço atual do ativo no CoinGecko
+        
+        Args:
+            coingecko_id: ID do CoinGecko (ex: "bitcoin")
+        
+        Returns:
+            float ou None: Preço atual (close mais recente) ou None se não encontrado
+        """
+        if not coingecko_id:
+            return None
+        
+        # Buscar valores do CoinGecko
+        valores = ValorDiarioService.ler_valores_do_coingecko(coingecko_id)
+        if not valores:
+            return None
+        
+        # Pegar o preço mais recente (último item da lista, já ordenada por data)
+        preco_atual = valores[-1]['preco']
+        return preco_atual
+
+    @staticmethod
     def preencher_carteira(produto_id, preco_atual_por_posicao=None):
         """
         Preenche/atualiza a carteira automaticamente a partir das posições e alocações
@@ -55,6 +80,7 @@ class CarteiraService:
         Args:
             produto_id: ID do produto
             preco_atual_por_posicao: Dicionário {posicao_id: preco_atual} para calcular PnL não realizado
+                                    Se None, busca automaticamente do CoinGecko
         
         Returns:
             Carteira: Objeto Carteira preenchido
@@ -76,6 +102,25 @@ class CarteiraService:
         df_posicoes = repo.carregar_posicoes_abertas(produto_id)
         posicoes_abertas = [(row['id'], row['ativo'], row['side'], row['preco_entrada'])
                           for _, row in df_posicoes.iterrows()] if not df_posicoes.empty else []
+        
+        # Se preco_atual_por_posicao não foi fornecido, buscar automaticamente do CoinGecko
+        if preco_atual_por_posicao is None:
+            preco_atual_por_posicao = {}
+            for _, row in df_posicoes.iterrows():
+                posicao_id = row['id']
+                coingecko_id = row.get('coingecko_id') if pd.notna(row.get('coingecko_id')) else None
+                
+                # Se não tem coingecko_id na posição, tentar buscar pelo ativo
+                if not coingecko_id:
+                    ativo = row['ativo']
+                    ativo_info = repo.obter_ativo(ativo)
+                    if ativo_info:
+                        coingecko_id = ativo_info.get('coingecko_id')
+                
+                if coingecko_id:
+                    preco_atual = CarteiraService._obter_preco_atual_automatico(coingecko_id)
+                    if preco_atual is not None:
+                        preco_atual_por_posicao[posicao_id] = preco_atual
         
         # Calcular PnL não realizado usando a Calculadora
         pnl_nao_realizado = Calculadora.calcular_pnl_nao_realizado_total(

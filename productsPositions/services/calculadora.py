@@ -70,17 +70,17 @@ class Calculadora:
         Returns:
             float: PnL não realizado total
         """
-        if not preco_atual_por_posicao or not posicoes_abertas:
+        if not preco_atual_por_posicao or not posicoes_abertas or not alocacoes:
             return 0.0
         
         pnl_total = 0.0
         
         # Criar dicionário de alocações por posição_id para busca rápida
         alocacoes_dict = {}
-        if isinstance(alocacoes[0], tuple):
+        if alocacoes and isinstance(alocacoes[0], tuple):
             # Se for lista de tuplas (do banco)
             alocacoes_dict = {aloc[0]: aloc[1] for aloc in alocacoes if aloc[1] is not None}
-        else:
+        elif alocacoes:
             # Se for lista de objetos Alocacao
             alocacoes_dict = {aloc.posicao_id: aloc.valor_usd for aloc in alocacoes if aloc.valor_usd is not None}
         
