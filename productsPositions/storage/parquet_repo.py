@@ -15,7 +15,7 @@ class ParquetRepo:
     - data_parquet/products_positions/posicoes.parquet
     - data_parquet/products_positions/alocacoes.parquet
     - data_parquet/products_positions/carteiras.parquet
-    - data_parquet/products_positions/valores_diarios/{ativo}/data.parquet
+    - (valores diários são lidos diretamente de data_parquet/crypto_data/coingecko/{coingecko_id}/data.parquet)
     - data_parquet/products_positions/ativos_rastreados.parquet
     """
     
@@ -36,10 +36,10 @@ class ParquetRepo:
         self.posicoes_path = self.base_path / "posicoes.parquet"
         self.alocacoes_path = self.base_path / "alocacoes.parquet"
         self.carteiras_path = self.base_path / "carteiras.parquet"
-        self.valores_diarios_path = self.base_path / "valores_diarios"
+        # Valores diários são lidos diretamente de crypto_data/coingecko (não duplicados aqui)
         self.ativos_rastreados_path = self.base_path / "ativos_rastreados.parquet"
         
-        self.valores_diarios_path.mkdir(exist_ok=True)
+        # Não criar diretório automaticamente (não é mais necessário)
         
         # Inicializar arquivos vazios se não existirem
         self._inicializar_arquivos()
@@ -323,17 +323,8 @@ class ParquetRepo:
                 # Registrar novo ativo
                 self.registrar_ativo(posicao.ativo, posicao.coingecko_id)
             
-            # Importar valores diários automaticamente do CoinGecko
-            try:
-                from services.valor_diario_service import ValorDiarioService
-                resultado = ValorDiarioService.importar_do_coingecko(
-                    ativo=posicao.ativo,
-                    coingecko_id=posicao.coingecko_id
-                )
-                # Log silencioso - valores importados automaticamente
-            except Exception as e:
-                # Não falhar se não conseguir importar (arquivo pode não existir)
-                pass
+            # Valores diários são lidos diretamente do CoinGecko quando necessário
+            # Não há necessidade de importar/duplicar dados
         
         df = self._carregar_df(self.posicoes_path)
         
@@ -686,81 +677,27 @@ class ParquetRepo:
         self._salvar_df(df, self.ativos_rastreados_path)
         return ativo
     
-    def salvar_valores_diarios_ativo(self, ativo, valores_diarios, atualizar_rastreado=True):
-        """Salva valores diários de um ativo em Parquet (um arquivo por ativo)"""
-        ativo_path = self.valores_diarios_path / ativo
-        ativo_path.mkdir(exist_ok=True)
-        parquet_file = ativo_path / "data.parquet"
-        
-        # Carregar dados existentes
-        if parquet_file.exists():
-            df_existente = pd.read_parquet(parquet_file)
-        else:
-            df_existente = pd.DataFrame(columns=['ativo', 'data', 'preco', 'data_insercao'])
-        
-        # Converter valores para DataFrame
-        novos_dados = []
-        inseridos = 0
-        ignorados = 0
-        data_insercao = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        data_historico_inicial = None
-        
-        for valor in valores_diarios:
-            if isinstance(valor, dict):
-                data = valor.get('data')
-                preco = valor.get('preco')
-            else:
-                data = valor.data
-                preco = valor.preco
-            
-            # Verificar duplicação
-            if not df_existente.empty:
-                duplicado = not df_existente[
-                    (df_existente['ativo'] == ativo) & (df_existente['data'] == data)
-                ].empty
-                if duplicado:
-                    ignorados += 1
-                    continue
-            
-            novos_dados.append({
-                'ativo': ativo,
-                'data': data,
-                'preco': preco,
-                'data_insercao': data_insercao
-            })
-            inseridos += 1
-            
-            if data_historico_inicial is None or data < data_historico_inicial:
-                data_historico_inicial = data
-        
-        # Combinar e salvar
-        if novos_dados:
-            df_novo = pd.DataFrame(novos_dados)
-            df_combinado = pd.concat([df_existente, df_novo], ignore_index=True)
-            df_combinado = df_combinado.drop_duplicates(subset=['ativo', 'data'], keep='last')
-            df_combinado = df_combinado.sort_values('data')
-            df_combinado.to_parquet(parquet_file, index=False, compression='snappy')
-        
-        # Atualizar rastreamento
-        if atualizar_rastreado and inseridos > 0:
-            self.registrar_ativo_rastreado(ativo, data_historico_inicial)
-        
-        return {'inseridos': inseridos, 'ignorados': ignorados, 'ids': []}
-    
     def obter_valores_diarios_ativo(self, ativo, data_inicio=None, data_fim=None):
-        """Obtém valores diários de um ativo"""
-        parquet_file = self.valores_diarios_path / ativo / "data.parquet"
+        """
+        Obtém valores diários de um ativo diretamente do CoinGecko
+        (não duplica dados, lê da fonte original)
+        """
+        # Buscar coingecko_id do ativo
+        ativo_info = self.obter_ativo(ativo)
+        if not ativo_info or not ativo_info.get('coingecko_id'):
+            return []  # Ativo não tem coingecko_id
         
-        if not parquet_file.exists():
-            return []
+        coingecko_id = ativo_info['coingecko_id']
         
-        df = pd.read_parquet(parquet_file)
+        # Usar ValorDiarioService para ler diretamente do CoinGecko
+        from services.valor_diario_service import ValorDiarioService
         
-        if data_inicio:
-            df = df[df['data'] >= data_inicio]
-        if data_fim:
-            df = df[df['data'] <= data_fim]
+        valores = ValorDiarioService.ler_valores_do_coingecko(
+            coingecko_id=coingecko_id,
+            data_inicio=data_inicio,
+            data_fim=data_fim
+        )
         
-        df = df.sort_values('data')
-        return [tuple(row) for row in df[['data', 'preco']].values]
+        # Converter para formato esperado (lista de tuplas)
+        return [(v['data'], v['preco']) for v in valores]
 

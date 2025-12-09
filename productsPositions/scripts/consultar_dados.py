@@ -20,13 +20,13 @@ def main():
     
     # Listar produtos disponíveis
     produtos = repo.listar_produtos()
-    if produtos.empty:
+    if not produtos:
         print("❌ Nenhum produto encontrado.")
         return
     
     print("Produtos disponíveis:")
-    for _, row in produtos.iterrows():
-        print(f"  ID: {row['id']} - {row['nome']} ({row['tipo']})")
+    for produto_dict in produtos:
+        print(f"  ID: {produto_dict['id']} - {produto_dict['nome']} ({produto_dict['tipo']})")
     
     produto_id = obter_input("\nID do produto: ", tipo=int, obrigatorio=True)
     

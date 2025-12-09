@@ -18,13 +18,13 @@ def main():
     
     # Listar produtos disponíveis
     produtos = repo.listar_produtos()
-    if produtos.empty:
+    if not produtos:
         print("❌ Nenhum produto encontrado. Crie um produto primeiro usando criar_produto.py")
         return None
     
     print("Produtos disponíveis:")
-    for _, row in produtos.iterrows():
-        print(f"  ID: {row['id']} - {row['nome']} ({row['tipo']})")
+    for produto_dict in produtos:
+        print(f"  ID: {produto_dict['id']} - {produto_dict['nome']} ({produto_dict['tipo']})")
     
     produto_id = obter_input("\nID do produto: ", tipo=int, obrigatorio=True)
     
@@ -72,24 +72,20 @@ def main():
     print(f"   Side: {side}")
     print(f"   Preço de entrada: ${preco_entrada:.2f}")
     
-    # Importar valores diários do CoinGecko se fornecido
+    # Verificar se dados do CoinGecko estão disponíveis
     if coingecko_id:
-        imprimir_secao("IMPORTANDO VALORES DIÁRIOS")
-        print(f"📥 Importando valores diários do CoinGecko para {ativo}...")
+        imprimir_secao("VERIFICANDO DADOS DO COINGECKO")
+        print(f"📥 Verificando disponibilidade de dados do CoinGecko para {ativo}...")
         try:
-            resultado_import = ValorDiarioService.importar_do_coingecko(
-                ativo=ativo,
-                coingecko_id=coingecko_id
-            )
-            if resultado_import.get('inseridos', 0) > 0:
-                print(f"✅ {resultado_import['inseridos']} valores importados do CoinGecko")
-            elif resultado_import.get('mensagem'):
-                print(f"⚠️  {resultado_import['mensagem']}")
+            valores = ValorDiarioService.ler_valores_do_coingecko(coingecko_id)
+            if valores:
+                print(f"✅ {len(valores)} valores disponíveis no CoinGecko")
+                print(f"   Os valores serão lidos diretamente da fonte quando necessário")
             else:
-                print(f"ℹ️  Valores já existiam ou nenhum dado encontrado")
+                print(f"⚠️  Nenhum dado encontrado para {coingecko_id}")
+                print(f"   Verifique se o arquivo existe em: data_parquet/crypto_data/coingecko/{coingecko_id}/data.parquet")
         except Exception as e:
-            print(f"⚠️  Não foi possível importar do CoinGecko: {str(e)}")
-            print("   (Isso é normal se o arquivo não existir ainda)")
+            print(f"⚠️  Erro ao verificar dados do CoinGecko: {str(e)}")
     
     return posicao_id
 
