@@ -9,6 +9,7 @@ from services.carteira_service import CarteiraService
 from storage.parquet_repo import ParquetRepo
 from analytics.queries import carteira_do_produto, resumo_completo_produto
 from utils.cli_utils import obter_input, imprimir_titulo, imprimir_secao
+import pandas as pd
 
 def main():
     imprimir_titulo("CRIAR/ATUALIZAR CARTEIRA")
@@ -35,7 +36,7 @@ def main():
     
     imprimir_secao("OPÇÕES DE CRIAÇÃO")
     print("1. Criar carteira manualmente")
-    print("2. Preencher carteira automaticamente (requer preço atual)")
+    print("2. Preencher carteira automaticamente (busca preços do CoinGecko)")
     print("3. Criar carteira com capital inicial e recalcular tudo")
     
     opcao = obter_input("\nEscolha uma opção (1/2/3): ", opcoes=["1", "2", "3"], obrigatorio=True)
@@ -64,18 +65,22 @@ def main():
             print("❌ Nenhuma posição aberta encontrada!")
             return None
         
-        print("Posições abertas:")
-        preco_atual_por_posicao = {}
+        print("Posições abertas encontradas:")
         for _, row in posicoes.iterrows():
-            preco = obter_input(f"Preço atual do {row['ativo']} (ID {row['id']}): ", tipo=float, obrigatorio=True)
-            preco_atual_por_posicao[row['id']] = preco
+            coingecko_id = row.get('coingecko_id') if pd.notna(row.get('coingecko_id')) else None
+            if coingecko_id:
+                print(f"  - {row['ativo']} (ID {row['id']}) - CoinGecko: {coingecko_id}")
+            else:
+                print(f"  - {row['ativo']} (ID {row['id']}) - ⚠️  Sem CoinGecko ID")
         
+        print("\n📥 Buscando preços atuais do CoinGecko...")
+        # Deixar None para buscar automaticamente
         carteira = CarteiraService.preencher_carteira(
             produto_id=produto_id,
-            preco_atual_por_posicao=preco_atual_por_posicao
+            preco_atual_por_posicao=None  # Busca automática
         )
         repo.salvar_carteira(carteira)
-        print("✅ Carteira preenchida automaticamente")
+        print("✅ Carteira preenchida automaticamente com preços do CoinGecko")
     
     elif opcao == "3":
         imprimir_secao("CRIAR CARTEIRA COM CAPITAL INICIAL")
@@ -88,19 +93,23 @@ def main():
             print("❌ Nenhuma posição aberta encontrada!")
             return None
         
-        print("\nPosições abertas:")
-        preco_atual_por_posicao = {}
+        print("\nPosições abertas encontradas:")
         for _, row in posicoes.iterrows():
-            preco = obter_input(f"Preço atual do {row['ativo']} (ID {row['id']}): ", tipo=float, obrigatorio=True)
-            preco_atual_por_posicao[row['id']] = preco
+            coingecko_id = row.get('coingecko_id') if pd.notna(row.get('coingecko_id')) else None
+            if coingecko_id:
+                print(f"  - {row['ativo']} (ID {row['id']}) - CoinGecko: {coingecko_id}")
+            else:
+                print(f"  - {row['ativo']} (ID {row['id']}) - ⚠️  Sem CoinGecko ID")
         
+        print("\n📥 Buscando preços atuais do CoinGecko...")
+        # Deixar None para buscar automaticamente
         carteira = CarteiraService.atualizar_carteira_com_capital_inicial(
             produto_id=produto_id,
             capital_inicial=capital_inicial,
-            preco_atual_por_posicao=preco_atual_por_posicao
+            preco_atual_por_posicao=None  # Busca automática
         )
         repo.salvar_carteira(carteira)
-        print("✅ Carteira criada com capital inicial")
+        print("✅ Carteira criada com capital inicial (preços do CoinGecko)")
     
     # Mostrar resumo
     mostrar_resumo = obter_input("\nDeseja ver o resumo da carteira? (s/n): ", opcoes=["s", "n", "S", "N"], obrigatorio=True).lower()
