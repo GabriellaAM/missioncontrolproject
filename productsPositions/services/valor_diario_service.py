@@ -1,5 +1,11 @@
 from pathlib import Path
 import pandas as pd
+import requests
+import os
+from dotenv import load_dotenv
+
+# Carregar variáveis de ambiente
+load_dotenv()
 
 # Serviço responsável por gerenciar valores diários de ativos
 class ValorDiarioService:
@@ -77,4 +83,54 @@ class ValorDiarioService:
         except Exception as e:
             # Retornar lista vazia em caso de erro (não quebrar o fluxo)
             return []
+    
+    @staticmethod
+    def obter_preco_atual(coingecko_id):
+        """
+        Obtém o preço atual de um ativo via API do CoinGecko
+        
+        Args:
+            coingecko_id: ID do CoinGecko (ex: "bitcoin")
+        
+        Returns:
+            float ou None: Preço atual em USD, ou None se não conseguir buscar
+        """
+        if not coingecko_id:
+            return None
+        
+        api_key = os.getenv('GECKO_API_KEY')
+        if not api_key:
+            # Tentar buscar do arquivo Parquet como fallback
+            valores = ValorDiarioService.ler_valores_do_coingecko(coingecko_id)
+            if valores:
+                return valores[-1]['preco']  # Último preço disponível
+            return None
+        
+        try:
+            url = 'https://pro-api.coingecko.com/api/v3/simple/price'
+            params = {
+                'vs_currencies': 'usd',
+                'ids': coingecko_id
+            }
+            headers = {
+                'x-cg-pro-api-key': api_key
+            }
+            
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            if coingecko_id in data and 'usd' in data[coingecko_id]:
+                return float(data[coingecko_id]['usd'])
+            
+            return None
+            
+        except requests.exceptions.RequestException:
+            # Se falhar a API, tentar buscar do Parquet como fallback
+            valores = ValorDiarioService.ler_valores_do_coingecko(coingecko_id)
+            if valores:
+                return valores[-1]['preco']  # Último preço disponível
+            return None
+        except Exception:
+            return None
 

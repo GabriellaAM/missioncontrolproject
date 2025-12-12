@@ -1,18 +1,39 @@
 import pandas as pd
 from pathlib import Path
 from storage.sqlite_repo import SQLiteRepo
+from services.valor_diario_service import ValorDiarioService
 
 # Queries usando SQLite
 
 def posicoes_abertas(produto_id=None):
-    """Retorna posições abertas"""
+    """Retorna posições abertas com preço atual"""
     repo = SQLiteRepo()
-    return repo.carregar_posicoes_abertas(produto_id)
+    df = repo.carregar_posicoes_abertas(produto_id)
+    
+    # Adicionar preço atual para posições abertas
+    if not df.empty:
+        precos_atuais = []
+        for _, row in df.iterrows():
+            coingecko_id = row.get('coingecko_id')
+            if pd.notna(coingecko_id) and coingecko_id:
+                preco_atual = ValorDiarioService.obter_preco_atual(coingecko_id)
+                precos_atuais.append(preco_atual)
+            else:
+                precos_atuais.append(None)
+        df['preco_atual'] = precos_atuais
+    
+    return df
 
 def posicoes_fechadas(produto_id=None):
-    """Retorna posições fechadas"""
+    """Retorna posições fechadas (preço atual = preço_saida para histórico)"""
     repo = SQLiteRepo()
-    return repo.carregar_posicoes_fechadas(produto_id)
+    df = repo.carregar_posicoes_fechadas(produto_id)
+    
+    # Para posições fechadas, preço_atual = preço_saida (já está no histórico)
+    if not df.empty:
+        df['preco_atual'] = df['preco_saida']
+    
+    return df
 
 def valores_do_ativo(ativo, data_inicio=None, data_fim=None):
     """Retorna valores diários de um ativo"""
@@ -47,12 +68,16 @@ def alocacoes_do_produto(produto_id):
 def alocacoes_da_posicao(posicao_id):
     """Retorna alocações de uma posição específica"""
     repo = SQLiteRepo()
-    with repo._get_connection() as conn:
+    import sqlite3
+    conn = sqlite3.connect(repo.db_path)
+    try:
         df = pd.read_sql_query("""
             SELECT * FROM alocacoes 
             WHERE posicao_id = ? AND status = 'active'
         """, conn, params=(posicao_id,))
-    return df
+        return df
+    finally:
+        conn.close()
 
 def resumo_alocacoes(produto_id):
     """Resumo de alocações com informações de posições"""

@@ -46,8 +46,11 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         print("Nenhuma posição aberta encontrada")
         return df
     
-    if formatar and 'preco_entrada' in df.columns:
-        df['preco_entrada'] = df['preco_entrada'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+    if formatar:
+        if 'preco_entrada' in df.columns:
+            df['preco_entrada'] = df['preco_entrada'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+        if 'preco_atual' in df.columns:
+            df['preco_atual'] = df['preco_atual'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "N/A")
     
     return df
 

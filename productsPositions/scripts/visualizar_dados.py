@@ -284,7 +284,8 @@ def main():
         
         elif opcao == "2":
             imprimir_secao("POSIÇÕES ABERTAS")
-            df = display_posicoes_abertas(produto_id, formatar=False)
+            # Usar formatar=True para incluir preco_atual formatado
+            df = display_posicoes_abertas(produto_id, formatar=True)
             if df is not None and not df.empty:
                 print("\n📊 DataFrame criado com sucesso!")
                 print(f"   Total de posições: {len(df)}")
