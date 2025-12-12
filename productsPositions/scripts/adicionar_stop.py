@@ -5,14 +5,14 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from storage.parquet_repo import ParquetRepo
+from storage.sqlite_repo import SQLiteRepo
 from analytics.queries import posicoes_abertas, posicoes_fechadas
 from utils.cli_utils import obter_input, validar_data, imprimir_titulo, imprimir_secao
 
 def main():
     imprimir_titulo("ADICIONAR STOP A POSIÇÃO EXISTENTE")
     
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     
     # Listar posições (abertas e fechadas)
     imprimir_secao("POSIÇÕES DISPONÍVEIS")
@@ -52,15 +52,16 @@ def main():
     
     imprimir_secao("DADOS DA POSIÇÃO")
     print(f"✅ Posição encontrada:")
-    print(f"   Ativo: {posicao.ativo}")
-    print(f"   Side: {posicao.side}")
-    print(f"   Data entrada: {posicao.data_entrada}")
-    print(f"   Preço entrada: ${posicao.preco_entrada:.2f}")
+    print(f"   Ativo: {posicao['ativo']}")
+    print(f"   Side: {posicao['side']}")
+    print(f"   Data entrada: {posicao['data_entrada']}")
+    print(f"   Preço entrada: ${posicao['preco_entrada']:.2f}")
     
     # Mostrar stops existentes
-    if posicao.stops:
+    stops = posicao.get('stops', [])
+    if stops:
         print(f"\n📋 Stops existentes:")
-        for stop in posicao.stops:
+        for stop in stops:
             print(f"   {stop['data']}: ${stop['valor']:.2f}")
     else:
         print("\n📋 Nenhum stop cadastrado ainda.")
@@ -82,10 +83,12 @@ def main():
         
         # Mostrar stops atualizados
         posicao_atualizada = repo.carregar_posicao(posicao_id)
-        if posicao_atualizada and posicao_atualizada.stops:
-            print(f"\n📋 Histórico completo de stops:")
-            for stop in posicao_atualizada.stops:
-                print(f"   {stop['data']}: ${stop['valor']:.2f}")
+        if posicao_atualizada:
+            stops = posicao_atualizada.get('stops', [])
+            if stops:
+                print(f"\n📋 Histórico completo de stops:")
+                for stop in stops:
+                    print(f"   {stop['data']}: ${stop['valor']:.2f}")
     else:
         print("\n❌ Operação cancelada.")
 

@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from analytics.queries import *
-from storage.parquet_repo import ParquetRepo
+from storage.sqlite_repo import SQLiteRepo
 
 def display_produtos():
     """
@@ -19,7 +19,7 @@ def display_produtos():
     Returns:
         pd.DataFrame: DataFrame com todos os produtos
     """
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     produtos = repo.listar_produtos()
     
     if not produtos:

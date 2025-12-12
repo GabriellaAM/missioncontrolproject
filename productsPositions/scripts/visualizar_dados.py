@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from analytics.notebook_utils import *
 from analytics.charts import *
-from storage.parquet_repo import ParquetRepo
+from storage.sqlite_repo import SQLiteRepo
 from utils.cli_utils import obter_input, imprimir_titulo, imprimir_secao
 import pandas as pd
 
@@ -226,7 +226,7 @@ def exibir_dataframe_html(df, titulo="DataFrame"):
 def main():
     imprimir_titulo("VISUALIZAÇÃO DE DADOS")
     
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     
     # Listar produtos disponíveis
     produtos = repo.listar_produtos()

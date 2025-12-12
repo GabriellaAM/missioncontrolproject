@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from domain.tipo import Tipo
 from domain.produto import Produto
-from storage.parquet_repo import ParquetRepo
+from storage.sqlite_repo import SQLiteRepo
 from utils.cli_utils import obter_input, validar_data, imprimir_titulo
 
 def main():
@@ -18,7 +18,7 @@ def main():
     data_inicio = validar_data(data_inicio, "Data de início")
     
     # Listar tipos disponíveis
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     tipos_disponiveis = repo.listar_tipos()
     if tipos_disponiveis:
         print(f"\nTipos disponíveis: {', '.join(tipos_disponiveis)}")

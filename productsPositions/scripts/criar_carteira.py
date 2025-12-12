@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from services.carteira_service import CarteiraService
-from storage.parquet_repo import ParquetRepo
+from storage.sqlite_repo import SQLiteRepo
 from analytics.queries import carteira_do_produto, resumo_completo_produto
 from utils.cli_utils import obter_input, imprimir_titulo, imprimir_secao
 import pandas as pd
@@ -14,7 +14,7 @@ import pandas as pd
 def main():
     imprimir_titulo("CRIAR/ATUALIZAR CARTEIRA")
     
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     
     # Listar produtos disponíveis
     produtos = repo.listar_produtos()

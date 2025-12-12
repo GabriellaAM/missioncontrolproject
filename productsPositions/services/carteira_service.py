@@ -1,6 +1,6 @@
 from domain.carteira import Carteira
 from domain.produto import Produto
-from storage.parquet_repo import ParquetRepo
+from storage.sqlite_repo import SQLiteRepo
 from services.calculadora import Calculadora
 from services.valor_diario_service import ValorDiarioService
 from datetime import datetime
@@ -88,7 +88,7 @@ class CarteiraService:
         if not isinstance(produto_id, int) or produto_id <= 0:
             raise ValueError("produto_id deve ser um inteiro positivo")
         
-        repo = ParquetRepo()
+        repo = SQLiteRepo()
         
         # Buscar todas as alocações ativas do produto
         df_alocacoes = repo.carregar_alocacoes_ativas(produto_id)

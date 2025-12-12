@@ -1,22 +1,22 @@
 import pandas as pd
 from pathlib import Path
-from storage.parquet_repo import ParquetRepo
+from storage.sqlite_repo import SQLiteRepo
 
-# Queries usando Parquet (substituiu SQLite)
+# Queries usando SQLite
 
 def posicoes_abertas(produto_id=None):
     """Retorna posições abertas"""
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     return repo.carregar_posicoes_abertas(produto_id)
 
 def posicoes_fechadas(produto_id=None):
     """Retorna posições fechadas"""
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     return repo.carregar_posicoes_fechadas(produto_id)
 
 def valores_do_ativo(ativo, data_inicio=None, data_fim=None):
     """Retorna valores diários de um ativo"""
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     valores = repo.obter_valores_diarios_ativo(ativo, data_inicio, data_fim)
     
     if not valores:
@@ -26,62 +26,53 @@ def valores_do_ativo(ativo, data_inicio=None, data_fim=None):
 
 def valores_da_posicao(posicao_id):
     """Retorna valores diários de uma posição (via JOIN com ativo)"""
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     
     # Carregar posição para obter o ativo
-    df_posicoes = repo._carregar_df(repo.posicoes_path)
-    posicao = df_posicoes[df_posicoes['id'] == posicao_id]
+    posicao = repo.carregar_posicao(posicao_id)
     
-    if posicao.empty:
+    if not posicao:
         return pd.DataFrame()
     
-    ativo = posicao.iloc[0]['ativo']
+    ativo = posicao['ativo']
     
     # Retornar valores do ativo
     return valores_do_ativo(ativo)
 
 def alocacoes_do_produto(produto_id):
     """Retorna alocações ativas de um produto"""
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     return repo.carregar_alocacoes_ativas(produto_id)
 
 def alocacoes_da_posicao(posicao_id):
     """Retorna alocações de uma posição específica"""
-    repo = ParquetRepo()
-    df_alocacoes = repo._carregar_df(repo.alocacoes_path)
-    resultado = df_alocacoes[
-        (df_alocacoes['posicao_id'] == posicao_id) & 
-        (df_alocacoes['status'] == 'active')
-    ]
-    return resultado
+    repo = SQLiteRepo()
+    with repo._get_connection() as conn:
+        df = pd.read_sql_query("""
+            SELECT * FROM alocacoes 
+            WHERE posicao_id = ? AND status = 'active'
+        """, conn, params=(posicao_id,))
+    return df
 
 def resumo_alocacoes(produto_id):
     """Resumo de alocações com informações de posições"""
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     
-    # Carregar alocações
-    df_alocacoes = repo.carregar_alocacoes_ativas(produto_id)
+    # Carregar alocações com JOIN direto no SQL
+    with repo._get_connection() as conn:
+        df = pd.read_sql_query("""
+            SELECT a.*, p.ativo, p.side
+            FROM alocacoes a
+            INNER JOIN posicoes p ON a.posicao_id = p.id
+            WHERE a.produto_id = ? AND a.status = 'active'
+            ORDER BY a.percentual DESC
+        """, conn, params=(produto_id,))
     
-    if df_alocacoes.empty:
-        return pd.DataFrame()
-    
-    # Carregar posições
-    df_posicoes = repo._carregar_df(repo.posicoes_path)
-    
-    # Fazer JOIN
-    resultado = df_alocacoes.merge(
-        df_posicoes[['id', 'ativo', 'side']],
-        left_on='posicao_id',
-        right_on='id',
-        suffixes=('', '_posicao')
-    )
-    
-    resultado = resultado.sort_values('percentual', ascending=False)
-    return resultado
+    return df
 
 def carteira_do_produto(produto_id):
     """Retorna carteira de um produto"""
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     carteira = repo.carregar_carteira(produto_id)
     
     if carteira:
@@ -97,7 +88,7 @@ def carteira_do_produto(produto_id):
 
 def resumo_completo_produto(produto_id):
     """Resumo completo: produto + carteira"""
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     
     # Carregar produto
     produto = repo.carregar_produto(produto_id)

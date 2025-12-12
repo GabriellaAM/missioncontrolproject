@@ -6,14 +6,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from services.alocacao_service import AlocacaoService
-from storage.parquet_repo import ParquetRepo
+from storage.sqlite_repo import SQLiteRepo
 from analytics.queries import alocacoes_do_produto, resumo_alocacoes
 from utils.cli_utils import obter_input, validar_data, imprimir_titulo, imprimir_secao
 
 def main():
     imprimir_titulo("CRIAR ALOCAÇÃO")
     
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     
     # Listar produtos disponíveis
     produtos = repo.listar_produtos()
@@ -76,7 +76,7 @@ def main():
     alocacao_id = repo.salvar_alocacao(produto_id, alocacao)
     
     print(f"\n✅ Alocação criada com ID: {alocacao_id}")
-    print(f"   Posição: {posicao.ativo} ({posicao.side})")
+    print(f"   Posição: {posicao['ativo']} ({posicao['side']})")
     print(f"   Percentual: {percentual}%")
     if valor_usd:
         print(f"   Valor: ${valor_usd:.2f}")

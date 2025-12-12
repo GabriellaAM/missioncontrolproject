@@ -61,7 +61,7 @@ Visualiza dados do sistema com tabelas formatadas e gráficos interativos:
 productsPositions/
 ├── domain/          # Entidades do domínio
 ├── services/        # Lógica de negócio
-├── storage/         # Persistência (Parquet)
+├── storage/         # Persistência (SQLite)
 ├── analytics/       # Consultas e análises
 ├── utils/           # Utilitários compartilhados
 └── scripts/         # Scripts CLI
@@ -85,10 +85,12 @@ productsPositions/
 
 ## Dados
 
-Todos os dados são armazenados em Parquet em:
+Todos os dados são armazenados em SQLite em:
 ```
-data_parquet/products_positions/
+productsPositions/data/products_positions.db
 ```
+
+**Nota:** Os valores diários de preços continuam sendo lidos de `data_parquet/crypto_data/coingecko/{coingecko_id}/data.parquet` (não são duplicados no SQLite).
 
 ## Análise em Notebooks Jupyter
 

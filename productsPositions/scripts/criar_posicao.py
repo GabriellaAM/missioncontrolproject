@@ -7,14 +7,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from services.posicao_service import PosicaoService
 from services.valor_diario_service import ValorDiarioService
-from storage.parquet_repo import ParquetRepo
+from storage.sqlite_repo import SQLiteRepo
 from domain.produto import Produto
 from utils.cli_utils import obter_input, validar_data, imprimir_titulo, imprimir_secao
 
 def main():
     imprimir_titulo("CRIAR POSIÇÃO")
     
-    repo = ParquetRepo()
+    repo = SQLiteRepo()
     
     # Listar produtos disponíveis
     produtos = repo.listar_produtos()
