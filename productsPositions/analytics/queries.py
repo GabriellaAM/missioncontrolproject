@@ -5,13 +5,80 @@ from services.valor_diario_service import ValorDiarioService
 
 # Queries usando SQLite
 
-def posicoes_abertas(produto_id=None):
-    """Retorna posições abertas com preço atual"""
-    repo = SQLiteRepo()
-    df = repo.carregar_posicoes_abertas(produto_id)
+def calcular_rr(preco_atual, alvo2, stop_atual):
+    """
+    Calcula o Risk/Reward ratio dinamicamente usando alvo2 e stop atual.
     
-    # Adicionar preço atual para posições abertas
+    Fórmula:
+      RR = |(alvo2 / preco_atual - 1)| / |(stop_atual / preco_atual - 1)|
+    
+    Args:
+        preco_atual: Preço atual (ou de saída) do ativo
+        alvo2: Segundo alvo de preço (Target 2)
+        stop_atual: Último valor de stop da posição (ou stop de referência)
+    
+    Returns:
+        float ou None: RR calculado (sempre positivo) ou None se não for possível calcular
+    """
+    if pd.isna(preco_atual) or pd.isna(alvo2) or pd.isna(stop_atual):
+        return None
+    
+    if preco_atual == 0:
+        return None
+    
+    # % até o alvo2 (ganho potencial)
+    pct_alvo2 = abs((alvo2 / preco_atual) - 1)
+    # % até o stop (perda potencial)
+    pct_stop = abs((stop_atual / preco_atual) - 1)
+    
+    if pct_stop == 0:
+        return None
+    
+    rr = pct_alvo2 / pct_stop
+    return round(rr, 2)
+
+def posicoes_abertas(produto_id=None):
+    """Retorna posições abertas com preço atual e atributos do produto"""
+    repo = SQLiteRepo()
+    
+    import sqlite3
+    conn = sqlite3.connect(repo.db_path)
+    try:
+        if produto_id:
+            if produto_id == 4970919917:
+                # Produto Crypto Signals: incluir atributos específicos
+                query = """
+                    SELECT p.*, 
+                           a.motivo, a.perfil, a.alvo1, a.alvo2
+                    FROM posicoes p
+                    LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                    WHERE p.status = 'open' AND p.produto_id = ?
+                """
+                df = pd.read_sql_query(query, conn, params=(produto_id,))
+            else:
+                # Outros produtos: não incluir colunas específicas do Signals
+                query = """
+                    SELECT p.*
+                    FROM posicoes p
+                    WHERE p.status = 'open' AND p.produto_id = ?
+                """
+                df = pd.read_sql_query(query, conn, params=(produto_id,))
+        else:
+            # Sem filtro de produto: incluir atributos quando existirem (pode misturar produtos)
+            query = """
+                SELECT p.*, 
+                       a.motivo, a.perfil, a.alvo1, a.alvo2
+                FROM posicoes p
+                LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                WHERE p.status = 'open'
+            """
+            df = pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
+    
+    # Adicionar preço atual, stop atual, RR e PnL dinamicamente para posições abertas
     if not df.empty:
+        # Primeiro, calcular preço atual para todas as posições
         precos_atuais = []
         for _, row in df.iterrows():
             coingecko_id = row.get('coingecko_id')
@@ -19,21 +86,283 @@ def posicoes_abertas(produto_id=None):
                 preco_atual = ValorDiarioService.obter_preco_atual(coingecko_id)
                 precos_atuais.append(preco_atual)
             else:
+                preco_atual = None
                 precos_atuais.append(None)
+
         df['preco_atual'] = precos_atuais
+
+        # Se for o produto Crypto Signals, calcular stop_atual, RR e PnL
+        if produto_id == 4970919917 or (produto_id is None and 'alvo2' in df.columns):
+            stops_atuais = []
+            rrs = []
+            pnls = []
+            
+            # Buscar stops de todas as posições de uma vez (mais eficiente)
+            posicao_ids = df['id'].tolist()
+            stops_map = {}
+            if posicao_ids:
+                import sqlite3
+                conn_stops = sqlite3.connect(repo.db_path)
+                try:
+                    for pos_id in posicao_ids:
+                        df_stops = pd.read_sql_query(
+                            "SELECT valor FROM stops WHERE posicao_id = ? ORDER BY data DESC LIMIT 1",
+                            conn_stops,
+                            params=(pos_id,)
+                        )
+                        if not df_stops.empty:
+                            stops_map[pos_id] = df_stops.iloc[0]['valor']
+                finally:
+                    conn_stops.close()
+            
+            for _, row in df.iterrows():
+                posicao_id = row.get('id')
+                stop_atual = stops_map.get(posicao_id) if posicao_id else None
+                stops_atuais.append(stop_atual)
+                
+                preco_atual = row.get('preco_atual')
+                alvo2 = row.get('alvo2') if 'alvo2' in df.columns else None
+                # RR: |(alvo2/preco_atual - 1)| / |(stop_atual/preco_atual - 1)|
+                rr = calcular_rr(preco_atual, alvo2, stop_atual) if preco_atual is not None else None
+                rrs.append(rr)
+
+                # PnL: ((preco_atual / preco_entrada) - 1) * 100 apenas para Crypto Signals
+                preco_entrada = row.get('preco_entrada')
+                eh_signals = (produto_id == 4970919917) or (produto_id is None and row.get('produto_id') == 4970919917)
+                if eh_signals and preco_atual is not None and pd.notna(preco_entrada) and preco_entrada not in (0,):
+                    try:
+                        pnl = ((preco_atual / preco_entrada) - 1) * 100.0
+                    except ZeroDivisionError:
+                        pnl = None
+                else:
+                    pnl = None
+                pnls.append(pnl)
+            
+            df['stop_atual'] = stops_atuais
+            df['rr'] = rrs
+            df['pnl'] = pnls
     
     return df
 
 def posicoes_fechadas(produto_id=None):
-    """Retorna posições fechadas (preço atual = preço_saida para histórico)"""
+    """Retorna posições fechadas com atributos do produto"""
     repo = SQLiteRepo()
-    df = repo.carregar_posicoes_fechadas(produto_id)
     
-    # Para posições fechadas, preço_atual = preço_saida (já está no histórico)
+    import sqlite3
+    conn = sqlite3.connect(repo.db_path)
+    try:
+        if produto_id:
+            if produto_id == 4970919917:
+                # Produto Crypto Signals: incluir atributos específicos
+                query = """
+                    SELECT p.*, 
+                           a.motivo, a.perfil, a.alvo1, a.alvo2
+                    FROM posicoes p
+                    LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                    WHERE p.status = 'closed' AND p.produto_id = ?
+                """
+                df = pd.read_sql_query(query, conn, params=(produto_id,))
+            else:
+                # Outros produtos: não incluir colunas específicas do Signals
+                query = """
+                    SELECT p.*
+                    FROM posicoes p
+                    WHERE p.status = 'closed' AND p.produto_id = ?
+                """
+                df = pd.read_sql_query(query, conn, params=(produto_id,))
+        else:
+            # Sem filtro de produto: incluir atributos quando existirem
+            query = """
+                SELECT p.*, 
+                       a.motivo, a.perfil, a.alvo1, a.alvo2
+                FROM posicoes p
+                LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                WHERE p.status = 'closed'
+            """
+            df = pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
+    
+    # Para posições fechadas, preço_atual = preço_saida
+    # Calcular RR e PnL para Crypto Signals (produto_id 4970919917)
     if not df.empty:
         df['preco_atual'] = df['preco_saida']
+        
+        rrs = []
+        pnls = []
+        for _, row in df.iterrows():
+            eh_signals = (produto_id == 4970919917) or (produto_id is None and row.get('produto_id') == 4970919917)
+            preco_entrada = row.get('preco_entrada')
+            preco_saida = row.get('preco_saida')
+            preco_atual = row.get('preco_atual')
+            alvo2 = row.get('alvo2') if 'alvo2' in df.columns else None
+            stop_ref = row.get('alvo1') if 'alvo1' in df.columns else None
+
+            # RR apenas para Crypto Signals e se tivermos dados suficientes
+            if eh_signals and preco_atual is not None and not pd.isna(alvo2) and not pd.isna(stop_ref):
+                rr = calcular_rr(preco_atual, alvo2, stop_ref)
+            else:
+                rr = None
+            rrs.append(rr)
+
+            # PnL: ((preco_saida / preco_entrada) - 1) * 100, apenas para Crypto Signals
+            if eh_signals and preco_saida is not None and not pd.isna(preco_entrada) and preco_entrada not in (0,):
+                try:
+                    pnl = ((preco_saida / preco_entrada) - 1) * 100.0
+                except ZeroDivisionError:
+                    pnl = None
+            else:
+                pnl = None
+            pnls.append(pnl)
+
+        df['rr'] = rrs
+        df['pnl'] = pnls
     
     return df
+
+
+def manutencoes_signals(produto_id=4970919917):
+    """
+    Retorna as manutenções (stops adicionais) das posições abertas do produto Crypto Signals.
+
+    Cada linha representa um stop de manutenção (a partir do segundo stop) de uma posição aberta.
+
+    Colunas retornadas:
+        - posicao_id
+        - data_manutencao (data do stop)
+        - ativo
+        - side
+        - perfil
+        - preco_entrada
+        - preco_atual (preço atual do ativo)
+        - pnl (%)
+        - alvo1
+        - alvo2
+        - stop_valor (valor do stop desta manutenção)
+        - rr (RR calculado com base no stop da linha)
+    """
+    # Garantir que é o produto Crypto Signals
+    if produto_id != 4970919917:
+        return pd.DataFrame(columns=[
+            'posicao_id', 'data_manutencao', 'ativo', 'side', 'perfil',
+            'preco_entrada', 'preco_atual', 'pnl', 'alvo1', 'alvo2',
+            'stop_valor', 'rr'
+        ])
+
+    repo = SQLiteRepo()
+    import sqlite3
+    conn = sqlite3.connect(repo.db_path)
+
+    try:
+        # Selecionar todas as posições abertas do produto e seus stops (exceto o primeiro stop)
+        query = """
+            SELECT 
+                p.id          AS posicao_id,
+                s.data        AS data_manutencao,
+                p.ativo,
+                p.side,
+                a.perfil,
+                p.preco_entrada,
+                p.coingecko_id,
+                a.alvo1,
+                a.alvo2,
+                s.valor       AS stop_valor
+            FROM posicoes p
+            JOIN stops s 
+                ON s.posicao_id = p.id
+            LEFT JOIN posicao_atributos_produto a 
+                ON a.posicao_id = p.id
+            WHERE 
+                p.produto_id = ?
+                AND p.status = 'open'
+                -- Apenas manutenções (ignora o primeiro stop da posição)
+                AND s.data > (
+                    SELECT MIN(s2.data) 
+                    FROM stops s2 
+                    WHERE s2.posicao_id = p.id
+                )
+            ORDER BY p.id, s.data
+        """
+        df = pd.read_sql_query(query, conn, params=(produto_id,))
+    finally:
+        conn.close()
+
+    if df.empty:
+        return df
+
+    # Calcular preço atual por ativo (coingecko_id) de forma eficiente
+    precos_atuais_map = {}
+    coingeckos_unicos = df['coingecko_id'].dropna().unique()
+    for cid in coingeckos_unicos:
+        try:
+            precos_atuais_map[cid] = ValorDiarioService.obter_preco_atual(cid)
+        except Exception:
+            precos_atuais_map[cid] = None
+
+    df['preco_atual'] = df['coingecko_id'].map(precos_atuais_map)
+
+    # Calcular PnL: ((preco_atual / preco_entrada) - 1) * 100
+    def _calc_pnl(row):
+        pe = row.get('preco_entrada')
+        pa = row.get('preco_atual')
+        if pd.isna(pe) or pe in (0, None) or pd.isna(pa):
+            return None
+        try:
+            return (pa / pe - 1.0) * 100.0
+        except ZeroDivisionError:
+            return None
+
+    df['pnl'] = df.apply(_calc_pnl, axis=1)
+
+    # Calcular RR para cada manutenção usando alvo2 e stop_valor
+    def _calc_rr_row(row):
+        pa = row.get('preco_atual')
+        a2 = row.get('alvo2')
+        sv = row.get('stop_valor')
+        return calcular_rr(pa, a2, sv) if pa is not None else None
+
+    df['rr'] = df.apply(_calc_rr_row, axis=1)
+
+    # Selecionar apenas as colunas desejadas e remover coingecko_id
+    colunas = [
+        'posicao_id', 'data_manutencao', 'ativo', 'side', 'perfil',
+        'preco_entrada', 'preco_atual', 'pnl', 'alvo1', 'alvo2',
+        'stop_valor', 'rr'
+    ]
+    colunas_existentes = [c for c in colunas if c in df.columns]
+    return df[colunas_existentes]
+
+
+def historico_posicoes(produto_id=None):
+    """
+    Retorna um histórico consolidado de posições (abertas + fechadas)
+    para um produto, ordenado pela data de entrada.
+    """
+    # Posições abertas e fechadas já trazem preço atual, RR, PnL etc.
+    df_abertas = posicoes_abertas(produto_id)
+    df_fechadas = posicoes_fechadas(produto_id)
+
+    frames = []
+    if df_abertas is not None and not df_abertas.empty:
+        frames.append(df_abertas.copy())
+    if df_fechadas is not None and not df_fechadas.empty:
+        frames.append(df_fechadas.copy())
+
+    if not frames:
+        return pd.DataFrame()
+
+    df = pd.concat(frames, ignore_index=True, sort=False)
+
+    # Garantir ordenação pela data de entrada
+    if 'data_entrada' in df.columns:
+        try:
+            df['_data_entrada_sort'] = pd.to_datetime(df['data_entrada'])
+        except Exception:
+            df['_data_entrada_sort'] = df['data_entrada']
+        df = df.sort_values('_data_entrada_sort').drop(columns=['_data_entrada_sort'])
+
+    return df
+
 
 def valores_do_ativo(ativo, data_inicio=None, data_fim=None):
     """Retorna valores diários de um ativo"""

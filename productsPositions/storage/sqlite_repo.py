@@ -167,6 +167,21 @@ class SQLiteRepo:
                 )
             """)
             
+            # Tabela de atributos específicos por produto
+            # Nota: RR é calculado dinamicamente, não é armazenado
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS posicao_atributos_produto (
+                    posicao_id INTEGER PRIMARY KEY,
+                    produto_id INTEGER NOT NULL,
+                    motivo TEXT,
+                    perfil TEXT,
+                    alvo1 REAL,
+                    alvo2 REAL,
+                    FOREIGN KEY (posicao_id) REFERENCES posicoes(id) ON DELETE CASCADE,
+                    FOREIGN KEY (produto_id) REFERENCES produtos(id)
+                )
+            """)
+            
             # Criar índices para performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto ON posicoes(produto_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_status ON posicoes(status)")
@@ -174,6 +189,8 @@ class SQLiteRepo:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_produto ON alocacoes(produto_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_posicao ON alocacoes(posicao_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_status ON alocacoes(status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_produto ON posicao_atributos_produto(produto_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_posicao ON posicao_atributos_produto(posicao_id)")
             
             # Habilitar WAL mode para melhor concorrência
             cursor.execute("PRAGMA journal_mode=WAL")
@@ -452,52 +469,65 @@ class SQLiteRepo:
         return posicao_id
     
     def carregar_posicoes_abertas(self, produto_id=None):
-        """Carrega posições abertas"""
+        """Carrega posições abertas com atributos do produto"""
         conn = sqlite3.connect(self.db_path)
         try:
             if produto_id:
-                df = pd.read_sql_query(
-                    "SELECT * FROM posicoes WHERE status = 'open' AND produto_id = ?",
-                    conn,
-                    params=(produto_id,)
-                )
+                df = pd.read_sql_query("""
+                    SELECT p.*, 
+                           a.motivo, a.perfil, a.alvo1, a.alvo2
+                    FROM posicoes p
+                    LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                    WHERE p.status = 'open' AND p.produto_id = ?
+                """, conn, params=(produto_id,))
             else:
-                df = pd.read_sql_query(
-                    "SELECT * FROM posicoes WHERE status = 'open'",
-                    conn
-                )
+                df = pd.read_sql_query("""
+                    SELECT p.*, 
+                           a.motivo, a.perfil, a.alvo1, a.alvo2
+                    FROM posicoes p
+                    LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                    WHERE p.status = 'open'
+                """, conn)
             return df
         finally:
             conn.close()
     
     def carregar_posicoes_fechadas(self, produto_id=None):
-        """Carrega posições fechadas"""
+        """Carrega posições fechadas com atributos do produto"""
         conn = sqlite3.connect(self.db_path)
         try:
             if produto_id:
-                df = pd.read_sql_query(
-                    "SELECT * FROM posicoes WHERE status = 'closed' AND produto_id = ?",
-                    conn,
-                    params=(produto_id,)
-                )
+                df = pd.read_sql_query("""
+                    SELECT p.*, 
+                           a.motivo, a.perfil, a.alvo1, a.alvo2
+                    FROM posicoes p
+                    LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                    WHERE p.status = 'closed' AND p.produto_id = ?
+                """, conn, params=(produto_id,))
             else:
-                df = pd.read_sql_query(
-                    "SELECT * FROM posicoes WHERE status = 'closed'",
-                    conn
-                )
+                df = pd.read_sql_query("""
+                    SELECT p.*, 
+                           a.motivo, a.perfil, a.alvo1, a.alvo2
+                    FROM posicoes p
+                    LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                    WHERE p.status = 'closed'
+                """, conn)
             return df
         finally:
             conn.close()
     
     def carregar_posicao(self, posicao_id):
-        """Carrega uma posição por ID"""
+        """Carrega uma posição por ID com atributos do produto"""
         conn = sqlite3.connect(self.db_path)
         try:
-            df = pd.read_sql_query(
-                "SELECT * FROM posicoes WHERE id = ?",
-                conn,
-                params=(posicao_id,)
-            )
+            # Carregar com JOIN para incluir atributos
+            df = pd.read_sql_query("""
+                SELECT p.*, 
+                       a.motivo, a.perfil, a.alvo1, a.alvo2
+                FROM posicoes p
+                LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                WHERE p.id = ?
+            """, conn, params=(posicao_id,))
             
             if df.empty:
                 return None
@@ -624,6 +654,119 @@ class SQLiteRepo:
                 return True
         
         return False
+    
+    # ========== ATRIBUTOS POR PRODUTO ==========
+    
+    def salvar_atributos_posicao(self, posicao_id, produto_id, motivo=None, perfil=None,
+                                 alvo1=None, alvo2=None):
+        """
+        Salva ou atualiza atributos específicos de uma posição por produto
+        
+        Args:
+            posicao_id: ID da posição
+            produto_id: ID do produto
+            motivo: Motivo do encerramento (Crypto Signals)
+            perfil: Perfil de risco (Crypto Signals)
+            alvo1: Primeiro alvo de preço (Crypto Signals)
+            alvo2: Segundo alvo de preço (Crypto Signals)
+        
+        Returns:
+            int: posicao_id
+        
+        Nota: RR é calculado dinamicamente, não é armazenado
+        """
+        self._validar_posicao_existe(posicao_id)
+        self._validar_produto_existe(produto_id)
+        
+        # Verificar se posição pertence ao produto
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM posicoes WHERE id = ? AND produto_id = ?", 
+                         (posicao_id, produto_id))
+            if cursor.fetchone() is None:
+                raise ValueError(f"Posição {posicao_id} não pertence ao produto {produto_id}")
+        
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            # UPSERT (INSERT OR REPLACE)
+            cursor.execute("""
+                INSERT INTO posicao_atributos_produto (
+                    posicao_id, produto_id, motivo, perfil, alvo1, alvo2
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(posicao_id) DO UPDATE SET
+                    produto_id = excluded.produto_id,
+                    motivo = excluded.motivo,
+                    perfil = excluded.perfil,
+                    alvo1 = excluded.alvo1,
+                    alvo2 = excluded.alvo2
+            """, (
+                posicao_id, produto_id, motivo, perfil, alvo1, alvo2
+            ))
+        
+        return posicao_id
+    
+    def carregar_atributos_posicao(self, posicao_id):
+        """
+        Carrega atributos específicos de uma posição
+        
+        Args:
+            posicao_id: ID da posição
+        
+        Returns:
+            dict ou None: Dicionário com atributos ou None se não existir
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            df = pd.read_sql_query(
+                "SELECT * FROM posicao_atributos_produto WHERE posicao_id = ?",
+                conn,
+                params=(posicao_id,)
+            )
+            if not df.empty:
+                return df.iloc[0].to_dict()
+            return None
+        finally:
+            conn.close()
+    
+    def atualizar_atributos_posicao(self, posicao_id, **kwargs):
+        """
+        Atualiza atributos específicos de uma posição
+        
+        Args:
+            posicao_id: ID da posição
+            **kwargs: Campos a atualizar (motivo, perfil, alvo1, alvo2)
+            
+        Nota: RR é calculado dinamicamente, não pode ser atualizado
+        
+        Returns:
+            int: posicao_id
+        """
+        campos_permitidos = ['motivo', 'perfil', 'alvo1', 'alvo2']
+        
+        updates = []
+        valores = []
+        for campo, valor in kwargs.items():
+            if campo in campos_permitidos:
+                updates.append(f"{campo} = ?")
+                valores.append(valor)
+            else:
+                raise ValueError(f"Campo '{campo}' não é permitido para atualização")
+        
+        if not updates:
+            return posicao_id
+        
+        valores.append(posicao_id)
+        
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                UPDATE posicao_atributos_produto 
+                SET {', '.join(updates)} 
+                WHERE posicao_id = ?
+            """, valores)
+        
+        return posicao_id
     
     # ========== ALOCAÇÕES ==========
     

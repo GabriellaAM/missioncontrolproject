@@ -141,17 +141,29 @@ def mostrar_opcoes_exportacao(df, titulo, produto_id, tipo_dado):
 def exibir_dataframe_html(df, titulo="DataFrame"):
     """
     Cria um arquivo HTML temporário e abre no navegador
+    Garante que todas as colunas sejam exibidas, incluindo atributos do produto
     """
     if df is None or df.empty:
         return False
     
     try:
+        # Criar cópia do DataFrame para não modificar o original
+        df_html = df.copy()
+        
+        # Substituir valores None/NaN por strings vazias para melhor visualização
+        df_html = df_html.fillna('')
+        
+        # Não reordenar colunas aqui: respeitar a ordem já definida
+        # nas funções de display (display_posicoes_abertas, etc.)
+        colunas_atributos = ['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2', 'stop_atual']  # usado apenas para destaque visual
+        
         # Criar HTML estilizado
         html_content = f"""
         <!DOCTYPE html>
         <html>
         <head>
             <title>{titulo}</title>
+            <meta charset="UTF-8">
             <style>
                 body {{
                     font-family: Arial, sans-serif;
@@ -163,12 +175,16 @@ def exibir_dataframe_html(df, titulo="DataFrame"):
                     border-bottom: 3px solid #4CAF50;
                     padding-bottom: 10px;
                 }}
+                .container {{
+                    overflow-x: auto;
+                }}
                 table {{
                     border-collapse: collapse;
                     width: 100%;
                     background-color: white;
                     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
                     margin-top: 20px;
+                    min-width: 100%;
                 }}
                 th {{
                     background-color: #4CAF50;
@@ -176,6 +192,9 @@ def exibir_dataframe_html(df, titulo="DataFrame"):
                     padding: 12px;
                     text-align: left;
                     font-weight: bold;
+                    position: sticky;
+                    top: 0;
+                    z-index: 10;
                 }}
                 td {{
                     padding: 10px;
@@ -190,21 +209,50 @@ def exibir_dataframe_html(df, titulo="DataFrame"):
                     border-radius: 5px;
                     margin-bottom: 20px;
                 }}
+                .atributos {{
+                    background-color: #fff3cd;
+                    font-weight: bold;
+                }}
             </style>
         </head>
         <body>
             <h1>{titulo}</h1>
             <div class="info">
-                <strong>Total de registros:</strong> {len(df)}<br>
-                <strong>Colunas:</strong> {', '.join(df.columns.tolist())}
+                <strong>Total de registros:</strong> {len(df_html)}<br>
+                <strong>Total de colunas:</strong> {len(df_html.columns)}<br>
+                <strong>Colunas:</strong> {', '.join(df_html.columns.tolist())}
             </div>
-            {df.to_html(index=False, classes='dataframe', escape=False)}
+            <div class="container">
+                {df_html.to_html(index=False, classes='dataframe', escape=False, table_id='dataframe')}
+            </div>
+            <script>
+                // Destacar colunas de atributos (perfil, motivo, PnL, RR, alvos e stop atual)
+                const table = document.getElementById('dataframe');
+                if (table) {{
+                    const headers = table.querySelectorAll('th');
+                    headers.forEach((th, index) => {{
+                        const colName = th.textContent.trim();
+                        if (['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2', 'stop_atual'].includes(colName.toLowerCase())) {{  // rr e pnl são calculados dinamicamente
+                            th.classList.add('atributos');
+                            th.style.backgroundColor = '#ffc107';
+                            // Aplicar também nas células da coluna
+                            const rows = table.querySelectorAll('tr');
+                            rows.forEach(row => {{
+                                const cell = row.cells[index];
+                                if (cell) {{
+                                    cell.classList.add('atributos');
+                                }}
+                            }});
+                        }}
+                    }});
+                }}
+            </script>
         </body>
         </html>
         """
         
         # Salvar em arquivo temporário
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
             f.write(html_content)
             temp_path = f.name
         
@@ -212,10 +260,14 @@ def exibir_dataframe_html(df, titulo="DataFrame"):
         webbrowser.open(f'file://{temp_path}')
         print(f"\n✅ DataFrame aberto no navegador!")
         print(f"   Arquivo temporário: {temp_path}")
+        print(f"   Total de colunas exibidas: {len(df_html.columns)}")
+        print(f"   Colunas de atributos: {', '.join([col for col in colunas_atributos if col in df_html.columns])}")
         return True
         
     except Exception as e:
         print(f"⚠️  Erro ao abrir HTML: {e}")
+        import traceback
+        traceback.print_exc()
         # Fallback para exibição simples
         print(f"\n{'='*80}")
         print(f"  {titulo}")
@@ -252,20 +304,26 @@ def main():
         print("1. Exibir produtos")
         print("2. Exibir posições abertas")
         print("3. Exibir posições fechadas (histórico)")
-        print("4. Exibir carteira")
-        print("5. Exibir alocações")
-        print("6. Exibir resumo completo")
-        print("7. Valores diários de uma posição")
-        print("8. Valores diários de um ativo")
+        print("4. Exibir histórico (abertas + fechadas)")
+        print("5. Exibir carteira")
+        print("6. Exibir alocações")
+        print("7. Exibir resumo completo")
+        print("8. Valores diários de uma posição")
+        print("9. Valores diários de um ativo")
         print("\n=== GRÁFICOS ===")
-        print("9. Gráfico de evolução de preço (ativo)")
-        print("10. Gráfico de composição da carteira")
-        print("11. Gráfico de distribuição de alocações")
-        print("12. Comparativo de ativos")
-        print("13. Dashboard completo")
+        print("10. Gráfico de evolução de preço (ativo)")
+        print("11. Gráfico de composição da carteira")
+        print("12. Gráfico de distribuição de alocações")
+        print("13. Comparativo de ativos")
+        print("14. Dashboard completo")
+        print("15. Exibir manutenções (Crypto Signals)")
         print("\n0. Voltar")
         
-        opcao = obter_input("\nEscolha uma opção: ", opcoes=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"], obrigatorio=True)
+        opcao = obter_input(
+            "\nEscolha uma opção: ",
+            opcoes=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"],
+            obrigatorio=True
+        )
         
         if opcao == "0":
             break
@@ -304,11 +362,12 @@ def main():
         
         elif opcao == "3":
             imprimir_secao("POSIÇÕES FECHADAS (HISTÓRICO)")
-            from analytics.queries import posicoes_fechadas
-            df = posicoes_fechadas(produto_id)
+            df = display_posicoes_fechadas(produto_id, formatar=True)
             if df is not None and not df.empty:
                 print("\n📊 DataFrame criado com sucesso!")
                 print(f"   Total de posições fechadas: {len(df)}")
+                print(f"   Colunas: {', '.join(df.columns.tolist())}")
+                print(f"   Forma: {df.shape[0]} linhas x {df.shape[1]} colunas")
                 print("\n" + "="*80)
                 exibir_dataframe_bonito(df, "Posições Fechadas")
                 print("="*80)
@@ -317,6 +376,21 @@ def main():
                 print("❌ Nenhuma posição fechada encontrada")
         
         elif opcao == "4":
+            imprimir_secao("HISTÓRICO (ABERTAS + FECHADAS)")
+            df = display_historico_posicoes(produto_id, formatar=True)
+            if df is not None and not df.empty:
+                print("\n📊 DataFrame criado com sucesso!")
+                print(f"   Total de posições: {len(df)}")
+                print(f"   Colunas: {', '.join(df.columns.tolist())}")
+                print(f"   Forma: {df.shape[0]} linhas x {df.shape[1]} colunas")
+                print("\n" + "="*80)
+                exibir_dataframe_bonito(df, "Histórico (Abertas + Fechadas)")
+                print("="*80)
+                mostrar_opcoes_exportacao(df, "Histórico (Abertas + Fechadas)", produto_id, "historico_posicoes")
+            else:
+                print("❌ Nenhuma posição encontrada para o histórico")
+
+        elif opcao == "5":
             imprimir_secao("CARTEIRA")
             df = display_carteira(produto_id, formatar=False)
             if df is not None and not df.empty:
@@ -328,7 +402,7 @@ def main():
             else:
                 print("❌ Carteira não encontrada")
         
-        elif opcao == "5":
+        elif opcao == "6":
             imprimir_secao("ALOCAÇÕES")
             df = display_alocacoes(produto_id, formatar=False)
             if df is not None and not df.empty:
@@ -341,7 +415,7 @@ def main():
             else:
                 print("❌ Nenhuma alocação encontrada")
         
-        elif opcao == "6":
+        elif opcao == "7":
             imprimir_secao("RESUMO COMPLETO")
             df = display_resumo_completo(produto_id, formatar=False)
             if df is not None and not df.empty:
@@ -353,7 +427,7 @@ def main():
             else:
                 print("❌ Produto não encontrado")
         
-        elif opcao == "7":
+        elif opcao == "8":
             imprimir_secao("VALORES DIÁRIOS DA POSIÇÃO")
             from analytics.queries import valores_da_posicao
             posicao_id = obter_input("ID da posição: ", tipo=int, obrigatorio=True)
@@ -367,7 +441,7 @@ def main():
             else:
                 print("❌ Nenhum valor encontrado para esta posição")
         
-        elif opcao == "8":
+        elif opcao == "9":
             imprimir_secao("VALORES DIÁRIOS DO ATIVO")
             ativo = obter_input("Nome do ativo (ex: BTC): ", obrigatorio=True).upper()
             df = get_valores_ativo(ativo)
@@ -380,7 +454,7 @@ def main():
             else:
                 print(f"❌ Nenhum valor encontrado para {ativo}")
         
-        elif opcao == "9":
+        elif opcao == "10":
             imprimir_secao("GRÁFICO DE EVOLUÇÃO DE PREÇO")
             ativo = obter_input("Nome do ativo (ex: BTC): ", obrigatorio=True).upper()
             df_valores = get_valores_ativo(ativo)
@@ -392,7 +466,7 @@ def main():
             else:
                 print(f"❌ Nenhum dado encontrado para {ativo}")
         
-        elif opcao == "10":
+        elif opcao == "11":
             imprimir_secao("GRÁFICO DE COMPOSIÇÃO DA CARTEIRA")
             print(f"\n📊 Gerando gráfico da carteira...")
             fig = grafico_carteira(produto_id)
@@ -402,7 +476,7 @@ def main():
             else:
                 print("❌ Erro ao gerar gráfico")
         
-        elif opcao == "11":
+        elif opcao == "12":
             imprimir_secao("GRÁFICO DE DISTRIBUIÇÃO DE ALOCAÇÕES")
             print(f"\n📊 Gerando gráfico de alocações...")
             fig = grafico_alocacoes(produto_id)
@@ -412,7 +486,7 @@ def main():
             else:
                 print("❌ Erro ao gerar gráfico")
         
-        elif opcao == "12":
+        elif opcao == "13":
             imprimir_secao("COMPARATIVO DE ATIVOS")
             print("Digite os nomes dos ativos separados por vírgula (ex: BTC,ETH,SYRUP)")
             ativos_str = obter_input("Ativos: ", obrigatorio=True)
@@ -425,7 +499,7 @@ def main():
             else:
                 print("❌ Erro ao gerar gráfico")
         
-        elif opcao == "13":
+        elif opcao == "14":
             imprimir_secao("DASHBOARD COMPLETO")
             print(f"\n📊 Gerando dashboard completo...")
             fig = dashboard_produto(produto_id)
@@ -434,7 +508,25 @@ def main():
                 print("✅ Dashboard aberto no navegador!")
             else:
                 print("❌ Erro ao gerar dashboard")
-        
+
+        elif opcao == "15":
+            imprimir_secao("MANUTENÇÕES - CRYPTO SIGNALS")
+            if produto_id != 4970919917:
+                print("\n⚠️ Esta visualização está disponível apenas para o produto Crypto Signals (ID 4970919917).")
+            else:
+                df = display_manutencoes_signals(produto_id, formatar=True)
+                if df is not None and not df.empty:
+                    print("\n📊 DataFrame criado com sucesso!")
+                    print(f"   Total de manutenções: {len(df)}")
+                    print(f"   Colunas: {', '.join(df.columns.tolist())}")
+                    print(f"   Forma: {df.shape[0]} linhas x {df.shape[1]} colunas")
+                    print("\n" + "="*80)
+                    exibir_dataframe_bonito(df, "Manutenções - Crypto Signals")
+                    print("="*80)
+                    mostrar_opcoes_exportacao(df, "Manutenções - Crypto Signals", produto_id, "manutencoes_signals")
+                else:
+                    print("❌ Nenhuma manutenção encontrada para o produto Crypto Signals")
+
         continuar = obter_input("\nDeseja visualizar outra coisa? (s/n): ", opcoes=["s", "n", "S", "N"], obrigatorio=True).lower()
         if continuar == "n":
             break
