@@ -177,10 +177,20 @@ class SQLiteRepo:
                     perfil TEXT,
                     alvo1 REAL,
                     alvo2 REAL,
+                    quantidade REAL,
+                    preco_entrada_total REAL,
                     FOREIGN KEY (posicao_id) REFERENCES posicoes(id) ON DELETE CASCADE,
                     FOREIGN KEY (produto_id) REFERENCES produtos(id)
                 )
             """)
+
+            # Garantir que colunas mais novas existam mesmo em bancos antigos
+            cursor.execute("PRAGMA table_info(posicao_atributos_produto)")
+            colunas_atributos = [row[1] for row in cursor.fetchall()]
+            if 'quantidade' not in colunas_atributos:
+                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN quantidade REAL")
+            if 'preco_entrada_total' not in colunas_atributos:
+                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN preco_entrada_total REAL")
             
             # Criar índices para performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto ON posicoes(produto_id)")
@@ -424,16 +434,20 @@ class SQLiteRepo:
         # Validar que o produto existe
         self._validar_produto_existe(produto_id)
         
-        # Registrar ativo se não existir (com coingecko_id se fornecido)
+        # Registrar ativo se não existir (mesmo sem coingecko_id)
+        ativo_existente = self.obter_ativo(posicao.ativo)
         if posicao.coingecko_id:
-            ativo_existente = self.obter_ativo(posicao.ativo)
             if ativo_existente and ativo_existente.get('coingecko_id'):
                 # Se já existe com coingecko_id diferente, atualizar
                 if ativo_existente['coingecko_id'] != posicao.coingecko_id:
                     self.registrar_ativo(posicao.ativo, posicao.coingecko_id)
             else:
-                # Registrar novo ativo
+                # Registrar novo ativo com coingecko_id
                 self.registrar_ativo(posicao.ativo, posicao.coingecko_id)
+        else:
+            # Sem coingecko_id: garantir que o ativo exista ao menos com nome
+            if not ativo_existente:
+                self.registrar_ativo(posicao.ativo, None)
         
         posicao_id = self._gerar_id()
         
@@ -521,13 +535,24 @@ class SQLiteRepo:
         conn = sqlite3.connect(self.db_path)
         try:
             # Carregar com JOIN para incluir atributos
-            df = pd.read_sql_query("""
-                SELECT p.*, 
-                       a.motivo, a.perfil, a.alvo1, a.alvo2
+            df = pd.read_sql_query(
+                """
+                SELECT 
+                    p.*,
+                    a.motivo,
+                    a.perfil,
+                    a.alvo1,
+                    a.alvo2,
+                    a.quantidade,
+                    a.preco_entrada_total
                 FROM posicoes p
-                LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                LEFT JOIN posicao_atributos_produto a 
+                    ON p.id = a.posicao_id
                 WHERE p.id = ?
-            """, conn, params=(posicao_id,))
+                """,
+                conn,
+                params=(posicao_id,)
+            )
             
             if df.empty:
                 return None
@@ -658,7 +683,8 @@ class SQLiteRepo:
     # ========== ATRIBUTOS POR PRODUTO ==========
     
     def salvar_atributos_posicao(self, posicao_id, produto_id, motivo=None, perfil=None,
-                                 alvo1=None, alvo2=None):
+                                 alvo1=None, alvo2=None,
+                                 quantidade=None, preco_entrada_total=None):
         """
         Salva ou atualiza atributos específicos de uma posição por produto
         
@@ -688,20 +714,27 @@ class SQLiteRepo:
         
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            # UPSERT (INSERT OR REPLACE)
+            # UPSERT: atualiza apenas os campos explicitamente informados (não sobrescreve com NULL)
             cursor.execute("""
                 INSERT INTO posicao_atributos_produto (
-                    posicao_id, produto_id, motivo, perfil, alvo1, alvo2
+                    posicao_id, produto_id, motivo, perfil, alvo1, alvo2,
+                    quantidade, preco_entrada_total
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(posicao_id) DO UPDATE SET
                     produto_id = excluded.produto_id,
-                    motivo = excluded.motivo,
-                    perfil = excluded.perfil,
-                    alvo1 = excluded.alvo1,
-                    alvo2 = excluded.alvo2
+                    motivo = COALESCE(excluded.motivo, posicao_atributos_produto.motivo),
+                    perfil = COALESCE(excluded.perfil, posicao_atributos_produto.perfil),
+                    alvo1 = COALESCE(excluded.alvo1, posicao_atributos_produto.alvo1),
+                    alvo2 = COALESCE(excluded.alvo2, posicao_atributos_produto.alvo2),
+                    quantidade = COALESCE(excluded.quantidade, posicao_atributos_produto.quantidade),
+                    preco_entrada_total = COALESCE(
+                        excluded.preco_entrada_total, 
+                        posicao_atributos_produto.preco_entrada_total
+                    )
             """, (
-                posicao_id, produto_id, motivo, perfil, alvo1, alvo2
+                posicao_id, produto_id, motivo, perfil, alvo1, alvo2,
+                quantidade, preco_entrada_total
             ))
         
         return posicao_id
@@ -742,7 +775,8 @@ class SQLiteRepo:
         Returns:
             int: posicao_id
         """
-        campos_permitidos = ['motivo', 'perfil', 'alvo1', 'alvo2']
+        campos_permitidos = ['motivo', 'perfil', 'alvo1', 'alvo2',
+                             'quantidade', 'preco_entrada_total']
         
         updates = []
         valores = []

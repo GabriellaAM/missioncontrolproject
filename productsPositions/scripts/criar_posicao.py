@@ -37,11 +37,33 @@ def main():
     imprimir_secao("DADOS DA POSIÇÃO")
     
     ativo = obter_input("Ativo (ex: BTC, ETH): ", obrigatorio=True).upper()
-    side = obter_input("Side (long/short): ", opcoes=["long", "short"], obrigatorio=True)
+
+    # Para produtos Spot, não faz sentido pedir long/short.
+    # Nesses casos, definimos internamente como 'long' apenas para satisfazer o schema.
+    tipo_valor = produto.tipo
+    if isinstance(tipo_valor, str):
+        tipo_nome = tipo_valor
+    else:
+        # Quando carregado via SQLiteRepo, tipo é um objeto Tipo com atributo .nome
+        tipo_nome = getattr(tipo_valor, "nome", "")
+    tipo_produto = (tipo_nome or "").lower()
+
+    if "spot" in tipo_produto:
+        side = "long"
+        print("\nℹ️ Produto do tipo Spot detectado: side será definido internamente como 'long'.")
+    else:
+        side = obter_input("Side (long/short): ", opcoes=["long", "short"], obrigatorio=True)
     data_entrada = obter_input("Data de entrada (YYYY-MM-DD): ", obrigatorio=True)
     data_entrada = validar_data(data_entrada, "Data de entrada")
     
     preco_entrada = obter_input("Preço de entrada: ", tipo=float, obrigatorio=True)
+
+    quantidade = None
+    preco_entrada_total = None
+    if "spot" in tipo_produto:
+        quantidade = obter_input("Quantidade: ", tipo=float, obrigatorio=True)
+        preco_entrada_total = quantidade * preco_entrada
+        print(f"   Preço de entrada total: ${preco_entrada_total:,.2f}")
     coingecko_id = obter_input("CoinGecko ID (ex: bitcoin, ethereum): ", obrigatorio=False)
     
     # Abrir posição
@@ -66,11 +88,26 @@ def main():
     
     # Salvar posição
     posicao_id = repo.salvar_posicao(produto_id, p)
+
+    # Se for produto Spot, salvar atributos específicos (quantidade e preço total)
+    if "spot" in tipo_produto:
+        try:
+            repo.salvar_atributos_posicao(
+                posicao_id,
+                produto_id,
+                quantidade=quantidade,
+                preco_entrada_total=preco_entrada_total,
+            )
+        except Exception as e:
+            print(f"⚠️  Não foi possível salvar atributos de quantidade/preço total: {e}")
     
     print(f"\n✅ Posição criada com ID: {posicao_id}")
     print(f"   Ativo: {ativo}")
     print(f"   Side: {side}")
     print(f"   Preço de entrada: ${preco_entrada:.2f}")
+    if quantidade is not None:
+        print(f"   Quantidade: {quantidade:,.4f}")
+        print(f"   Preço de entrada total: ${preco_entrada_total:,.2f}")
     
     # Verificar se dados do CoinGecko estão disponíveis
     if coingecko_id:

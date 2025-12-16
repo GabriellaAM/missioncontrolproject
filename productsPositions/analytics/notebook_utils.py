@@ -70,6 +70,9 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
                 lambda x: f"${x:,.2f}" if pd.notna(x) else ""
             )
 
+        # Para produtos Spot, formatar quantidade e preco_entrada_total, se existirem
+        # (essa flag é preenchida mais abaixo quando identificamos o tipo do produto)
+
         # Formatar atributos do produto com porcentagem relativa ao preço atual
         if 'alvo1' in df.columns and 'preco_atual' in df.columns:
             df['alvo1'] = df.apply(lambda row: _formatar_valor_com_percent(row, 'alvo1'), axis=1)
@@ -110,6 +113,38 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
     colunas_para_remover = ['produto_id', 'coingecko_id', 'data_saida', 'preco_saida', 'status', 'motivo']
     df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
 
+    # Detectar se é produto do tipo Spot (para esconder coluna side e mostrar quantidade/preco_entrada_total)
+    tipo_spot = False
+    if produto_id is not None and produto_id != 4970919917:
+        try:
+            repo = SQLiteRepo()
+            prod_info = repo.carregar_produto(produto_id)
+            if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
+                if 'spot' in prod_info['tipo'].lower():
+                    tipo_spot = True
+        except Exception:
+            tipo_spot = False
+
+    # Formatar campos específicos de Spot se identificado
+    if tipo_spot:
+        if 'quantidade' in df.columns:
+            df['quantidade'] = df['quantidade'].apply(
+                lambda x: f"{x:,.4f}" if pd.notna(x) else ""
+            )
+        if 'preco_entrada_total' in df.columns:
+            df['preco_entrada_total'] = df['preco_entrada_total'].apply(
+                lambda x: f"${x:,.2f}" if pd.notna(x) else ""
+            )
+        if 'preco_atual_total' in df.columns:
+            df['preco_atual_total'] = df['preco_atual_total'].apply(
+                lambda x: f"${x:,.2f}" if pd.notna(x) else ""
+            )
+
+    # Para produtos que NÃO são Crypto Signals, não exibir perfil/alvo1/alvo2 em posições abertas
+    if produto_id is not None and produto_id != 4970919917:
+        colunas_para_ocultar = ['perfil', 'alvo1', 'alvo2']
+        df = df.drop(columns=[c for c in colunas_para_ocultar if c in df.columns])
+
     # Para o produto Crypto Signals, usar exatamente as colunas e ordem solicitadas
     if produto_id == 4970919917:
         colunas_signals = [
@@ -133,6 +168,19 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
     colunas_ordenadas = []
     colunas_principais = ['id', 'ativo', 'side', 'data_entrada', 'preco_entrada', 'preco_atual']
     colunas_atributos = ['perfil', 'pnl', 'rr', 'alvo1', 'alvo2', 'stop_atual']
+
+    # Se for Spot, incluir quantidade e preco_entrada_total numa ordem mais natural
+    if tipo_spot:
+        colunas_principais = [
+            'data_entrada',
+            'ativo',
+            'quantidade',
+            'preco_entrada',
+            'preco_entrada_total',
+            'preco_atual',
+            'preco_atual_total',
+        ]
+
     colunas_outras = [col for col in df.columns if col not in colunas_atributos + colunas_principais]
     
     for col in colunas_principais + colunas_atributos + colunas_outras:
@@ -140,6 +188,17 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
             colunas_ordenadas.append(col)
     
     df = df[colunas_ordenadas]
+
+    # Se for produto Spot, remover colunas side e id da visualização
+    if tipo_spot:
+        colunas_para_remover_spot = []
+        if 'side' in df.columns:
+            colunas_para_remover_spot.append('side')
+        if 'id' in df.columns:
+            colunas_para_remover_spot.append('id')
+        if colunas_para_remover_spot:
+            df = df.drop(columns=colunas_para_remover_spot)
+
     return df
 
 def display_carteira(produto_id, formatar=True):
@@ -254,6 +313,18 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
     if df.empty:
         print("Nenhuma posição fechada encontrada")
         return df
+
+    # Detectar se é produto Spot para esconder coluna side
+    tipo_spot = False
+    if produto_id is not None and produto_id != 4970919917:
+        try:
+            repo = SQLiteRepo()
+            prod_info = repo.carregar_produto(produto_id)
+            if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
+                if 'spot' in prod_info['tipo'].lower():
+                    tipo_spot = True
+        except Exception:
+            tipo_spot = False
     
     if formatar:
         # Formatar valores monetários
@@ -264,19 +335,30 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         if 'preco_atual' in df.columns:
             df['preco_atual'] = df['preco_atual'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "N/A")
         
-        # Formatar atributos do produto
-        if 'alvo1' in df.columns:
-            df['alvo1'] = df['alvo1'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-        if 'alvo2' in df.columns:
-            df['alvo2'] = df['alvo2'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-        if 'rr' in df.columns:
-            df['rr'] = df['rr'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+        # Formatar campos específicos de Spot
+        if tipo_spot:
+            if 'quantidade' in df.columns:
+                df['quantidade'] = df['quantidade'].apply(lambda x: f"{x:,.4f}" if pd.notna(x) else "")
+            if 'preco_entrada_total' in df.columns:
+                df['preco_entrada_total'] = df['preco_entrada_total'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+            if 'preco_saida_total' in df.columns:
+                df['preco_saida_total'] = df['preco_saida_total'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+        
+        # Formatar atributos do produto (apenas para não-Spot)
+        if not tipo_spot:
+            if 'alvo1' in df.columns:
+                df['alvo1'] = df['alvo1'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+            if 'alvo2' in df.columns:
+                df['alvo2'] = df['alvo2'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+            if 'rr' in df.columns:
+                df['rr'] = df['rr'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+            if 'perfil' in df.columns:
+                df['perfil'] = df['perfil'].apply(lambda x: x if pd.notna(x) else "")
+            if 'motivo' in df.columns:
+                df['motivo'] = df['motivo'].apply(lambda x: x if pd.notna(x) else "")
+        
         if 'pnl' in df.columns:
             df['pnl'] = df['pnl'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "")
-        if 'perfil' in df.columns:
-            df['perfil'] = df['perfil'].apply(lambda x: x if pd.notna(x) else "")
-        if 'motivo' in df.columns:
-            df['motivo'] = df['motivo'].apply(lambda x: x if pd.notna(x) else "")
 
     # Ordenar pela data de entrada (mais antiga -> mais nova), se existir
     if 'data_entrada' in df.columns:
@@ -303,7 +385,29 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         df = df[colunas_existentes]
         return df
     
-    # Reordenar colunas para melhor visualização (caso genérico)
+    # Para produtos Spot, usar ordem específica e remover colunas indesejadas
+    if tipo_spot:
+        colunas_spot = [
+            'data_entrada',
+            'data_saida',
+            'ativo',
+            'quantidade',
+            'preco_entrada',
+            'preco_entrada_total',
+            'preco_saida',
+            'preco_saida_total',
+            'pnl',
+        ]
+        colunas_existentes = [c for c in colunas_spot if c in df.columns]
+        df = df[colunas_existentes]
+        
+        # Remover colunas indesejadas explicitamente
+        colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'status', 'side', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2']
+        df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
+        
+        return df
+    
+    # Reordenar colunas para melhor visualização (caso genérico - não Spot, não Signals)
     colunas_ordenadas = []
     colunas_atributos = ['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2']
     colunas_principais = ['id', 'ativo', 'side', 'data_entrada', 'preco_entrada', 'data_saida', 'preco_saida', 'status']
@@ -314,6 +418,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
             colunas_ordenadas.append(col)
     
     df = df[colunas_ordenadas]
+    
     return df
 
 
@@ -415,20 +520,92 @@ def display_historico_posicoes(produto_id=None, formatar=True):
         print("Nenhuma posição encontrada para o histórico")
         return df
 
+    # Detectar se é produto Spot
+    tipo_spot = False
+    if produto_id is not None and produto_id != 4970919917:
+        try:
+            repo = SQLiteRepo()
+            prod_info = repo.carregar_produto(produto_id)
+            if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
+                if 'spot' in prod_info['tipo'].lower():
+                    tipo_spot = True
+        except Exception:
+            tipo_spot = False
+
+    # Para produtos Spot, criar colunas unificadas de preço final
+    # (preco_saida para fechadas, preco_atual para abertas)
+    # Usamos os nomes preco_saida e preco_saida_total, mas preenchemos com valores corretos
+    if tipo_spot:
+        # Criar preco_saida unificado: preco_saida se fechada, preco_atual se aberta
+        # Garantir que estamos usando valores numéricos
+        def _to_float(val):
+            """Converte valor para float, lidando com strings formatadas"""
+            if pd.isna(val) or val is None:
+                return None
+            if isinstance(val, (int, float)):
+                return float(val)
+            if isinstance(val, str):
+                try:
+                    # Tentar extrair número de string formatada como "$1,234.56"
+                    cleaned = val.replace('$', '').replace(',', '').strip()
+                    return float(cleaned)
+                except:
+                    return None
+            return None
+        
+        def _get_preco_saida_unificado(row):
+            preco_saida = row.get('preco_saida')
+            preco_atual = row.get('preco_atual')
+            
+            if pd.notna(preco_saida):
+                return _to_float(preco_saida)
+            elif pd.notna(preco_atual):
+                return _to_float(preco_atual)
+            return None
+        
+        def _get_preco_saida_total_unificado(row):
+            preco_saida_total = row.get('preco_saida_total')
+            preco_atual_total = row.get('preco_atual_total')
+            
+            if pd.notna(preco_saida_total):
+                return _to_float(preco_saida_total)
+            elif pd.notna(preco_atual_total):
+                return _to_float(preco_atual_total)
+            return None
+        
+        # Criar/sobrescrever preco_saida e preco_saida_total com valores unificados (numéricos)
+        df['preco_saida'] = df.apply(_get_preco_saida_unificado, axis=1)
+        df['preco_saida_total'] = df.apply(_get_preco_saida_total_unificado, axis=1)
+
     if formatar:
+        # Função auxiliar para formatar valores monetários
+        def _formatar_monetario(x):
+            if pd.isna(x) or x is None:
+                return "—"
+            if isinstance(x, (int, float)):
+                return f"${x:,.2f}"
+            # Se já for string formatada, retornar como está
+            return str(x)
+        
         # Formatar valores monetários básicos
         if 'preco_entrada' in df.columns:
-            df['preco_entrada'] = df['preco_entrada'].apply(
-                lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
-            )
-        if 'preco_saida' in df.columns:
-            df['preco_saida'] = df['preco_saida'].apply(
-                lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
-            )
-        if 'preco_atual' in df.columns:
-            df['preco_atual'] = df['preco_atual'].apply(
-                lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
-            )
+            df['preco_entrada'] = df['preco_entrada'].apply(_formatar_monetario)
+        if 'preco_atual' in df.columns and not tipo_spot:
+            # Só formatar preco_atual se não for Spot (Spot usa preco_saida unificado)
+            df['preco_atual'] = df['preco_atual'].apply(_formatar_monetario)
+
+        # Formatar campos específicos de Spot
+        if tipo_spot:
+            if 'quantidade' in df.columns:
+                df['quantidade'] = df['quantidade'].apply(
+                    lambda x: f"{x:,.4f}" if pd.notna(x) and isinstance(x, (int, float)) else "—"
+                )
+            if 'preco_entrada_total' in df.columns:
+                df['preco_entrada_total'] = df['preco_entrada_total'].apply(_formatar_monetario)
+            if 'preco_saida' in df.columns:
+                df['preco_saida'] = df['preco_saida'].apply(_formatar_monetario)
+            if 'preco_saida_total' in df.columns:
+                df['preco_saida_total'] = df['preco_saida_total'].apply(_formatar_monetario)
 
         # Atributos do produto (Signals)
         for col in ['alvo1', 'alvo2', 'stop_atual']:
@@ -471,6 +648,32 @@ def display_historico_posicoes(produto_id=None, formatar=True):
         ]
         colunas_existentes = [c for c in colunas_signals if c in df.columns]
         df = df[colunas_existentes]
+        # Substituir quaisquer NaN remanescentes por "—"
+        df = df.fillna("—")
+        return df
+
+    # Para produtos Spot, usar ordem específica
+    if tipo_spot:
+        colunas_spot = [
+            'status',
+            'data_entrada',
+            'data_saida',
+            'ativo',
+            'quantidade',
+            'preco_entrada',
+            'preco_entrada_total',
+            'preco_saida',
+            'preco_saida_total',
+            'pnl',
+        ]
+        colunas_existentes = [c for c in colunas_spot if c in df.columns]
+        df = df[colunas_existentes]
+        
+        # Remover colunas indesejadas explicitamente (mantendo preco_saida e preco_saida_total que foram unificados)
+        colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'side', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2', 
+                                'preco_atual', 'preco_atual_total', 'stop_atual']
+        df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
+        
         # Substituir quaisquer NaN remanescentes por "—"
         df = df.fillna("—")
         return df

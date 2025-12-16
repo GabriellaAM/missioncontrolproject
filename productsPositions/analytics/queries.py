@@ -40,13 +40,24 @@ def calcular_rr(preco_atual, alvo2, stop_atual):
 def posicoes_abertas(produto_id=None):
     """Retorna posições abertas com preço atual e atributos do produto"""
     repo = SQLiteRepo()
+
+    # Detectar se é produto Spot (para cálculo de PnL via quantidade)
+    tipo_spot = False
+    if produto_id and produto_id != 4970919917:
+        try:
+            prod_info = repo.carregar_produto(produto_id)
+            if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
+                if 'spot' in prod_info['tipo'].lower():
+                    tipo_spot = True
+        except Exception:
+            tipo_spot = False
     
     import sqlite3
     conn = sqlite3.connect(repo.db_path)
     try:
         if produto_id:
             if produto_id == 4970919917:
-                # Produto Crypto Signals: incluir atributos específicos
+                # Produto Crypto Signals: incluir atributos específicos (motivo, perfil, alvos)
                 query = """
                     SELECT p.*, 
                            a.motivo, a.perfil, a.alvo1, a.alvo2
@@ -56,10 +67,18 @@ def posicoes_abertas(produto_id=None):
                 """
                 df = pd.read_sql_query(query, conn, params=(produto_id,))
             else:
-                # Outros produtos: não incluir colunas específicas do Signals
+                # Outros produtos (inclui Spot): incluir atributos genéricos (quantidade, preco_entrada_total, perfil, motivo, alvos se existirem)
                 query = """
-                    SELECT p.*
+                    SELECT 
+                        p.*,
+                        a.quantidade,
+                        a.preco_entrada_total,
+                        a.perfil,
+                        a.motivo,
+                        a.alvo1,
+                        a.alvo2
                     FROM posicoes p
+                    LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
                     WHERE p.status = 'open' AND p.produto_id = ?
                 """
                 df = pd.read_sql_query(query, conn, params=(produto_id,))
@@ -90,6 +109,19 @@ def posicoes_abertas(produto_id=None):
                 precos_atuais.append(None)
 
         df['preco_atual'] = precos_atuais
+
+        # Para produtos Spot, calcular preco_atual_total (quantidade * preco_atual)
+        if tipo_spot:
+            precos_atuais_totais = []
+            for _, row in df.iterrows():
+                quantidade = row.get('quantidade')
+                preco_atual = row.get('preco_atual')
+                if pd.notna(quantidade) and pd.notna(preco_atual) and quantidade != 0:
+                    preco_atual_total = quantidade * preco_atual
+                    precos_atuais_totais.append(preco_atual_total)
+                else:
+                    precos_atuais_totais.append(None)
+            df['preco_atual_total'] = precos_atuais_totais
 
         # Se for o produto Crypto Signals, calcular stop_atual, RR e PnL
         if produto_id == 4970919917 or (produto_id is None and 'alvo2' in df.columns):
@@ -141,12 +173,56 @@ def posicoes_abertas(produto_id=None):
             df['stop_atual'] = stops_atuais
             df['rr'] = rrs
             df['pnl'] = pnls
+
+        # Para produtos Spot, calcular PnL usando notional (quantidade * preço)
+        if tipo_spot:
+            pnls_spot = []
+            for _, row in df.iterrows():
+                preco_entrada = row.get('preco_entrada')
+                preco_atual = row.get('preco_atual')
+                quantidade = row.get('quantidade')
+
+                if pd.isna(preco_entrada) or pd.isna(preco_atual):
+                    pnls_spot.append(None)
+                    continue
+
+                # a = quantidade * preco_entrada
+                # b = quantidade * preco_atual
+                if quantidade is None or pd.isna(quantidade) or quantidade == 0:
+                    a = preco_entrada
+                    b = preco_atual
+                else:
+                    a = quantidade * preco_entrada
+                    b = quantidade * preco_atual
+
+                if a == 0:
+                    pnls_spot.append(None)
+                    continue
+
+                try:
+                    pnl = ((b / a) - 1.0) * 100.0
+                except ZeroDivisionError:
+                    pnl = None
+                pnls_spot.append(pnl)
+
+            df['pnl'] = pnls_spot
     
     return df
 
 def posicoes_fechadas(produto_id=None):
     """Retorna posições fechadas com atributos do produto"""
     repo = SQLiteRepo()
+    
+    # Detectar se é produto Spot (para cálculo de PnL via quantidade)
+    tipo_spot = False
+    if produto_id and produto_id != 4970919917:
+        try:
+            prod_info = repo.carregar_produto(produto_id)
+            if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
+                if 'spot' in prod_info['tipo'].lower():
+                    tipo_spot = True
+        except Exception:
+            tipo_spot = False
     
     import sqlite3
     conn = sqlite3.connect(repo.db_path)
@@ -163,10 +239,18 @@ def posicoes_fechadas(produto_id=None):
                 """
                 df = pd.read_sql_query(query, conn, params=(produto_id,))
             else:
-                # Outros produtos: não incluir colunas específicas do Signals
+                # Outros produtos (inclui Spot): incluir quantidade e preco_entrada_total
                 query = """
-                    SELECT p.*
+                    SELECT 
+                        p.*,
+                        a.quantidade,
+                        a.preco_entrada_total,
+                        a.perfil,
+                        a.motivo,
+                        a.alvo1,
+                        a.alvo2
                     FROM posicoes p
+                    LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
                     WHERE p.status = 'closed' AND p.produto_id = ?
                 """
                 df = pd.read_sql_query(query, conn, params=(produto_id,))
@@ -185,8 +269,22 @@ def posicoes_fechadas(produto_id=None):
     
     # Para posições fechadas, preço_atual = preço_saida
     # Calcular RR e PnL para Crypto Signals (produto_id 4970919917)
+    # Calcular preco_saida_total e PnL para produtos Spot
     if not df.empty:
         df['preco_atual'] = df['preco_saida']
+        
+        # Para produtos Spot, calcular preco_saida_total (quantidade * preco_saida)
+        if tipo_spot:
+            precos_saida_totais = []
+            for _, row in df.iterrows():
+                quantidade = row.get('quantidade')
+                preco_saida = row.get('preco_saida')
+                if pd.notna(quantidade) and pd.notna(preco_saida) and quantidade != 0:
+                    preco_saida_total = quantidade * preco_saida
+                    precos_saida_totais.append(preco_saida_total)
+                else:
+                    precos_saida_totais.append(None)
+            df['preco_saida_total'] = precos_saida_totais
         
         rrs = []
         pnls = []
@@ -205,8 +303,23 @@ def posicoes_fechadas(produto_id=None):
                 rr = None
             rrs.append(rr)
 
-            # PnL: ((preco_saida / preco_entrada) - 1) * 100, apenas para Crypto Signals
-            if eh_signals and preco_saida is not None and not pd.isna(preco_entrada) and preco_entrada not in (0,):
+            # PnL: para Crypto Signals: ((preco_saida / preco_entrada) - 1) * 100
+            # Para Spot: ((quantidade * preco_saida) / (quantidade * preco_entrada) - 1) * 100
+            if tipo_spot:
+                quantidade = row.get('quantidade')
+                if pd.notna(preco_entrada) and pd.notna(preco_saida) and pd.notna(quantidade) and quantidade != 0:
+                    a = quantidade * preco_entrada
+                    b = quantidade * preco_saida
+                    if a != 0:
+                        try:
+                            pnl = ((b / a) - 1.0) * 100.0
+                        except ZeroDivisionError:
+                            pnl = None
+                    else:
+                        pnl = None
+                else:
+                    pnl = None
+            elif eh_signals and preco_saida is not None and not pd.isna(preco_entrada) and preco_entrada not in (0,):
                 try:
                     pnl = ((preco_saida / preco_entrada) - 1) * 100.0
                 except ZeroDivisionError:
