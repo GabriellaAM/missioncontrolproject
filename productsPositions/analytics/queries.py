@@ -41,16 +41,20 @@ def posicoes_abertas(produto_id=None):
     """Retorna posições abertas com preço atual e atributos do produto"""
     repo = SQLiteRepo()
 
-    # Detectar se é produto Spot (para cálculo de PnL via quantidade)
+    # Detectar tipo de produto (Spot ou Perpétuos, exceto 4970919917)
     tipo_spot = False
+    tipo_perpetuos = False
     if produto_id and produto_id != 4970919917:
         try:
             prod_info = repo.carregar_produto(produto_id)
             if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
-                if 'spot' in prod_info['tipo'].lower():
+                tipo_str = prod_info['tipo'].lower()
+                if 'spot' in tipo_str:
                     tipo_spot = True
+                elif 'perpétuo' in tipo_str or 'perpetuo' in tipo_str:
+                    tipo_perpetuos = True
         except Exception:
-            tipo_spot = False
+            pass
     
     import sqlite3
     conn = sqlite3.connect(repo.db_path)
@@ -67,7 +71,7 @@ def posicoes_abertas(produto_id=None):
                 """
                 df = pd.read_sql_query(query, conn, params=(produto_id,))
             else:
-                # Outros produtos (inclui Spot): incluir atributos genéricos (quantidade, preco_entrada_total, perfil, motivo, alvos se existirem)
+                # Outros produtos (inclui Spot e Perpétuos): incluir atributos genéricos
                 query = """
                     SELECT 
                         p.*,
@@ -158,12 +162,17 @@ def posicoes_abertas(produto_id=None):
                 rr = calcular_rr(preco_atual, alvo2, stop_atual) if preco_atual is not None else None
                 rrs.append(rr)
 
-                # PnL: ((preco_atual / preco_entrada) - 1) * 100 apenas para Crypto Signals
+                # PnL para Crypto Signals: calcular como long e inverter sinal para short
                 preco_entrada = row.get('preco_entrada')
+                side = str(row.get('side', 'long')).lower()
                 eh_signals = (produto_id == 4970919917) or (produto_id is None and row.get('produto_id') == 4970919917)
                 if eh_signals and preco_atual is not None and pd.notna(preco_entrada) and preco_entrada not in (0,):
                     try:
+                        # Calcular como long (rendimento normal)
                         pnl = ((preco_atual / preco_entrada) - 1) * 100.0
+                        # Para short, inverter o sinal
+                        if side == 'short':
+                            pnl = -pnl
                     except ZeroDivisionError:
                         pnl = None
                 else:
@@ -206,6 +215,59 @@ def posicoes_abertas(produto_id=None):
                 pnls_spot.append(pnl)
 
             df['pnl'] = pnls_spot
+
+        # Para produtos Perpétuos (exceto 4970919917), calcular preco_saida, preco_saida_total e PnL
+        if tipo_perpetuos:
+            # Para posições abertas, preco_saida = preco_atual (puxado do coingecko)
+            df['preco_saida'] = df['preco_atual']
+            
+            # Para posições abertas, preco_saida_total = quantidade * preco_saida (calculado dinamicamente)
+            precos_saida_totais = []
+            for _, row in df.iterrows():
+                quantidade = row.get('quantidade')
+                preco_saida = row.get('preco_saida')
+                if pd.notna(quantidade) and pd.notna(preco_saida) and quantidade != 0:
+                    preco_saida_total = quantidade * preco_saida
+                    precos_saida_totais.append(preco_saida_total)
+                else:
+                    precos_saida_totais.append(None)
+            df['preco_saida_total'] = precos_saida_totais
+
+            # Calcular PnL para Perpétuos: calcular como long e inverter sinal para short
+            pnls_perpetuos = []
+            for _, row in df.iterrows():
+                quantidade = row.get('quantidade')
+                preco_entrada = row.get('preco_entrada')
+                preco_saida_total = row.get('preco_saida_total')
+                side = str(row.get('side', 'long')).lower()
+
+                if pd.isna(quantidade) or pd.isna(preco_entrada) or pd.isna(preco_saida_total):
+                    pnls_perpetuos.append(None)
+                    continue
+
+                # a = quantidade * preco_entrada
+                if quantidade is None or quantidade == 0:
+                    pnls_perpetuos.append(None)
+                    continue
+
+                a = quantidade * preco_entrada
+                b = preco_saida_total
+
+                if a == 0 or b == 0:
+                    pnls_perpetuos.append(None)
+                    continue
+
+                try:
+                    # Calcular como long (rendimento normal)
+                    pnl = ((b / a) - 1.0) * 100.0
+                    # Para short, inverter o sinal
+                    if side == 'short':
+                        pnl = -pnl
+                except ZeroDivisionError:
+                    pnl = None
+                pnls_perpetuos.append(pnl)
+
+            df['pnl'] = pnls_perpetuos
     
     return df
 
@@ -213,16 +275,20 @@ def posicoes_fechadas(produto_id=None):
     """Retorna posições fechadas com atributos do produto"""
     repo = SQLiteRepo()
     
-    # Detectar se é produto Spot (para cálculo de PnL via quantidade)
+    # Detectar tipo de produto (Spot ou Perpétuos, exceto 4970919917)
     tipo_spot = False
+    tipo_perpetuos = False
     if produto_id and produto_id != 4970919917:
         try:
             prod_info = repo.carregar_produto(produto_id)
             if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
-                if 'spot' in prod_info['tipo'].lower():
+                tipo_str = prod_info['tipo'].lower()
+                if 'spot' in tipo_str:
                     tipo_spot = True
+                elif 'perpétuo' in tipo_str or 'perpetuo' in tipo_str:
+                    tipo_perpetuos = True
         except Exception:
-            tipo_spot = False
+            pass
     
     import sqlite3
     conn = sqlite3.connect(repo.db_path)
@@ -239,7 +305,8 @@ def posicoes_fechadas(produto_id=None):
                 """
                 df = pd.read_sql_query(query, conn, params=(produto_id,))
             else:
-                # Outros produtos (inclui Spot): incluir quantidade e preco_entrada_total
+                # Outros produtos (inclui Spot e Perpétuos): incluir quantidade e preco_entrada_total
+                # preco_saida_total é calculado dinamicamente
                 query = """
                     SELECT 
                         p.*,
@@ -286,6 +353,19 @@ def posicoes_fechadas(produto_id=None):
                     precos_saida_totais.append(None)
             df['preco_saida_total'] = precos_saida_totais
         
+        # Para produtos Perpétuos, calcular preco_saida_total (quantidade * preco_saida)
+        if tipo_perpetuos:
+            precos_saida_totais = []
+            for _, row in df.iterrows():
+                quantidade = row.get('quantidade')
+                preco_saida = row.get('preco_saida')
+                if pd.notna(quantidade) and pd.notna(preco_saida) and quantidade != 0:
+                    preco_saida_total = quantidade * preco_saida
+                    precos_saida_totais.append(preco_saida_total)
+                else:
+                    precos_saida_totais.append(None)
+            df['preco_saida_total'] = precos_saida_totais
+        
         rrs = []
         pnls = []
         for _, row in df.iterrows():
@@ -305,6 +385,7 @@ def posicoes_fechadas(produto_id=None):
 
             # PnL: para Crypto Signals: ((preco_saida / preco_entrada) - 1) * 100
             # Para Spot: ((quantidade * preco_saida) / (quantidade * preco_entrada) - 1) * 100
+            # Para Perpétuos: ((preco_saida_total / (quantidade * preco_entrada)) - 1) * 100
             if tipo_spot:
                 quantidade = row.get('quantidade')
                 if pd.notna(preco_entrada) and pd.notna(preco_saida) and pd.notna(quantidade) and quantidade != 0:
@@ -319,9 +400,34 @@ def posicoes_fechadas(produto_id=None):
                         pnl = None
                 else:
                     pnl = None
+            elif tipo_perpetuos:
+                quantidade = row.get('quantidade')
+                preco_saida = row.get('preco_saida')
+                side = str(row.get('side', 'long')).lower()
+                if pd.notna(preco_entrada) and pd.notna(preco_saida) and pd.notna(quantidade) and quantidade != 0:
+                    a = quantidade * preco_entrada
+                    b = quantidade * preco_saida  # preco_saida_total = quantidade * preco_saida
+                    if a != 0 and b != 0:
+                        try:
+                            # Calcular como long (rendimento normal)
+                            pnl = ((b / a) - 1.0) * 100.0
+                            # Para short, inverter o sinal
+                            if side == 'short':
+                                pnl = -pnl
+                        except ZeroDivisionError:
+                            pnl = None
+                    else:
+                        pnl = None
+                else:
+                    pnl = None
             elif eh_signals and preco_saida is not None and not pd.isna(preco_entrada) and preco_entrada not in (0,):
+                side = str(row.get('side', 'long')).lower()
                 try:
+                    # Calcular como long (rendimento normal)
                     pnl = ((preco_saida / preco_entrada) - 1) * 100.0
+                    # Para short, inverter o sinal
+                    if side == 'short':
+                        pnl = -pnl
                 except ZeroDivisionError:
                     pnl = None
             else:
@@ -414,14 +520,20 @@ def manutencoes_signals(produto_id=4970919917):
 
     df['preco_atual'] = df['coingecko_id'].map(precos_atuais_map)
 
-    # Calcular PnL: ((preco_atual / preco_entrada) - 1) * 100
+    # Calcular PnL: calcular como long e inverter sinal para short
     def _calc_pnl(row):
         pe = row.get('preco_entrada')
         pa = row.get('preco_atual')
+        side = str(row.get('side', 'long')).lower()
         if pd.isna(pe) or pe in (0, None) or pd.isna(pa):
             return None
         try:
-            return (pa / pe - 1.0) * 100.0
+            # Calcular como long (rendimento normal)
+            pnl = (pa / pe - 1.0) * 100.0
+            # Para short, inverter o sinal
+            if side == 'short':
+                pnl = -pnl
+            return pnl
         except ZeroDivisionError:
             return None
 

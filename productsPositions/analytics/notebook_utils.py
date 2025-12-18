@@ -92,11 +92,6 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
             df['rr'] = df['rr'].apply(
                 lambda x: f"{x:.2f}" if pd.notna(x) and x is not None else ""
             )
-        # PnL em porcentagem, se existir (apenas Crypto Signals)
-        if 'pnl' in df.columns:
-            df['pnl'] = df['pnl'].apply(
-                lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else ""
-            )
         if 'perfil' in df.columns:
             df['perfil'] = df['perfil'].apply(lambda x: x if pd.notna(x) else "")
         # Para posições abertas, motivo não é relevante, então ignoramos
@@ -113,17 +108,21 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
     colunas_para_remover = ['produto_id', 'coingecko_id', 'data_saida', 'preco_saida', 'status', 'motivo']
     df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
 
-    # Detectar se é produto do tipo Spot (para esconder coluna side e mostrar quantidade/preco_entrada_total)
+    # Detectar tipo de produto (Spot ou Perpétuos, exceto 4970919917)
     tipo_spot = False
+    tipo_perpetuos = False
     if produto_id is not None and produto_id != 4970919917:
         try:
             repo = SQLiteRepo()
             prod_info = repo.carregar_produto(produto_id)
             if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
-                if 'spot' in prod_info['tipo'].lower():
+                tipo_str = prod_info['tipo'].lower()
+                if 'spot' in tipo_str:
                     tipo_spot = True
+                elif 'perpétuo' in tipo_str or 'perpetuo' in tipo_str:
+                    tipo_perpetuos = True
         except Exception:
-            tipo_spot = False
+            pass
 
     # Formatar campos específicos de Spot se identificado
     if tipo_spot:
@@ -139,6 +138,34 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
             df['preco_atual_total'] = df['preco_atual_total'].apply(
                 lambda x: f"${x:,.2f}" if pd.notna(x) else ""
             )
+
+    # Formatar campos específicos de Perpétuos se identificado
+    if tipo_perpetuos:
+        if 'quantidade' in df.columns:
+            df['quantidade'] = df['quantidade'].apply(
+                lambda x: f"{x:,.4f}" if pd.notna(x) else ""
+            )
+        if 'preco_entrada_total' in df.columns:
+            df['preco_entrada_total'] = df['preco_entrada_total'].apply(
+                lambda x: f"${x:,.2f}" if pd.notna(x) else ""
+            )
+        # Para Perpétuos, preco_saida = preco_atual (para abertas)
+        if 'preco_atual' in df.columns:
+            df['preco_saida'] = df['preco_atual']
+        if 'preco_saida' in df.columns:
+            df['preco_saida'] = df['preco_saida'].apply(
+                lambda x: f"${x:,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else ("—" if pd.isna(x) else str(x))
+            )
+        if 'preco_saida_total' in df.columns:
+            df['preco_saida_total'] = df['preco_saida_total'].apply(
+                lambda x: f"${x:,.2f}" if pd.notna(x) else ""
+            )
+
+    # Formatar PnL em porcentagem (após todas as formatações específicas)
+    if 'pnl' in df.columns:
+        df['pnl'] = df['pnl'].apply(
+            lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None and isinstance(x, (int, float)) else ("" if pd.isna(x) or x is None else str(x))
+        )
 
     # Para produtos que NÃO são Crypto Signals, não exibir perfil/alvo1/alvo2 em posições abertas
     if produto_id is not None and produto_id != 4970919917:
@@ -180,6 +207,27 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
             'preco_atual',
             'preco_atual_total',
         ]
+    # Se for Perpétuos, usar ordem específica
+    elif tipo_perpetuos:
+        colunas_perpetuos = [
+            'data_entrada',
+            'ativo',
+            'side',
+            'quantidade',
+            'preco_entrada',
+            'preco_entrada_total',
+            'preco_saida',
+            'preco_saida_total',
+            'pnl',
+        ]
+        colunas_existentes = [c for c in colunas_perpetuos if c in df.columns]
+        df = df[colunas_existentes]
+        
+        # Remover colunas indesejadas
+        colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'preco_atual', 'status']
+        df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
+        
+        return df
 
     colunas_outras = [col for col in df.columns if col not in colunas_atributos + colunas_principais]
     
@@ -314,17 +362,21 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         print("Nenhuma posição fechada encontrada")
         return df
 
-    # Detectar se é produto Spot para esconder coluna side
+    # Detectar tipo de produto (Spot ou Perpétuos, exceto 4970919917)
     tipo_spot = False
+    tipo_perpetuos = False
     if produto_id is not None and produto_id != 4970919917:
         try:
             repo = SQLiteRepo()
             prod_info = repo.carregar_produto(produto_id)
             if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
-                if 'spot' in prod_info['tipo'].lower():
+                tipo_str = prod_info['tipo'].lower()
+                if 'spot' in tipo_str:
                     tipo_spot = True
+                elif 'perpétuo' in tipo_str or 'perpetuo' in tipo_str:
+                    tipo_perpetuos = True
         except Exception:
-            tipo_spot = False
+            pass
     
     if formatar:
         # Formatar valores monetários
@@ -344,8 +396,17 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
             if 'preco_saida_total' in df.columns:
                 df['preco_saida_total'] = df['preco_saida_total'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
         
-        # Formatar atributos do produto (apenas para não-Spot)
-        if not tipo_spot:
+        # Formatar campos específicos de Perpétuos
+        if tipo_perpetuos:
+            if 'quantidade' in df.columns:
+                df['quantidade'] = df['quantidade'].apply(lambda x: f"{x:,.4f}" if pd.notna(x) else "")
+            if 'preco_entrada_total' in df.columns:
+                df['preco_entrada_total'] = df['preco_entrada_total'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+            if 'preco_saida_total' in df.columns:
+                df['preco_saida_total'] = df['preco_saida_total'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+        
+        # Formatar atributos do produto (apenas para não-Spot e não-Perpétuos)
+        if not tipo_spot and not tipo_perpetuos:
             if 'alvo1' in df.columns:
                 df['alvo1'] = df['alvo1'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
             if 'alvo2' in df.columns:
@@ -406,8 +467,31 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
         
         return df
+
+    # Para produtos Perpétuos, usar ordem específica
+    if tipo_perpetuos:
+        colunas_perpetuos = [
+            'data_entrada',
+            'data_saida',
+            'ativo',
+            'side',
+            'quantidade',
+            'preco_entrada',
+            'preco_entrada_total',
+            'preco_saida',
+            'preco_saida_total',
+            'pnl',
+        ]
+        colunas_existentes = [c for c in colunas_perpetuos if c in df.columns]
+        df = df[colunas_existentes]
+        
+        # Remover colunas indesejadas
+        colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'status', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2', 'preco_atual', 'stop_atual']
+        df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
+        
+        return df
     
-    # Reordenar colunas para melhor visualização (caso genérico - não Spot, não Signals)
+    # Reordenar colunas para melhor visualização (caso genérico - não Spot, não Perpétuos, não Signals)
     colunas_ordenadas = []
     colunas_atributos = ['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2']
     colunas_principais = ['id', 'ativo', 'side', 'data_entrada', 'preco_entrada', 'data_saida', 'preco_saida', 'status']
@@ -520,22 +604,26 @@ def display_historico_posicoes(produto_id=None, formatar=True):
         print("Nenhuma posição encontrada para o histórico")
         return df
 
-    # Detectar se é produto Spot
+    # Detectar tipo de produto (Spot ou Perpétuos, exceto 4970919917)
     tipo_spot = False
+    tipo_perpetuos = False
     if produto_id is not None and produto_id != 4970919917:
         try:
             repo = SQLiteRepo()
             prod_info = repo.carregar_produto(produto_id)
             if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
-                if 'spot' in prod_info['tipo'].lower():
+                tipo_str = prod_info['tipo'].lower()
+                if 'spot' in tipo_str:
                     tipo_spot = True
+                elif 'perpétuo' in tipo_str or 'perpetuo' in tipo_str:
+                    tipo_perpetuos = True
         except Exception:
-            tipo_spot = False
+            pass
 
-    # Para produtos Spot, criar colunas unificadas de preço final
+    # Para produtos Spot ou Perpétuos, criar colunas unificadas de preço final
     # (preco_saida para fechadas, preco_atual para abertas)
     # Usamos os nomes preco_saida e preco_saida_total, mas preenchemos com valores corretos
-    if tipo_spot:
+    if tipo_spot or tipo_perpetuos:
         # Criar preco_saida unificado: preco_saida se fechada, preco_atual se aberta
         # Garantir que estamos usando valores numéricos
         def _to_float(val):
@@ -607,6 +695,23 @@ def display_historico_posicoes(produto_id=None, formatar=True):
             if 'preco_saida_total' in df.columns:
                 df['preco_saida_total'] = df['preco_saida_total'].apply(_formatar_monetario)
 
+        # Formatar campos específicos de Perpétuos
+        if tipo_perpetuos:
+            if 'quantidade' in df.columns:
+                df['quantidade'] = df['quantidade'].apply(
+                    lambda x: f"{x:,.4f}" if pd.notna(x) and isinstance(x, (int, float)) else "—"
+                )
+            if 'preco_entrada_total' in df.columns:
+                df['preco_entrada_total'] = df['preco_entrada_total'].apply(_formatar_monetario)
+            if 'preco_saida' in df.columns:
+                df['preco_saida'] = df['preco_saida'].apply(_formatar_monetario)
+            if 'preco_saida_total' in df.columns:
+                df['preco_saida_total'] = df['preco_saida_total'].apply(_formatar_monetario)
+            if 'pnl' in df.columns:
+                df['pnl'] = df['pnl'].apply(
+                    lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "—"
+                )
+
         # Atributos do produto (Signals)
         for col in ['alvo1', 'alvo2', 'stop_atual']:
             if col in df.columns:
@@ -616,11 +721,19 @@ def display_historico_posicoes(produto_id=None, formatar=True):
 
         if 'pnl' in df.columns:
             df['pnl'] = df['pnl'].apply(
-                lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "—"
+                lambda x: (
+                    str(x) if isinstance(x, str) 
+                    else f"{x:.2f}%" if pd.notna(x) and x is not None 
+                    else "—"
+                )
             )
         if 'rr' in df.columns:
             df['rr'] = df['rr'].apply(
-                lambda x: f"{x:.2f}" if pd.notna(x) and x is not None else "—"
+                lambda x: (
+                    str(x) if isinstance(x, str) 
+                    else f"{x:.2f}" if pd.notna(x) and x is not None 
+                    else "—"
+                )
             )
         if 'perfil' in df.columns:
             df['perfil'] = df['perfil'].apply(lambda x: x if pd.notna(x) else "—")
@@ -672,6 +785,32 @@ def display_historico_posicoes(produto_id=None, formatar=True):
         # Remover colunas indesejadas explicitamente (mantendo preco_saida e preco_saida_total que foram unificados)
         colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'side', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2', 
                                 'preco_atual', 'preco_atual_total', 'stop_atual']
+        df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
+        
+        # Substituir quaisquer NaN remanescentes por "—"
+        df = df.fillna("—")
+        return df
+
+    # Para produtos Perpétuos, usar ordem específica
+    if tipo_perpetuos:
+        colunas_perpetuos = [
+            'status',
+            'data_entrada',
+            'data_saida',
+            'ativo',
+            'side',
+            'quantidade',
+            'preco_entrada',
+            'preco_entrada_total',
+            'preco_saida',
+            'preco_saida_total',
+            'pnl',
+        ]
+        colunas_existentes = [c for c in colunas_perpetuos if c in df.columns]
+        df = df[colunas_existentes]
+        
+        # Remover colunas indesejadas
+        colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2', 'preco_atual', 'stop_atual']
         df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
         
         # Substituir quaisquer NaN remanescentes por "—"

@@ -191,6 +191,7 @@ class SQLiteRepo:
                 cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN quantidade REAL")
             if 'preco_entrada_total' not in colunas_atributos:
                 cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN preco_entrada_total REAL")
+            # preco_saida_total foi removido - agora é calculado dinamicamente como quantidade * preco_saida
             
             # Criar índices para performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto ON posicoes(produto_id)")
@@ -695,11 +696,15 @@ class SQLiteRepo:
             perfil: Perfil de risco (Crypto Signals)
             alvo1: Primeiro alvo de preço (Crypto Signals)
             alvo2: Segundo alvo de preço (Crypto Signals)
+            quantidade: Quantidade (Spot/Perpétuos)
+            preco_entrada_total: Preço de entrada total (Spot/Perpétuos)
         
         Returns:
             int: posicao_id
         
-        Nota: RR é calculado dinamicamente, não é armazenado
+        Nota: 
+            - RR é calculado dinamicamente, não é armazenado
+            - preco_saida_total é calculado dinamicamente como quantidade * preco_saida (não é armazenado)
         """
         self._validar_posicao_existe(posicao_id)
         self._validar_produto_existe(produto_id)
@@ -768,9 +773,11 @@ class SQLiteRepo:
         
         Args:
             posicao_id: ID da posição
-            **kwargs: Campos a atualizar (motivo, perfil, alvo1, alvo2)
+            **kwargs: Campos a atualizar (motivo, perfil, alvo1, alvo2, quantidade, preco_entrada_total)
             
-        Nota: RR é calculado dinamicamente, não pode ser atualizado
+        Nota: 
+            - RR é calculado dinamicamente, não pode ser atualizado
+            - preco_saida_total é calculado dinamicamente, não pode ser atualizado
         
         Returns:
             int: posicao_id
