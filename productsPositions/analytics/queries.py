@@ -107,6 +107,9 @@ def posicoes_abertas(produto_id=None):
             coingecko_id = row.get('coingecko_id')
             if pd.notna(coingecko_id) and coingecko_id:
                 preco_atual = ValorDiarioService.obter_preco_atual(coingecko_id)
+                # Para mog-coin, multiplicar por 1M (1.000.000) pois o preço no CoinGecko é por token
+                if coingecko_id == 'mog-coin' and preco_atual is not None:
+                    preco_atual = preco_atual * 1_000_000
                 precos_atuais.append(preco_atual)
             else:
                 preco_atual = None
@@ -514,7 +517,11 @@ def manutencoes_signals(produto_id=4970919917):
     coingeckos_unicos = df['coingecko_id'].dropna().unique()
     for cid in coingeckos_unicos:
         try:
-            precos_atuais_map[cid] = ValorDiarioService.obter_preco_atual(cid)
+            preco_atual = ValorDiarioService.obter_preco_atual(cid)
+            # Para mog-coin, multiplicar por 1M (1.000.000) pois o preço no CoinGecko é por token
+            if cid == 'mog-coin' and preco_atual is not None:
+                preco_atual = preco_atual * 1_000_000
+            precos_atuais_map[cid] = preco_atual
         except Exception:
             precos_atuais_map[cid] = None
 

@@ -70,6 +70,9 @@ class CarteiraService:
         
         # Pegar o preço mais recente (último item da lista, já ordenada por data)
         preco_atual = valores[-1]['preco']
+        # Para mog-coin, multiplicar por 1M (1.000.000) pois o preço no CoinGecko é por token
+        if coingecko_id == 'mog-coin' and preco_atual is not None:
+            preco_atual = preco_atual * 1_000_000
         return preco_atual
 
     @staticmethod

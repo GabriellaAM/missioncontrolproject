@@ -47,6 +47,18 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         return df
     
     if formatar:
+        # Verificar se o produto tem "meme" no nome para usar 5 casas decimais em preco_entrada e preco_saida
+        is_meme = False
+        if produto_id is not None:
+            try:
+                repo = SQLiteRepo()
+                prod_info = repo.carregar_produto(produto_id)
+                if prod_info and 'nome' in prod_info:
+                    nome_produto = str(prod_info['nome']).lower()
+                    is_meme = 'meme' in nome_produto
+            except Exception:
+                pass
+        
         # Função auxiliar para formatar valor + % de distância até o alvo/stop
         def _formatar_valor_com_percent(row, coluna_alvo):
             # Aqui usamos os valores numéricos originais (antes de formatar como string)
@@ -64,10 +76,11 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
             sinal_pct = f"{pct:.2f}%"
             return f"${valor:,.2f} ({sinal_pct})"
 
-        # Formatar valores monetários principais
+        # Formatar preco_entrada com 5 casas se for meme, senão 2
         if 'preco_entrada' in df.columns:
+            decimais_entrada = 5 if is_meme else 2
             df['preco_entrada'] = df['preco_entrada'].apply(
-                lambda x: f"${x:,.2f}" if pd.notna(x) else ""
+                lambda x: f"${x:,.{decimais_entrada}f}" if pd.notna(x) else ""
             )
 
         # Para produtos Spot, formatar quantidade e preco_entrada_total, se existirem
@@ -82,7 +95,10 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
             df['stop_atual'] = df.apply(lambda row: _formatar_valor_com_percent(row, 'stop_atual'), axis=1)
 
         # Agora, depois de usar os valores numéricos para as porcentagens, formatar preco_atual como string
+        # IMPORTANTE: Salvar valor numérico do preco_atual antes de formatar (para usar em preco_saida depois)
+        preco_atual_numerico = None
         if 'preco_atual' in df.columns:
+            preco_atual_numerico = df['preco_atual'].copy()  # Salvar cópia numérica
             df['preco_atual'] = df['preco_atual'].apply(
                 lambda x: f"${x:,.2f}" if pd.notna(x) else "N/A"
             )
@@ -128,7 +144,7 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
     if tipo_spot:
         if 'quantidade' in df.columns:
             df['quantidade'] = df['quantidade'].apply(
-                lambda x: f"{x:,.4f}" if pd.notna(x) else ""
+                lambda x: f"{x:,.2f}" if pd.notna(x) else ""
             )
         if 'preco_entrada_total' in df.columns:
             df['preco_entrada_total'] = df['preco_entrada_total'].apply(
@@ -143,19 +159,52 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
     if tipo_perpetuos:
         if 'quantidade' in df.columns:
             df['quantidade'] = df['quantidade'].apply(
-                lambda x: f"{x:,.4f}" if pd.notna(x) else ""
+                lambda x: f"{x:,.2f}" if pd.notna(x) else ""
             )
         if 'preco_entrada_total' in df.columns:
             df['preco_entrada_total'] = df['preco_entrada_total'].apply(
                 lambda x: f"${x:,.2f}" if pd.notna(x) else ""
             )
         # Para Perpétuos, preco_saida = preco_atual (para abertas)
-        if 'preco_atual' in df.columns:
-            df['preco_saida'] = df['preco_atual']
+        # Usar valor numérico salvo anteriormente, não a versão formatada
+        if preco_atual_numerico is not None:
+            df['preco_saida'] = preco_atual_numerico
+        elif 'preco_atual' in df.columns:
+            # Fallback: tentar extrair valor numérico da string formatada
+            def _extrair_numero(x):
+                if pd.isna(x) or x is None:
+                    return None
+                if isinstance(x, (int, float)):
+                    return x
+                if isinstance(x, str):
+                    try:
+                        cleaned = x.replace('$', '').replace(',', '').strip()
+                        return float(cleaned)
+                    except:
+                        return None
+                return None
+            df['preco_saida'] = df['preco_atual'].apply(_extrair_numero)
         if 'preco_saida' in df.columns:
-            df['preco_saida'] = df['preco_saida'].apply(
-                lambda x: f"${x:,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else ("—" if pd.isna(x) else str(x))
-            )
+            decimais_saida = 5 if is_meme else 2
+            def _formatar_preco_saida_abertas(x):
+                if pd.isna(x) or x is None:
+                    return "—"
+                # Se já for string formatada, tentar extrair o número
+                if isinstance(x, str):
+                    try:
+                        cleaned = x.replace('$', '').replace(',', '').strip()
+                        x = float(cleaned)
+                    except:
+                        return str(x)  # Retornar como está se não conseguir converter
+                if isinstance(x, (int, float)):
+                    # Para valores muito pequenos, usar mais casas decimais para evitar mostrar apenas zeros
+                    if abs(x) > 0 and abs(x) < 0.01:
+                        # Usar até 8 casas decimais para valores muito pequenos (sem vírgula para evitar problemas)
+                        return f"${x:.8f}".rstrip('0').rstrip('.')
+                    else:
+                        return f"${x:,.{decimais_saida}f}"
+                return "—"
+            df['preco_saida'] = df['preco_saida'].apply(_formatar_preco_saida_abertas)
         if 'preco_saida_total' in df.columns:
             df['preco_saida_total'] = df['preco_saida_total'].apply(
                 lambda x: f"${x:,.2f}" if pd.notna(x) else ""
@@ -379,11 +428,40 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
             pass
     
     if formatar:
-        # Formatar valores monetários
+        # Verificar se o produto tem "meme" no nome para usar 5 casas decimais em preco_entrada e preco_saida
+        is_meme = False
+        if produto_id is not None:
+            try:
+                repo = SQLiteRepo()
+                prod_info = repo.carregar_produto(produto_id)
+                if prod_info and 'nome' in prod_info:
+                    nome_produto = str(prod_info['nome']).lower()
+                    is_meme = 'meme' in nome_produto
+            except Exception:
+                pass
+        
+        # Formatar preco_entrada com 5 casas se for meme, senão 2
         if 'preco_entrada' in df.columns:
-            df['preco_entrada'] = df['preco_entrada'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+            decimais_entrada = 5 if is_meme else 2
+            df['preco_entrada'] = df['preco_entrada'].apply(lambda x: f"${x:,.{decimais_entrada}f}" if pd.notna(x) else "")
+        
+        # Formatar preco_saida com 5 casas se for meme, senão 2
         if 'preco_saida' in df.columns:
-            df['preco_saida'] = df['preco_saida'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+            decimais_saida = 5 if is_meme else 2
+            def _formatar_preco_saida_fechadas(x):
+                if pd.isna(x) or x is None:
+                    return ""
+                if isinstance(x, (int, float)):
+                    # Para valores muito pequenos, usar mais casas decimais para evitar mostrar apenas zeros
+                    if abs(x) > 0 and abs(x) < 0.01:
+                        # Usar até 8 casas decimais para valores muito pequenos (sem vírgula para evitar problemas)
+                        return f"${x:.8f}".rstrip('0').rstrip('.')
+                    else:
+                        return f"${x:,.{decimais_saida}f}"
+                return ""
+            df['preco_saida'] = df['preco_saida'].apply(_formatar_preco_saida_fechadas)
+        
+        # Formatar preco_atual (sempre 2 casas)
         if 'preco_atual' in df.columns:
             df['preco_atual'] = df['preco_atual'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "N/A")
         
@@ -529,6 +607,18 @@ def display_manutencoes_signals(produto_id=4970919917, formatar=True):
         df = df.sort_values('_data_manutencao_sort').drop(columns=['_data_manutencao_sort'])
 
     if formatar:
+        # Verificar se o produto tem "meme" no nome para usar 5 casas decimais em preco_entrada e preco_saida
+        is_meme = False
+        if produto_id is not None:
+            try:
+                repo = SQLiteRepo()
+                prod_info = repo.carregar_produto(produto_id)
+                if prod_info and 'nome' in prod_info:
+                    nome_produto = str(prod_info['nome']).lower()
+                    is_meme = 'meme' in nome_produto
+            except Exception:
+                pass
+        
         # Data de manutenção em formato dia/mês/ano
         if 'data_manutencao' in df.columns:
             df['data_manutencao'] = pd.to_datetime(df['data_manutencao']).dt.strftime('%d/%m/%Y')
@@ -544,13 +634,14 @@ def display_manutencoes_signals(produto_id=4970919917, formatar=True):
             try:
                 pct = ((valor / preco_atual) - 1) * 100
             except ZeroDivisionError:
-                return f"${valor:,.2f}"
+                return f"${valor:,.{decimais}f}"
             sinal_pct = f"{pct:.2f}%"
-            return f"${valor:,.2f} ({sinal_pct})"
+            return f"${valor:,.{decimais}f} ({sinal_pct})"
 
-        # Formatar preços base
+        # Formatar preco_entrada com 5 casas se for meme, senão 2
         if 'preco_entrada' in df.columns:
-            df['preco_entrada'] = df['preco_entrada'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+            decimais_entrada = 5 if is_meme else 2
+            df['preco_entrada'] = df['preco_entrada'].apply(lambda x: f"${x:,.{decimais_entrada}f}" if pd.notna(x) else "")
 
         # Formatar atributos com % relativa ao preço atual
         if 'alvo1' in df.columns and 'preco_atual' in df.columns:
@@ -666,6 +757,18 @@ def display_historico_posicoes(produto_id=None, formatar=True):
         df['preco_saida_total'] = df.apply(_get_preco_saida_total_unificado, axis=1)
 
     if formatar:
+        # Verificar se o produto tem "meme" no nome para usar 5 casas decimais em preco_entrada e preco_saida
+        is_meme = False
+        if produto_id is not None:
+            try:
+                repo = SQLiteRepo()
+                prod_info = repo.carregar_produto(produto_id)
+                if prod_info and 'nome' in prod_info:
+                    nome_produto = str(prod_info['nome']).lower()
+                    is_meme = 'meme' in nome_produto
+            except Exception:
+                pass
+        
         # Função auxiliar para formatar valores monetários
         def _formatar_monetario(x):
             if pd.isna(x) or x is None:
@@ -675,9 +778,12 @@ def display_historico_posicoes(produto_id=None, formatar=True):
             # Se já for string formatada, retornar como está
             return str(x)
         
-        # Formatar valores monetários básicos
+        # Formatar preco_entrada com 5 casas se for meme, senão 2
         if 'preco_entrada' in df.columns:
-            df['preco_entrada'] = df['preco_entrada'].apply(_formatar_monetario)
+            decimais_entrada = 5 if is_meme else 2
+            df['preco_entrada'] = df['preco_entrada'].apply(
+                lambda x: f"${x:,.{decimais_entrada}f}" if pd.notna(x) and isinstance(x, (int, float)) else "—"
+            )
         if 'preco_atual' in df.columns and not tipo_spot:
             # Só formatar preco_atual se não for Spot (Spot usa preco_saida unificado)
             df['preco_atual'] = df['preco_atual'].apply(_formatar_monetario)
@@ -686,12 +792,31 @@ def display_historico_posicoes(produto_id=None, formatar=True):
         if tipo_spot:
             if 'quantidade' in df.columns:
                 df['quantidade'] = df['quantidade'].apply(
-                    lambda x: f"{x:,.4f}" if pd.notna(x) and isinstance(x, (int, float)) else "—"
+                    lambda x: f"{x:,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else "—"
                 )
             if 'preco_entrada_total' in df.columns:
                 df['preco_entrada_total'] = df['preco_entrada_total'].apply(_formatar_monetario)
             if 'preco_saida' in df.columns:
-                df['preco_saida'] = df['preco_saida'].apply(_formatar_monetario)
+                decimais_saida = 5 if is_meme else 2
+                def _formatar_preco_saida(x):
+                    if pd.isna(x) or x is None:
+                        return "—"
+                    # Se já for string formatada, tentar extrair o número
+                    if isinstance(x, str):
+                        try:
+                            cleaned = x.replace('$', '').replace(',', '').strip()
+                            x = float(cleaned)
+                        except:
+                            return str(x)  # Retornar como está se não conseguir converter
+                    if isinstance(x, (int, float)):
+                        # Para valores muito pequenos, usar mais casas decimais para evitar mostrar apenas zeros
+                        if abs(x) > 0 and abs(x) < 0.01:
+                            # Usar até 8 casas decimais para valores muito pequenos (sem vírgula para evitar problemas)
+                            return f"${x:.8f}".rstrip('0').rstrip('.')
+                        else:
+                            return f"${x:,.{decimais_saida}f}"
+                    return "—"
+                df['preco_saida'] = df['preco_saida'].apply(_formatar_preco_saida)
             if 'preco_saida_total' in df.columns:
                 df['preco_saida_total'] = df['preco_saida_total'].apply(_formatar_monetario)
 
@@ -699,12 +824,31 @@ def display_historico_posicoes(produto_id=None, formatar=True):
         if tipo_perpetuos:
             if 'quantidade' in df.columns:
                 df['quantidade'] = df['quantidade'].apply(
-                    lambda x: f"{x:,.4f}" if pd.notna(x) and isinstance(x, (int, float)) else "—"
+                    lambda x: f"{x:,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else "—"
                 )
             if 'preco_entrada_total' in df.columns:
                 df['preco_entrada_total'] = df['preco_entrada_total'].apply(_formatar_monetario)
             if 'preco_saida' in df.columns:
-                df['preco_saida'] = df['preco_saida'].apply(_formatar_monetario)
+                decimais_saida = 5 if is_meme else 2
+                def _formatar_preco_saida(x):
+                    if pd.isna(x) or x is None:
+                        return "—"
+                    # Se já for string formatada, tentar extrair o número
+                    if isinstance(x, str):
+                        try:
+                            cleaned = x.replace('$', '').replace(',', '').strip()
+                            x = float(cleaned)
+                        except:
+                            return str(x)  # Retornar como está se não conseguir converter
+                    if isinstance(x, (int, float)):
+                        # Para valores muito pequenos, usar mais casas decimais para evitar mostrar apenas zeros
+                        if abs(x) > 0 and abs(x) < 0.01:
+                            # Usar até 8 casas decimais para valores muito pequenos (sem vírgula para evitar problemas)
+                            return f"${x:.8f}".rstrip('0').rstrip('.')
+                        else:
+                            return f"${x:,.{decimais_saida}f}"
+                    return "—"
+                df['preco_saida'] = df['preco_saida'].apply(_formatar_preco_saida)
             if 'preco_saida_total' in df.columns:
                 df['preco_saida_total'] = df['preco_saida_total'].apply(_formatar_monetario)
             if 'pnl' in df.columns:
