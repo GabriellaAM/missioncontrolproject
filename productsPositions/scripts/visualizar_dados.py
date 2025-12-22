@@ -89,7 +89,7 @@ def exibir_dataframe_bonito(df, titulo="DataFrame", abrir_html=False):
         
         # Só abre HTML se explicitamente solicitado
         if abrir_html:
-            return exibir_dataframe_html(df, titulo)
+            return exibir_dataframe_html(df, titulo, produto_id=None, tipo_dado=None)
         
         return True
 
@@ -136,17 +136,25 @@ def mostrar_opcoes_exportacao(df, titulo, produto_id, tipo_dado):
             print("   Instale com: pip install openpyxl")
     
     elif opcao_export == "3":
-        exibir_dataframe_html(df, titulo)
+        exibir_dataframe_html(df, titulo, produto_id=produto_id, tipo_dado=tipo_dado)
 
-def exibir_dataframe_html(df, titulo="DataFrame"):
+def exibir_dataframe_html(df, titulo="DataFrame", produto_id=None, tipo_dado=None):
     """
     Cria um arquivo HTML temporário e abre no navegador
     Garante que todas as colunas sejam exibidas, incluindo atributos do produto
+    
+    Args:
+        df: DataFrame para exibir
+        titulo: Título da visualização
+        produto_id: ID do produto (para atualização)
+        tipo_dado: Tipo de dado ('posicoes_abertas', 'posicoes_fechadas', 'historico', etc.)
     """
     if df is None or df.empty:
         return False
     
     try:
+        from datetime import datetime
+        
         # Criar cópia do DataFrame para não modificar o original
         df_html = df.copy()
         
@@ -157,6 +165,9 @@ def exibir_dataframe_html(df, titulo="DataFrame"):
         # nas funções de display (display_posicoes_abertas, etc.)
         colunas_atributos = ['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2', 'stop_atual']  # usado apenas para destaque visual
         
+        # Timestamp da última atualização
+        timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        
         # Criar HTML estilizado
         html_content = f"""
         <!DOCTYPE html>
@@ -164,6 +175,7 @@ def exibir_dataframe_html(df, titulo="DataFrame"):
         <head>
             <title>{titulo}</title>
             <meta charset="UTF-8">
+            <meta http-equiv="refresh" content="300"> <!-- Auto-refresh a cada 5 minutos -->
             <style>
                 body {{
                     font-family: Arial, sans-serif;
@@ -174,6 +186,40 @@ def exibir_dataframe_html(df, titulo="DataFrame"):
                     color: #333;
                     border-bottom: 3px solid #4CAF50;
                     padding-bottom: 10px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                }}
+                .header-controls {{
+                    display: flex;
+                    gap: 10px;
+                    align-items: center;
+                }}
+                .btn-atualizar {{
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    font-size: 14px;
+                    font-weight: bold;
+                    border-radius: 5px;
+                    cursor: pointer;
+                    transition: background-color 0.3s;
+                }}
+                .btn-atualizar:hover {{
+                    background-color: #45a049;
+                }}
+                .btn-atualizar:active {{
+                    background-color: #3d8b40;
+                }}
+                .btn-atualizar:disabled {{
+                    background-color: #cccccc;
+                    cursor: not-allowed;
+                }}
+                .timestamp {{
+                    font-size: 12px;
+                    color: #666;
+                    font-weight: normal;
                 }}
                 .container {{
                     overflow-x: auto;
@@ -213,26 +259,98 @@ def exibir_dataframe_html(df, titulo="DataFrame"):
                     background-color: #fff3cd;
                     font-weight: bold;
                 }}
+                .loading {{
+                    display: none;
+                    text-align: center;
+                    padding: 20px;
+                    background-color: #fff3cd;
+                    border-radius: 5px;
+                    margin: 20px 0;
+                }}
+                .loading.show {{
+                    display: block;
+                }}
             </style>
         </head>
         <body>
-            <h1>{titulo}</h1>
+            <h1>
+                <span>{titulo}</span>
+                <div class="header-controls">
+                    <span class="timestamp" id="timestamp">Última atualização: {timestamp}</span>
+                    <button class="btn-atualizar" id="btnAtualizar" onclick="atualizarDados()">
+                        🔄 Atualizar
+                    </button>
+                </div>
+            </h1>
+            <div class="loading" id="loading">
+                <strong>🔄 Atualizando dados...</strong><br>
+                <small>Buscando preços atualizados do CoinGecko e recalculando PnL...</small>
+            </div>
+            <div class="sucesso" id="sucesso" style="display: none; text-align: center; padding: 15px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 5px; margin: 20px 0; color: #155724;">
+                <strong>✅ Dados atualizados com sucesso!</strong>
+            </div>
+            <div class="erro" id="erro" style="display: none; text-align: center; padding: 15px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 5px; margin: 20px 0; color: #721c24;">
+                <strong>❌ Erro ao atualizar dados. Certifique-se de que o servidor de atualização está rodando.</strong><br>
+                <small>Execute: <code>python scripts/servidor_atualizacao.py</code></small>
+            </div>
             <div class="info">
-                <strong>Total de registros:</strong> {len(df_html)}<br>
+                <strong>Total de registros:</strong> <span id="totalRegistros">{len(df_html)}</span><br>
                 <strong>Total de colunas:</strong> {len(df_html.columns)}<br>
                 <strong>Colunas:</strong> {', '.join(df_html.columns.tolist())}
             </div>
-            <div class="container">
+            <div class="container" id="tableContainer">
                 {df_html.to_html(index=False, classes='dataframe', escape=False, table_id='dataframe')}
             </div>
             <script>
+                // Dados para atualização
+                const produtoId = {produto_id if produto_id else 'null'};
+                const tipoDado = {repr(tipo_dado) if tipo_dado else 'null'};
+                const servidorUrl = 'http://localhost:8765';
+                
+                // Função para atualizar dados
+                async function atualizarDados() {{
+                    const btn = document.getElementById('btnAtualizar');
+                    const loading = document.getElementById('loading');
+                    const timestamp = document.getElementById('timestamp');
+                    
+                    // Desabilitar botão e mostrar loading
+                    btn.disabled = true;
+                    btn.textContent = '🔄 Atualizando...';
+                    loading.classList.add('show');
+                    
+                    try {{
+                        // Fazer requisição ao servidor
+                        const url = `${{servidorUrl}}/atualizar?produto_id=${{produtoId}}&tipo_dado=${{tipoDado}}`;
+                        const response = await fetch(url);
+                        const data = await response.json();
+                        
+                        if (data.sucesso) {{
+                            // Atualizar timestamp
+                            timestamp.textContent = 'Última atualização: ' + data.timestamp;
+                            
+                            // Recarregar a página para mostrar dados atualizados
+                            setTimeout(() => {{
+                                window.location.href = data.url;
+                            }}, 1000);
+                        }} else {{
+                            throw new Error(data.erro || 'Erro desconhecido');
+                        }}
+                    }} catch (error) {{
+                        console.error('Erro ao atualizar:', error);
+                        alert('Erro ao atualizar dados. Certifique-se de que o servidor de atualização está rodando.\\n\\nExecute: python scripts/servidor_atualizacao.py');
+                        btn.disabled = false;
+                        btn.textContent = '🔄 Atualizar';
+                        loading.classList.remove('show');
+                    }}
+                }}
+                
                 // Destacar colunas de atributos (perfil, motivo, PnL, RR, alvos e stop atual)
                 const table = document.getElementById('dataframe');
                 if (table) {{
                     const headers = table.querySelectorAll('th');
                     headers.forEach((th, index) => {{
                         const colName = th.textContent.trim();
-                        if (['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2', 'stop_atual'].includes(colName.toLowerCase())) {{  // rr e pnl são calculados dinamicamente
+                        if (['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2', 'stop_atual'].includes(colName.toLowerCase())) {{
                             th.classList.add('atributos');
                             th.style.backgroundColor = '#ffc107';
                             // Aplicar também nas células da coluna
@@ -246,20 +364,44 @@ def exibir_dataframe_html(df, titulo="DataFrame"):
                         }}
                     }});
                 }}
+                
+                // Atalho de teclado: F5 ou Ctrl+R para atualizar
+                document.addEventListener('keydown', function(e) {{
+                    if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) {{
+                        e.preventDefault();
+                        atualizarDados();
+                    }}
+                }});
             </script>
         </body>
         </html>
         """
         
-        # Salvar em arquivo temporário
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
+        # Salvar em arquivo temporário com nome baseado em produto_id e tipo_dado para permitir atualização
+        if produto_id and tipo_dado:
+            # Criar nome de arquivo baseado em produto_id e tipo_dado para permitir atualização
+            temp_dir = Path(tempfile.gettempdir())
+            temp_filename = f"visualizacao_produto_{produto_id}_{tipo_dado}.html"
+            temp_path = temp_dir / temp_filename
+        else:
+            # Se não tiver produto_id e tipo_dado, usar arquivo temporário padrão
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
+                temp_path = Path(f.name)
+        
+        # Salvar HTML
+        with open(temp_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
-            temp_path = f.name
         
         # Abrir no navegador
         webbrowser.open(f'file://{temp_path}')
         print(f"\n✅ DataFrame aberto no navegador!")
-        print(f"   Arquivo temporário: {temp_path}")
+        print(f"   Arquivo: {temp_path}")
+        if produto_id and tipo_dado:
+            print(f"\n💡 Para usar o botão 'Atualizar' no navegador:")
+            print(f"   1. Inicie o servidor de atualização em outro terminal:")
+            print(f"      python scripts/servidor_atualizacao.py")
+            print(f"   2. Clique no botão '🔄 Atualizar' no navegador")
+            print(f"   3. Os dados serão atualizados automaticamente com os preços do CoinGecko")
         print(f"   Total de colunas exibidas: {len(df_html.columns)}")
         print(f"   Colunas de atributos: {', '.join([col for col in colunas_atributos if col in df_html.columns])}")
         return True
