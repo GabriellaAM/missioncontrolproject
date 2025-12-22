@@ -11,7 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from storage.sqlite_repo import SQLiteRepo  # noqa: E402
-from utils.cli_utils import obter_input, imprimir_titulo, imprimir_secao  # noqa: E402
+from utils.cli_utils import obter_input, imprimir_titulo, imprimir_secao, validar_data  # noqa: E402
+from utils.produto_utils import obter_campos_editaveis_produto  # noqa: E402
 
 
 def _listar_produtos(repo: SQLiteRepo):
@@ -63,195 +64,136 @@ def _listar_posicoes_do_produto(repo: SQLiteRepo, produto_id: int):
     return df
 
 
-def _editar_posicao_spot(repo: SQLiteRepo, produto_id: int, posicao_id: int):
+def _editar_posicao_dinamica(repo: SQLiteRepo, produto_id: int, posicao_id: int):
     """
-    Edição específica para produtos Spot (ex.: Soros Spot 1).
-
-    Campos suportados:
-      - ativo
-      - coingecko_id
-      - data_entrada
-      - preco_entrada
-      - quantidade
-      - data_saida
-      - preco_saida
-      - status
+    Edição dinâmica que se adapta aos campos necessários de cada produto.
     """
-    imprimir_secao("EDIÇÃO DE POSIÇÃO (SPOT)")
-
+    imprimir_secao("EDIÇÃO DE POSIÇÃO")
+    
+    # Obter campos editáveis para este produto específico
+    campos = obter_campos_editaveis_produto(produto_id)
+    
     while True:
-        print("Campos disponíveis para edição:")
-        print("1. Ativo")
-        print("2. CoinGecko ID")
-        print("3. Data de entrada")
-        print("4. Preço de entrada")
-        print("5. Quantidade")
-        print("6. Data de saída")
-        print("7. Preço de saída")
-        print("8. Status (open/closed)")
+        print("\nCampos disponíveis para edição:")
+        for idx, campo in enumerate(campos, start=1):
+            obrigatorio_str = " (obrigatório)" if campo.get('obrigatorio') else " (opcional)"
+            print(f"{idx}. {campo['label']}{obrigatorio_str}")
         print("0. Voltar")
 
-        op = obter_input("\nEscolha o campo para editar: ", opcoes=[str(i) for i in range(0, 9)], obrigatorio=True)
+        opcoes_validas = [str(i) for i in range(0, len(campos) + 1)]
+        op = obter_input("\nEscolha o campo para editar: ", opcoes=opcoes_validas, obrigatorio=True)
 
         if op == "0":
             break
 
-        if op == "1":
-            novo_ativo = obter_input("Novo ativo (ex: BTC, ETH): ", obrigatorio=True).upper()
-            repo.atualizar_posicao(posicao_id, ativo=novo_ativo)
-            print("✅ Ativo atualizado com sucesso.")
-
-        elif op == "2":
-            novo_cgid = obter_input("Novo CoinGecko ID (ex: bitcoin, ethereum): ", obrigatorio=False)
-            repo.atualizar_posicao(posicao_id, coingecko_id=novo_cgid if novo_cgid else None)
-            print("✅ CoinGecko ID atualizado com sucesso.")
-
-        elif op == "3":
-            from utils.cli_utils import validar_data
-
-            data = obter_input("Nova data de entrada (YYYY-MM-DD): ", obrigatorio=True)
-            data = validar_data(data, "Data de entrada")
-            repo.atualizar_posicao(posicao_id, data_entrada=data)
-            print("✅ Data de entrada atualizada com sucesso.")
-
-        elif op == "4":
-            novo_preco = obter_input("Novo preço de entrada: ", tipo=float, obrigatorio=True)
-            repo.atualizar_posicao(posicao_id, preco_entrada=novo_preco)
-
-            # Recalcular preco_entrada_total se já existir quantidade
-            attrs = repo.carregar_atributos_posicao(posicao_id)
-            if attrs and attrs.get("quantidade") is not None:
-                quantidade = attrs["quantidade"]
-                preco_total = quantidade * novo_preco
-                repo.salvar_atributos_posicao(
-                    posicao_id,
-                    produto_id,
-                    quantidade=quantidade,
-                    preco_entrada_total=preco_total,
-                )
-                print(f"✅ Preço de entrada atualizado e preço total recalculado: ${preco_total:,.2f}")
+        try:
+            idx = int(op) - 1
+            if idx < 0 or idx >= len(campos):
+                print("❌ Opção inválida.")
+                continue
+            
+            campo = campos[idx]
+            nome_campo = campo['nome']
+            
+            # Editar campo básico da posição
+            if nome_campo not in ['quantidade', 'perfil', 'alvo1', 'alvo2', 'motivo', 'preco_entrada_total']:
+                if nome_campo == 'ativo':
+                    novo_valor = obter_input(f"Novo {campo['label']}: ", obrigatorio=campo.get('obrigatorio', True)).upper()
+                    repo.atualizar_posicao(posicao_id, ativo=novo_valor)
+                
+                elif nome_campo == 'side':
+                    novo_valor = obter_input(f"Novo {campo['label']} ({'/'.join(campo.get('opcoes', []))}): ", 
+                                            opcoes=campo.get('opcoes', []), obrigatorio=campo.get('obrigatorio', True))
+                    repo.atualizar_posicao(posicao_id, side=novo_valor)
+                
+                elif nome_campo == 'coingecko_id':
+                    novo_valor = obter_input(f"Novo {campo['label']}: ", obrigatorio=False)
+                    repo.atualizar_posicao(posicao_id, coingecko_id=novo_valor if novo_valor else None)
+                
+                elif nome_campo in ['data_entrada', 'data_saida']:
+                    novo_valor = obter_input(f"Nova {campo['label']} (YYYY-MM-DD): ", obrigatorio=campo.get('obrigatorio', True))
+                    novo_valor = validar_data(novo_valor, campo['label'])
+                    repo.atualizar_posicao(posicao_id, **{nome_campo: novo_valor})
+                
+                elif nome_campo in ['preco_entrada', 'preco_saida']:
+                    novo_valor = obter_input(f"Novo {campo['label']}: ", tipo=float, obrigatorio=campo.get('obrigatorio', True))
+                    repo.atualizar_posicao(posicao_id, **{nome_campo: novo_valor})
+                    
+                    # Se for preco_entrada e houver quantidade, recalcular preco_entrada_total
+                    if nome_campo == 'preco_entrada':
+                        attrs = repo.carregar_atributos_posicao(posicao_id)
+                        if attrs and attrs.get("quantidade") is not None:
+                            quantidade = attrs["quantidade"]
+                            preco_total = quantidade * novo_valor
+                            repo.salvar_atributos_posicao(
+                                posicao_id,
+                                produto_id,
+                                quantidade=quantidade,
+                                preco_entrada_total=preco_total,
+                            )
+                            print(f"   Preço total recalculado: ${preco_total:,.2f}")
+                
+                elif nome_campo == 'status':
+                    novo_valor = obter_input(f"Novo {campo['label']} ({'/'.join(campo.get('opcoes', []))}): ", 
+                                            opcoes=campo.get('opcoes', []), obrigatorio=campo.get('obrigatorio', True))
+                    repo.atualizar_posicao(posicao_id, status=novo_valor)
+                
+                print(f"✅ {campo['label']} atualizado com sucesso.")
+            
+            # Editar atributos específicos do produto
             else:
-                print("ℹ️ Preço de entrada atualizado. (Quantidade não encontrada para recalcular total.)")
-
-        elif op == "5":
-            nova_qtd = obter_input("Nova quantidade: ", tipo=float, obrigatorio=True)
-            # Obter preço de entrada atual para recalcular total
-            pos = repo.carregar_posicao(posicao_id)
-            preco_ent = pos.get("preco_entrada") if pos else None
-            preco_total = None
-            if preco_ent is not None:
-                preco_total = nova_qtd * preco_ent
-
-            repo.salvar_atributos_posicao(
-                posicao_id,
-                produto_id,
-                quantidade=nova_qtd,
-                preco_entrada_total=preco_total,
-            )
-            if preco_total is not None:
-                print(f"✅ Quantidade atualizada. Preço total: ${preco_total:,.2f}")
-            else:
-                print("✅ Quantidade atualizada. (Preço de entrada não encontrado para calcular total.)")
-
-        elif op == "6":
-            from utils.cli_utils import validar_data
-
-            data_saida = obter_input("Nova data de saída (YYYY-MM-DD): ", obrigatorio=True)
-            data_saida = validar_data(data_saida, "Data de saída")
-            repo.atualizar_posicao(posicao_id, data_saida=data_saida)
-            print("✅ Data de saída atualizada com sucesso.")
-
-        elif op == "7":
-            novo_preco_saida = obter_input("Novo preço de saída: ", tipo=float, obrigatorio=True)
-            repo.atualizar_posicao(posicao_id, preco_saida=novo_preco_saida)
-            print("✅ Preço de saída atualizado com sucesso.")
-
-        elif op == "8":
-            novo_status = obter_input("Novo status (open/closed): ", opcoes=["open", "closed"], obrigatorio=True)
-            repo.atualizar_posicao(posicao_id, status=novo_status)
-            print("✅ Status atualizado com sucesso.")
-
-        print()
-
-
-def _editar_posicao_generica(repo: SQLiteRepo, produto_id: int, posicao_id: int):
-    """
-    Edição genérica para produtos não-Spot (ex.: Perpétuos, como Crypto Signals).
-
-    Campos suportados:
-      - ativo
-      - side
-      - coingecko_id
-      - data_entrada
-      - preco_entrada
-      - data_saida
-      - preco_saida
-      - status
-    """
-    imprimir_secao("EDIÇÃO DE POSIÇÃO (GENÉRICA)")
-
-    while True:
-        print("Campos disponíveis para edição:")
-        print("1. Ativo")
-        print("2. Side (long/short)")
-        print("3. CoinGecko ID")
-        print("4. Data de entrada")
-        print("5. Preço de entrada")
-        print("6. Data de saída")
-        print("7. Preço de saída")
-        print("8. Status (open/closed)")
-        print("0. Voltar")
-
-        op = obter_input("\nEscolha o campo para editar: ", opcoes=[str(i) for i in range(0, 9)], obrigatorio=True)
-
-        if op == "0":
-            break
-
-        if op == "1":
-            novo_ativo = obter_input("Novo ativo (ex: BTC, ETH): ", obrigatorio=True).upper()
-            repo.atualizar_posicao(posicao_id, ativo=novo_ativo)
-            print("✅ Ativo atualizado com sucesso.")
-
-        elif op == "2":
-            novo_side = obter_input("Novo side (long/short): ", opcoes=["long", "short"], obrigatorio=True)
-            repo.atualizar_posicao(posicao_id, side=novo_side)
-            print("✅ Side atualizado com sucesso.")
-
-        elif op == "3":
-            novo_cgid = obter_input("Novo CoinGecko ID (ex: bitcoin, ethereum): ", obrigatorio=False)
-            repo.atualizar_posicao(posicao_id, coingecko_id=novo_cgid if novo_cgid else None)
-            print("✅ CoinGecko ID atualizado com sucesso.")
-
-        elif op == "4":
-            from utils.cli_utils import validar_data
-
-            data = obter_input("Nova data de entrada (YYYY-MM-DD): ", obrigatorio=True)
-            data = validar_data(data, "Data de entrada")
-            repo.atualizar_posicao(posicao_id, data_entrada=data)
-            print("✅ Data de entrada atualizada com sucesso.")
-
-        elif op == "5":
-            novo_preco = obter_input("Novo preço de entrada: ", tipo=float, obrigatorio=True)
-            repo.atualizar_posicao(posicao_id, preco_entrada=novo_preco)
-            print("✅ Preço de entrada atualizado com sucesso.")
-
-        elif op == "6":
-            from utils.cli_utils import validar_data
-
-            data_saida = obter_input("Nova data de saída (YYYY-MM-DD): ", obrigatorio=True)
-            data_saida = validar_data(data_saida, "Data de saída")
-            repo.atualizar_posicao(posicao_id, data_saida=data_saida)
-            print("✅ Data de saída atualizada com sucesso.")
-
-        elif op == "7":
-            novo_preco_saida = obter_input("Novo preço de saída: ", tipo=float, obrigatorio=True)
-            repo.atualizar_posicao(posicao_id, preco_saida=novo_preco_saida)
-            print("✅ Preço de saída atualizado com sucesso.")
-
-        elif op == "8":
-            novo_status = obter_input("Novo status (open/closed): ", opcoes=["open", "closed"], obrigatorio=True)
-            repo.atualizar_posicao(posicao_id, status=novo_status)
-            print("✅ Status atualizado com sucesso.")
+                if nome_campo == 'quantidade':
+                    nova_qtd = obter_input(f"Nova {campo['label']}: ", tipo=float, obrigatorio=campo.get('obrigatorio', True))
+                    # Obter preço de entrada atual para recalcular total
+                    pos = repo.carregar_posicao(posicao_id)
+                    preco_ent = pos.get("preco_entrada") if pos else None
+                    preco_total = None
+                    if preco_ent is not None:
+                        preco_total = nova_qtd * preco_ent
+                    
+                    # Carregar atributos existentes para preservar outros campos
+                    attrs = repo.carregar_atributos_posicao(posicao_id) or {}
+                    repo.salvar_atributos_posicao(
+                        posicao_id,
+                        produto_id,
+                        quantidade=nova_qtd,
+                        preco_entrada_total=preco_total,
+                        perfil=attrs.get('perfil'),
+                        alvo1=attrs.get('alvo1'),
+                        alvo2=attrs.get('alvo2'),
+                    )
+                    if preco_total is not None:
+                        print(f"✅ {campo['label']} atualizada. Preço total: ${preco_total:,.2f}")
+                    else:
+                        print(f"✅ {campo['label']} atualizada.")
+                
+                elif nome_campo == 'preco_entrada_total':
+                    # Preço total é calculado automaticamente, não deve ser editado diretamente
+                    print("ℹ️  Preço de entrada total é calculado automaticamente (quantidade × preço de entrada).")
+                    print("   Edite a quantidade ou o preço de entrada para alterar o total.")
+                
+                else:
+                    # perfil, alvo1, alvo2, motivo
+                    if campo['tipo'] == float:
+                        novo_valor = obter_input(f"Novo {campo['label']}: ", tipo=float, obrigatorio=campo.get('obrigatorio', False))
+                    else:
+                        novo_valor = obter_input(f"Novo {campo['label']}: ", obrigatorio=campo.get('obrigatorio', False))
+                    
+                    # Carregar atributos existentes para preservar outros campos
+                    attrs = repo.carregar_atributos_posicao(posicao_id) or {}
+                    kwargs = {nome_campo: novo_valor if novo_valor else None}
+                    # Preservar outros atributos
+                    for key in ['quantidade', 'preco_entrada_total', 'perfil', 'alvo1', 'alvo2', 'motivo']:
+                        if key != nome_campo and key in attrs:
+                            kwargs[key] = attrs[key]
+                    
+                    repo.salvar_atributos_posicao(posicao_id, produto_id, **kwargs)
+                    print(f"✅ {campo['label']} atualizado com sucesso.")
+        
+        except ValueError as e:
+            print(f"❌ Erro ao processar valor: {e}")
+        except Exception as e:
+            print(f"❌ Erro ao atualizar: {e}")
 
         print()
 
@@ -271,9 +213,6 @@ def main():
         print(f"❌ Produto com ID {produto_id} não encontrado.")
         return
 
-    tipo_nome = str(produto_info.get("tipo", "") or "")
-    tipo_spot = "spot" in tipo_nome.lower()
-
     df_pos = _listar_posicoes_do_produto(repo, produto_id)
     if df_pos is None or df_pos.empty:
         return
@@ -285,10 +224,8 @@ def main():
         print(f"❌ Posição {posicao_id} não pertence ao produto {produto_id}.")
         return
 
-    if tipo_spot:
-        _editar_posicao_spot(repo, produto_id, posicao_id)
-    else:
-        _editar_posicao_generica(repo, produto_id, posicao_id)
+    # Usar função dinâmica que se adapta ao produto
+    _editar_posicao_dinamica(repo, produto_id, posicao_id)
 
     print("\n✅ Edição concluída.")
 

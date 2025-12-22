@@ -10,6 +10,7 @@ from services.valor_diario_service import ValorDiarioService
 from storage.sqlite_repo import SQLiteRepo
 from domain.produto import Produto
 from utils.cli_utils import obter_input, validar_data, imprimir_titulo, imprimir_secao
+from utils.produto_utils import obter_atributos_necessarios_produto
 
 def main():
     imprimir_titulo("CRIAR POSIÇÃO")
@@ -58,12 +59,32 @@ def main():
     
     preco_entrada = obter_input("Preço de entrada: ", tipo=float, obrigatorio=True)
 
+    # Detectar atributos necessários para este produto específico
+    atributos_necessarios = obter_atributos_necessarios_produto(produto_id)
+    
+    # Coletar atributos dinamicamente
     quantidade = None
     preco_entrada_total = None
-    if "spot" in tipo_produto:
+    perfil = None
+    alvo1 = None
+    alvo2 = None
+    
+    if atributos_necessarios.get('quantidade'):
         quantidade = obter_input("Quantidade: ", tipo=float, obrigatorio=True)
         preco_entrada_total = quantidade * preco_entrada
         print(f"   Preço de entrada total: ${preco_entrada_total:,.2f}")
+    
+    if atributos_necessarios.get('perfil'):
+        perfil = obter_input("Perfil de risco: ", obrigatorio=False)
+    
+    if atributos_necessarios.get('alvo1'):
+        alvo1_input = obter_input("Alvo 1 (preço): ", tipo=float, obrigatorio=False)
+        alvo1 = alvo1_input if alvo1_input else None
+    
+    if atributos_necessarios.get('alvo2'):
+        alvo2_input = obter_input("Alvo 2 (preço): ", tipo=float, obrigatorio=False)
+        alvo2 = alvo2_input if alvo2_input else None
+    
     coingecko_id = obter_input("CoinGecko ID (ex: bitcoin, ethereum): ", obrigatorio=False)
     
     # Abrir posição
@@ -89,17 +110,20 @@ def main():
     # Salvar posição
     posicao_id = repo.salvar_posicao(produto_id, p)
 
-    # Se for produto Spot, salvar atributos específicos (quantidade e preço total)
-    if "spot" in tipo_produto:
+    # Salvar atributos específicos do produto (se houver algum necessário)
+    if any([quantidade is not None, preco_entrada_total is not None, perfil, alvo1 is not None, alvo2 is not None]):
         try:
             repo.salvar_atributos_posicao(
                 posicao_id,
                 produto_id,
                 quantidade=quantidade,
                 preco_entrada_total=preco_entrada_total,
+                perfil=perfil,
+                alvo1=alvo1,
+                alvo2=alvo2,
             )
         except Exception as e:
-            print(f"⚠️  Não foi possível salvar atributos de quantidade/preço total: {e}")
+            print(f"⚠️  Não foi possível salvar atributos da posição: {e}")
     
     print(f"\n✅ Posição criada com ID: {posicao_id}")
     print(f"   Ativo: {ativo}")
@@ -108,6 +132,12 @@ def main():
     if quantidade is not None:
         print(f"   Quantidade: {quantidade:,.4f}")
         print(f"   Preço de entrada total: ${preco_entrada_total:,.2f}")
+    if perfil:
+        print(f"   Perfil: {perfil}")
+    if alvo1 is not None:
+        print(f"   Alvo 1: ${alvo1:.2f}")
+    if alvo2 is not None:
+        print(f"   Alvo 2: ${alvo2:.2f}")
     
     # Verificar se dados do CoinGecko estão disponíveis
     if coingecko_id:
