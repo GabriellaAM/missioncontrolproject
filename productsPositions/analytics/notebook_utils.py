@@ -91,8 +91,30 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
             df['alvo1'] = df.apply(lambda row: _formatar_valor_com_percent(row, 'alvo1'), axis=1)
         if 'alvo2' in df.columns and 'preco_atual' in df.columns:
             df['alvo2'] = df.apply(lambda row: _formatar_valor_com_percent(row, 'alvo2'), axis=1)
-        if 'stop_atual' in df.columns and 'preco_atual' in df.columns:
-            df['stop_atual'] = df.apply(lambda row: _formatar_valor_com_percent(row, 'stop_atual'), axis=1)
+        # Formatar stop_atual (para todos os produtos)
+        if 'stop_atual' in df.columns:
+            if 'preco_atual' in df.columns:
+                # Para Crypto Signals, usar formatação com porcentagem
+                if produto_id == 4970919917:
+                    df['stop_atual'] = df.apply(lambda row: _formatar_valor_com_percent(row, 'stop_atual'), axis=1)
+                else:
+                    # Para outros produtos, apenas valor monetário ou "—"
+                    def _formatar_stop_atual(x):
+                        if pd.isna(x) or x is None:
+                            return "—"
+                        if isinstance(x, (int, float)):
+                            return f"${x:,.2f}"
+                        return str(x)
+                    df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
+            else:
+                # Se não houver preco_atual, formatar apenas como monetário
+                def _formatar_stop_atual(x):
+                    if pd.isna(x) or x is None:
+                        return "—"
+                    if isinstance(x, (int, float)):
+                        return f"${x:,.2f}"
+                    return str(x)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
 
         # Agora, depois de usar os valores numéricos para as porcentagens, formatar preco_atual como string
         # IMPORTANTE: Salvar valor numérico do preco_atual antes de formatar (para usar em preco_saida depois)
@@ -221,7 +243,7 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         colunas_para_ocultar = ['perfil', 'alvo1', 'alvo2']
         df = df.drop(columns=[c for c in colunas_para_ocultar if c in df.columns])
 
-    # Para o produto Crypto Signals, usar exatamente as colunas e ordem solicitadas
+    # Para o produto Crypto Signals, usar exatamente as colunas e ordem solicitadas (ordem original)
     if produto_id == 4970919917:
         colunas_signals = [
             'data_entrada',
@@ -233,7 +255,7 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
             'pnl',
             'alvo1',
             'alvo2',
-            'stop_atual',
+            'stop_atual',  # Ordem original: antes de rr
             'rr',
         ]
         colunas_existentes = [c for c in colunas_signals if c in df.columns]
@@ -258,6 +280,9 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         ]
     # Se for Perpétuos, usar ordem específica
     elif tipo_perpetuos:
+        # Salvar stop_atual antes de remover colunas
+        stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
+        
         colunas_perpetuos = [
             'data_entrada',
             'ativo',
@@ -276,13 +301,36 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'preco_atual', 'status']
         df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
         
+        # Adicionar stop_atual como última coluna
+        if stop_atual_col is not None:
+            df['stop_atual'] = stop_atual_col
+            # Formatar stop_atual se ainda não foi formatado
+            if df['stop_atual'].dtype != 'object':  # Se ainda não foi formatado
+                def _formatar_stop_atual(x):
+                    if pd.isna(x) or x is None:
+                        return "—"
+                    if isinstance(x, (int, float)):
+                        return f"${x:,.2f}"
+                    return str(x)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
+        
         return df
 
-    colunas_outras = [col for col in df.columns if col not in colunas_atributos + colunas_principais]
+    colunas_outras = [col for col in df.columns if col not in colunas_atributos + colunas_principais + ['stop_atual']]
     
-    for col in colunas_principais + colunas_atributos + colunas_outras:
-        if col in df.columns:
+    # Construir ordem: principais + outros + atributos (exceto stop_atual) + stop_atual por último
+    for col in colunas_principais + colunas_outras:
+        if col in df.columns and col != 'stop_atual':
             colunas_ordenadas.append(col)
+    
+    # Adicionar atributos exceto stop_atual
+    for col in colunas_atributos:
+        if col in df.columns and col != 'stop_atual':
+            colunas_ordenadas.append(col)
+    
+    # stop_atual sempre por último
+    if 'stop_atual' in df.columns:
+        colunas_ordenadas.append('stop_atual')
     
     df = df[colunas_ordenadas]
 
@@ -295,6 +343,10 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
             colunas_para_remover_spot.append('id')
         if colunas_para_remover_spot:
             df = df.drop(columns=colunas_para_remover_spot)
+        # Reordenar para garantir stop_atual por último
+        if 'stop_atual' in df.columns:
+            outras_cols = [c for c in df.columns if c != 'stop_atual']
+            df = df[outras_cols + ['stop_atual']]
 
     return df
 
@@ -498,6 +550,16 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         
         if 'pnl' in df.columns:
             df['pnl'] = df['pnl'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "")
+        
+        # Formatar stop_atual (para todos os produtos)
+        if 'stop_atual' in df.columns:
+            def _formatar_stop_atual_fechadas(x):
+                if pd.isna(x) or x is None:
+                    return "—"
+                if isinstance(x, (int, float)):
+                    return f"${x:,.2f}"
+                return str(x)
+            df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual_fechadas)
 
     # Ordenar pela data de entrada (mais antiga -> mais nova), se existir
     if 'data_entrada' in df.columns:
@@ -507,7 +569,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
             df['_data_entrada_sort'] = df['data_entrada']
         df = df.sort_values('_data_entrada_sort').drop(columns=['_data_entrada_sort'])
 
-    # Para Crypto Signals, usar exatamente as colunas e ordem solicitadas
+    # Para Crypto Signals, usar exatamente as colunas e ordem solicitadas (ordem original)
     if produto_id == 4970919917:
         colunas_signals = [
             'data_entrada',
@@ -519,6 +581,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
             'preco_saida',
             'pnl',
             'motivo',
+            # stop_atual não aparece em posições fechadas do Crypto Signals (ordem original)
         ]
         colunas_existentes = [c for c in colunas_signals if c in df.columns]
         df = df[colunas_existentes]
@@ -526,6 +589,9 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
     
     # Para produtos Spot, usar ordem específica e remover colunas indesejadas
     if tipo_spot:
+        # Salvar stop_atual antes de remover colunas
+        stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
+        
         colunas_spot = [
             'data_entrada',
             'data_saida',
@@ -544,10 +610,26 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'status', 'side', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2']
         df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
         
+        # Adicionar stop_atual como última coluna
+        if stop_atual_col is not None:
+            df['stop_atual'] = stop_atual_col
+            # Formatar se ainda não foi formatado
+            if df['stop_atual'].dtype != 'object':
+                def _formatar_stop_atual(x):
+                    if pd.isna(x) or x is None:
+                        return "—"
+                    if isinstance(x, (int, float)):
+                        return f"${x:,.2f}"
+                    return str(x)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
+        
         return df
 
     # Para produtos Perpétuos, usar ordem específica
     if tipo_perpetuos:
+        # Salvar stop_atual antes de remover colunas
+        stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
+        
         colunas_perpetuos = [
             'data_entrada',
             'data_saida',
@@ -564,8 +646,21 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         df = df[colunas_existentes]
         
         # Remover colunas indesejadas
-        colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'status', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2', 'preco_atual', 'stop_atual']
+        colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'status', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2', 'preco_atual']
         df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
+        
+        # Adicionar stop_atual como última coluna
+        if stop_atual_col is not None:
+            df['stop_atual'] = stop_atual_col
+            # Formatar se ainda não foi formatado
+            if df['stop_atual'].dtype != 'object':
+                def _formatar_stop_atual(x):
+                    if pd.isna(x) or x is None:
+                        return "—"
+                    if isinstance(x, (int, float)):
+                        return f"${x:,.2f}"
+                    return str(x)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
         
         return df
     
@@ -857,11 +952,21 @@ def display_historico_posicoes(produto_id=None, formatar=True):
                 )
 
         # Atributos do produto (Signals)
-        for col in ['alvo1', 'alvo2', 'stop_atual']:
+        for col in ['alvo1', 'alvo2']:
             if col in df.columns:
                 df[col] = df[col].apply(
                     lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
                 )
+        
+        # Formatar stop_atual (para todos os produtos)
+        if 'stop_atual' in df.columns:
+            def _formatar_stop_atual_historico(x):
+                if pd.isna(x) or x is None:
+                    return "—"
+                if isinstance(x, (int, float)):
+                    return f"${x:,.2f}"
+                return str(x)
+            df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual_historico)
 
         if 'pnl' in df.columns:
             df['pnl'] = df['pnl'].apply(
@@ -884,7 +989,7 @@ def display_historico_posicoes(produto_id=None, formatar=True):
         if 'motivo' in df.columns:
             df['motivo'] = df['motivo'].apply(lambda x: x if pd.notna(x) else "—")
 
-    # Para Crypto Signals, usar exatamente as colunas e ordem solicitadas
+    # Para Crypto Signals, usar exatamente as colunas e ordem solicitadas (ordem original)
     if produto_id == 4970919917:
         colunas_signals = [
             'status',
@@ -899,7 +1004,7 @@ def display_historico_posicoes(produto_id=None, formatar=True):
             'pnl',
             'alvo1',
             'alvo2',
-            'stop_atual',
+            'stop_atual',  # Ordem original: antes de rr e motivo
             'rr',
             'motivo',
         ]
@@ -911,6 +1016,9 @@ def display_historico_posicoes(produto_id=None, formatar=True):
 
     # Para produtos Spot, usar ordem específica
     if tipo_spot:
+        # Salvar stop_atual antes de remover colunas
+        stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
+        
         colunas_spot = [
             'status',
             'data_entrada',
@@ -928,8 +1036,21 @@ def display_historico_posicoes(produto_id=None, formatar=True):
         
         # Remover colunas indesejadas explicitamente (mantendo preco_saida e preco_saida_total que foram unificados)
         colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'side', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2', 
-                                'preco_atual', 'preco_atual_total', 'stop_atual']
+                                'preco_atual', 'preco_atual_total']
         df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
+        
+        # Adicionar stop_atual como última coluna
+        if stop_atual_col is not None:
+            df['stop_atual'] = stop_atual_col
+            # Formatar se ainda não foi formatado
+            if df['stop_atual'].dtype != 'object':
+                def _formatar_stop_atual(x):
+                    if pd.isna(x) or x is None:
+                        return "—"
+                    if isinstance(x, (int, float)):
+                        return f"${x:,.2f}"
+                    return str(x)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
         
         # Substituir quaisquer NaN remanescentes por "—"
         df = df.fillna("—")
@@ -953,9 +1074,25 @@ def display_historico_posicoes(produto_id=None, formatar=True):
         colunas_existentes = [c for c in colunas_perpetuos if c in df.columns]
         df = df[colunas_existentes]
         
+        # Salvar stop_atual antes de remover colunas
+        stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
+        
         # Remover colunas indesejadas
-        colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2', 'preco_atual', 'stop_atual']
+        colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2', 'preco_atual']
         df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
+        
+        # Adicionar stop_atual como última coluna
+        if stop_atual_col is not None:
+            df['stop_atual'] = stop_atual_col
+            # Formatar se ainda não foi formatado
+            if df['stop_atual'].dtype != 'object':
+                def _formatar_stop_atual(x):
+                    if pd.isna(x) or x is None:
+                        return "—"
+                    if isinstance(x, (int, float)):
+                        return f"${x:,.2f}"
+                    return str(x)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
         
         # Substituir quaisquer NaN remanescentes por "—"
         df = df.fillna("—")

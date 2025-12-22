@@ -130,34 +130,40 @@ def posicoes_abertas(produto_id=None):
                     precos_atuais_totais.append(None)
             df['preco_atual_total'] = precos_atuais_totais
 
-        # Se for o produto Crypto Signals, calcular stop_atual, RR e PnL
+        # Calcular stop_atual para TODOS os produtos (último stop de cada posição)
+        stops_atuais = []
+        posicao_ids = df['id'].tolist()
+        stops_map = {}
+        if posicao_ids:
+            import sqlite3
+            conn_stops = sqlite3.connect(repo.db_path)
+            try:
+                for pos_id in posicao_ids:
+                    df_stops = pd.read_sql_query(
+                        "SELECT valor FROM stops WHERE posicao_id = ? ORDER BY data DESC LIMIT 1",
+                        conn_stops,
+                        params=(pos_id,)
+                    )
+                    if not df_stops.empty:
+                        stops_map[pos_id] = df_stops.iloc[0]['valor']
+            finally:
+                conn_stops.close()
+        
+        for _, row in df.iterrows():
+            posicao_id = row.get('id')
+            stop_atual = stops_map.get(posicao_id) if posicao_id else None
+            stops_atuais.append(stop_atual)
+        
+        df['stop_atual'] = stops_atuais
+
+        # Se for o produto Crypto Signals, calcular RR e PnL
         if produto_id == 4970919917 or (produto_id is None and 'alvo2' in df.columns):
-            stops_atuais = []
             rrs = []
             pnls = []
-            
-            # Buscar stops de todas as posições de uma vez (mais eficiente)
-            posicao_ids = df['id'].tolist()
-            stops_map = {}
-            if posicao_ids:
-                import sqlite3
-                conn_stops = sqlite3.connect(repo.db_path)
-                try:
-                    for pos_id in posicao_ids:
-                        df_stops = pd.read_sql_query(
-                            "SELECT valor FROM stops WHERE posicao_id = ? ORDER BY data DESC LIMIT 1",
-                            conn_stops,
-                            params=(pos_id,)
-                        )
-                        if not df_stops.empty:
-                            stops_map[pos_id] = df_stops.iloc[0]['valor']
-                finally:
-                    conn_stops.close()
             
             for _, row in df.iterrows():
                 posicao_id = row.get('id')
                 stop_atual = stops_map.get(posicao_id) if posicao_id else None
-                stops_atuais.append(stop_atual)
                 
                 preco_atual = row.get('preco_atual')
                 alvo2 = row.get('alvo2') if 'alvo2' in df.columns else None
@@ -182,7 +188,6 @@ def posicoes_abertas(produto_id=None):
                     pnl = None
                 pnls.append(pnl)
             
-            df['stop_atual'] = stops_atuais
             df['rr'] = rrs
             df['pnl'] = pnls
 
@@ -338,10 +343,37 @@ def posicoes_fechadas(produto_id=None):
         conn.close()
     
     # Para posições fechadas, preço_atual = preço_saida
+    # Calcular stop_atual para TODAS as posições fechadas
     # Calcular RR e PnL para Crypto Signals (produto_id 4970919917)
     # Calcular preco_saida_total e PnL para produtos Spot
     if not df.empty:
         df['preco_atual'] = df['preco_saida']
+        
+        # Calcular stop_atual (último stop de cada posição fechada)
+        stops_atuais = []
+        posicao_ids = df['id'].tolist()
+        stops_map = {}
+        if posicao_ids:
+            import sqlite3
+            conn_stops = sqlite3.connect(repo.db_path)
+            try:
+                for pos_id in posicao_ids:
+                    df_stops = pd.read_sql_query(
+                        "SELECT valor FROM stops WHERE posicao_id = ? ORDER BY data DESC LIMIT 1",
+                        conn_stops,
+                        params=(pos_id,)
+                    )
+                    if not df_stops.empty:
+                        stops_map[pos_id] = df_stops.iloc[0]['valor']
+            finally:
+                conn_stops.close()
+        
+        for _, row in df.iterrows():
+            posicao_id = row.get('id')
+            stop_atual = stops_map.get(posicao_id) if posicao_id else None
+            stops_atuais.append(stop_atual)
+        
+        df['stop_atual'] = stops_atuais
         
         # Para produtos Spot, calcular preco_saida_total (quantidade * preco_saida)
         if tipo_spot:
