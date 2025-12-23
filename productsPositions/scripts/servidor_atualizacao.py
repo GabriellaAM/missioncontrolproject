@@ -24,11 +24,24 @@ from datetime import datetime
 import pandas as pd
 
 class AtualizacaoHandler(BaseHTTPRequestHandler):
+    def _set_cors_headers(self):
+        """Define headers CORS para permitir requisições do navegador"""
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+    
+    def do_OPTIONS(self):
+        """Handle OPTIONS requests (preflight CORS)"""
+        self.send_response(200)
+        self._set_cors_headers()
+        self.end_headers()
+    
     def do_GET(self):
         """Handle GET requests"""
         if self.path == '/':
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
+            self._set_cors_headers()
             self.end_headers()
             self.wfile.write(b'<h1>Servidor de Atualizacao Ativo</h1><p>Use o botao Atualizar no HTML para atualizar os dados.</p>')
             return
@@ -44,6 +57,7 @@ class AtualizacaoHandler(BaseHTTPRequestHandler):
             if not produto_id or not tipo_dado:
                 self.send_response(400)
                 self.send_header('Content-type', 'application/json')
+                self._set_cors_headers()
                 self.end_headers()
                 self.wfile.write(json.dumps({'erro': 'produto_id e tipo_dado sao obrigatorios'}).encode())
                 return
@@ -53,6 +67,7 @@ class AtualizacaoHandler(BaseHTTPRequestHandler):
             except ValueError:
                 self.send_response(400)
                 self.send_header('Content-type', 'application/json')
+                self._set_cors_headers()
                 self.end_headers()
                 self.wfile.write(json.dumps({'erro': 'produto_id deve ser um numero'}).encode())
                 return
@@ -71,16 +86,29 @@ class AtualizacaoHandler(BaseHTTPRequestHandler):
             if tipo_dado not in funcoes_display:
                 self.send_response(400)
                 self.send_header('Content-type', 'application/json')
+                self._set_cors_headers()
                 self.end_headers()
                 self.wfile.write(json.dumps({'erro': f'tipo_dado "{tipo_dado}" nao suportado'}).encode())
                 return
             
             # Obter dados atualizados
-            df = funcoes_display[tipo_dado]()
+            try:
+                df = funcoes_display[tipo_dado]()
+            except Exception as e:
+                import traceback
+                print(f"Erro ao obter dados: {e}")
+                print(traceback.format_exc())
+                self.send_response(500)
+                self.send_header('Content-type', 'application/json')
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps({'erro': f'Erro ao processar dados: {str(e)}'}).encode())
+                return
             
             if df is None or df.empty:
                 self.send_response(404)
                 self.send_header('Content-type', 'application/json')
+                self._set_cors_headers()
                 self.end_headers()
                 self.wfile.write(json.dumps({'erro': 'Nenhum dado encontrado'}).encode())
                 return
@@ -110,7 +138,19 @@ class AtualizacaoHandler(BaseHTTPRequestHandler):
             
             # Criar HTML
             df_html = df.copy()
+            # Preservar coluna pnl antes do fillna
+            if 'pnl' in df_html.columns:
+                # Garantir que pnl seja string e preserve valores formatados
+                df_html['pnl'] = df_html['pnl'].apply(
+                    lambda x: str(x) if pd.notna(x) and x is not None and str(x).strip() != '' else '—'
+                )
+            # Preencher outros valores NaN com string vazia
             df_html = df_html.fillna('')
+            # Garantir que pnl não seja string vazia após fillna
+            if 'pnl' in df_html.columns:
+                df_html['pnl'] = df_html['pnl'].apply(
+                    lambda x: '—' if (x == '' or str(x).strip() == '' or (isinstance(x, float) and pd.isna(x))) else str(x)
+                )
             
             timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             colunas_atributos = ['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2', 'stop_atual']
@@ -124,7 +164,7 @@ class AtualizacaoHandler(BaseHTTPRequestHandler):
             # Retornar sucesso com caminho do arquivo
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._set_cors_headers()
             self.end_headers()
             self.wfile.write(json.dumps({
                 'sucesso': True,
@@ -138,6 +178,7 @@ class AtualizacaoHandler(BaseHTTPRequestHandler):
         # 404 para outras rotas
         self.send_response(404)
         self.send_header('Content-type', 'text/plain')
+        self._set_cors_headers()
         self.end_headers()
         self.wfile.write(b'Not Found')
     

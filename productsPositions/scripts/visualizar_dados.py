@@ -321,8 +321,17 @@ def exibir_dataframe_html(df, titulo="DataFrame", produto_id=None, tipo_dado=Non
                     try {{
                         // Fazer requisição ao servidor
                         const url = `${{servidorUrl}}/atualizar?produto_id=${{produtoId}}&tipo_dado=${{tipoDado}}`;
+                        console.log('Fazendo requisição para:', url);
                         const response = await fetch(url);
+                        
+                        if (!response.ok) {{
+                            const errorText = await response.text();
+                            console.error('Erro HTTP:', response.status, errorText);
+                            throw new Error(`Erro HTTP ${{response.status}}: ${{errorText}}`);
+                        }}
+                        
                         const data = await response.json();
+                        console.log('Resposta recebida:', data);
                         
                         if (data.sucesso) {{
                             // Atualizar timestamp
@@ -337,7 +346,12 @@ def exibir_dataframe_html(df, titulo="DataFrame", produto_id=None, tipo_dado=Non
                         }}
                     }} catch (error) {{
                         console.error('Erro ao atualizar:', error);
-                        alert('Erro ao atualizar dados. Certifique-se de que o servidor de atualização está rodando.\\n\\nExecute: python scripts/servidor_atualizacao.py');
+                        const erroDiv = document.getElementById('erro');
+                        if (erroDiv) {{
+                            erroDiv.style.display = 'block';
+                            erroDiv.innerHTML = `<strong>❌ Erro ao atualizar dados:</strong><br><small>${{error.message}}</small><br><small>Certifique-se de que o servidor está rodando: <code>python scripts/servidor_atualizacao.py</code></small>`;
+                        }}
+                        alert('Erro ao atualizar dados: ' + error.message + '\\n\\nCertifique-se de que o servidor de atualização está rodando.\\n\\nExecute: python scripts/servidor_atualizacao.py');
                         btn.disabled = false;
                         btn.textContent = '🔄 Atualizar';
                         loading.classList.remove('show');
@@ -528,7 +542,7 @@ def main():
                 print("\n" + "="*80)
                 exibir_dataframe_bonito(df, "Histórico (Abertas + Fechadas)")
                 print("="*80)
-                mostrar_opcoes_exportacao(df, "Histórico (Abertas + Fechadas)", produto_id, "historico_posicoes")
+                mostrar_opcoes_exportacao(df, "Histórico (Abertas + Fechadas)", produto_id, "historico")
             else:
                 print("❌ Nenhuma posição encontrada para o histórico")
 

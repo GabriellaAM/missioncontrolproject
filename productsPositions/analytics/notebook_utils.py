@@ -116,6 +116,12 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
                     return str(x)
                 df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
 
+        # Formatar alocação (percentual) se existir
+        if 'alocacao' in df.columns:
+            df['alocacao'] = df['alocacao'].apply(
+                lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "—"
+            )
+
         # Agora, depois de usar os valores numéricos para as porcentagens, formatar preco_atual como string
         # IMPORTANTE: Salvar valor numérico do preco_atual antes de formatar (para usar em preco_saida depois)
         preco_atual_numerico = None
@@ -233,7 +239,21 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
             )
 
     # Formatar PnL em porcentagem (após todas as formatações específicas)
-    if 'pnl' in df.columns:
+    # Se for USDT, exibir "—" ao invés de calcular PnL
+    if 'pnl' in df.columns and 'ativo' in df.columns:
+        def _formatar_pnl_com_usdt(row):
+            ativo = str(row.get('ativo', '')).strip().upper()
+            pnl = row.get('pnl')
+            # Se for USDT, sempre exibir "—" (verificar antes de qualquer outra coisa)
+            if ativo == 'USDT':
+                return "—"
+            # Caso contrário, formatar normalmente
+            if pd.notna(pnl) and pnl is not None and isinstance(pnl, (int, float)):
+                return f"{pnl:.2f}%"
+            return "" if pd.isna(pnl) or pnl is None else str(pnl)
+        
+        df['pnl'] = df.apply(_formatar_pnl_com_usdt, axis=1)
+    elif 'pnl' in df.columns:
         df['pnl'] = df['pnl'].apply(
             lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None and isinstance(x, (int, float)) else ("" if pd.isna(x) or x is None else str(x))
         )
@@ -243,6 +263,21 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         colunas_para_ocultar = ['perfil', 'alvo1', 'alvo2']
         df = df.drop(columns=[c for c in colunas_para_ocultar if c in df.columns])
 
+    # Se for o produto Alphacoins (ID 3476245316), EXC (ID 2150859854), HB (ID 2000449260) ou LC (ID 2394004756), mostrar apenas colunas específicas
+    if produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:
+        colunas_alphacoins_exc = [
+            'data_entrada',
+            'ativo',
+            'preco_entrada',
+            'preco_atual',
+            'pnl',
+            'alocacao',
+            'stop_atual',
+        ]
+        colunas_existentes = [c for c in colunas_alphacoins_exc if c in df.columns]
+        df = df[colunas_existentes]
+        return df
+    
     # Para o produto Crypto Signals, usar exatamente as colunas e ordem solicitadas (ordem original)
     if produto_id == 4970919917:
         colunas_signals = [
@@ -548,8 +583,19 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
             if 'motivo' in df.columns:
                 df['motivo'] = df['motivo'].apply(lambda x: x if pd.notna(x) else "")
         
-        if 'pnl' in df.columns:
-            df['pnl'] = df['pnl'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "")
+        # Formatar PnL: se for USDT, exibir "—"
+        if 'pnl' in df.columns and 'ativo' in df.columns:
+            def _formatar_pnl_fechadas(row):
+                ativo = str(row.get('ativo', '')).strip().upper()
+                pnl = row.get('pnl')
+                if ativo == 'USDT':
+                    return "—"
+                if pd.notna(pnl) and pnl is not None:
+                    return f"{pnl:.2f}%"
+                return "—"
+            df['pnl'] = df.apply(_formatar_pnl_fechadas, axis=1)
+        elif 'pnl' in df.columns:
+            df['pnl'] = df['pnl'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "—")
         
         # Formatar stop_atual (para todos os produtos)
         if 'stop_atual' in df.columns:
@@ -569,6 +615,29 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
             df['_data_entrada_sort'] = df['data_entrada']
         df = df.sort_values('_data_entrada_sort').drop(columns=['_data_entrada_sort'])
 
+    # Se for o produto Alphacoins (ID 3476245316), EXC (ID 2150859854), HB (ID 2000449260) ou LC (ID 2394004756), mostrar apenas colunas específicas
+    if produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:
+        colunas_alphacoins_exc = [
+            'data_entrada',
+            'data_saida',
+            'ativo',
+            'preco_entrada',
+            'preco_saida',
+            'pnl',
+            'alocacao',
+            'stop_atual',
+        ]
+        colunas_existentes = [c for c in colunas_alphacoins_exc if c in df.columns]
+        df = df[colunas_existentes]
+        # Formatar alocação se existir
+        if 'alocacao' in df.columns:
+            df['alocacao'] = df['alocacao'].apply(
+                lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "—"
+            )
+        # Substituir quaisquer NaN remanescentes por "—"
+        df = df.fillna("—")
+        return df
+    
     # Para Crypto Signals, usar exatamente as colunas e ordem solicitadas (ordem original)
     if produto_id == 4970919917:
         colunas_signals = [
@@ -751,7 +820,16 @@ def display_manutencoes_signals(produto_id=4970919917, formatar=True):
             df['preco_atual'] = df['preco_atual'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "N/A")
 
         # PnL em porcentagem
-        if 'pnl' in df.columns:
+        # Formatar PnL: se for USDT, exibir "—"
+        if 'pnl' in df.columns and 'ativo' in df.columns:
+            def _formatar_pnl_fechadas(row):
+                ativo = str(row.get('ativo', '')).strip().upper()
+                pnl = row.get('pnl')
+                if ativo == 'USDT':
+                    return "—"
+                return f"{pnl:.2f}%" if pd.notna(pnl) and pnl is not None else ""
+            df['pnl'] = df.apply(_formatar_pnl_fechadas, axis=1)
+        elif 'pnl' in df.columns:
             df['pnl'] = df['pnl'].apply(lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "")
 
         # RR em número simples
@@ -946,7 +1024,16 @@ def display_historico_posicoes(produto_id=None, formatar=True):
                 df['preco_saida'] = df['preco_saida'].apply(_formatar_preco_saida)
             if 'preco_saida_total' in df.columns:
                 df['preco_saida_total'] = df['preco_saida_total'].apply(_formatar_monetario)
-            if 'pnl' in df.columns:
+            # Formatar PnL: se for USDT, exibir "—"
+            if 'pnl' in df.columns and 'ativo' in df.columns:
+                def _formatar_pnl_historico(row):
+                    ativo = str(row.get('ativo', '')).strip().upper()
+                    pnl = row.get('pnl')
+                    if ativo == 'USDT':
+                        return "—"
+                    return f"{pnl:.2f}%" if pd.notna(pnl) and pnl is not None else "—"
+                df['pnl'] = df.apply(_formatar_pnl_historico, axis=1)
+            elif 'pnl' in df.columns:
                 df['pnl'] = df['pnl'].apply(
                     lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "—"
                 )
@@ -968,7 +1055,18 @@ def display_historico_posicoes(produto_id=None, formatar=True):
                 return str(x)
             df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual_historico)
 
-        if 'pnl' in df.columns:
+        # Formatar PnL: se for USDT, exibir "—"
+        if 'pnl' in df.columns and 'ativo' in df.columns:
+            def _formatar_pnl_historico_final(row):
+                ativo = str(row.get('ativo', '')).strip().upper()
+                pnl = row.get('pnl')
+                if ativo == 'USDT':
+                    return "—"
+                if isinstance(pnl, str):
+                    return pnl
+                return f"{pnl:.2f}%" if pd.notna(pnl) and pnl is not None else "—"
+            df['pnl'] = df.apply(_formatar_pnl_historico_final, axis=1)
+        elif 'pnl' in df.columns:
             df['pnl'] = df['pnl'].apply(
                 lambda x: (
                     str(x) if isinstance(x, str) 
@@ -988,6 +1086,30 @@ def display_historico_posicoes(produto_id=None, formatar=True):
             df['perfil'] = df['perfil'].apply(lambda x: x if pd.notna(x) else "—")
         if 'motivo' in df.columns:
             df['motivo'] = df['motivo'].apply(lambda x: x if pd.notna(x) else "—")
+
+    # Para o produto Alphacoins (ID 3476245316), EXC (ID 2150859854), HB (ID 2000449260) ou LC (ID 2394004756), mostrar apenas colunas específicas
+    if produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:
+        colunas_alphacoins_exc = [
+            'status',
+            'data_entrada',
+            'data_saida',
+            'ativo',
+            'preco_entrada',
+            'preco_saida',
+            'pnl',
+            'alocacao',
+            'stop_atual',
+        ]
+        colunas_existentes = [c for c in colunas_alphacoins_exc if c in df.columns]
+        df = df[colunas_existentes]
+        # Formatar alocação se existir
+        if 'alocacao' in df.columns:
+            df['alocacao'] = df['alocacao'].apply(
+                lambda x: f"{x:.2f}%" if pd.notna(x) and x is not None else "—"
+            )
+        # Substituir quaisquer NaN remanescentes por "—"
+        df = df.fillna("—")
+        return df
 
     # Para Crypto Signals, usar exatamente as colunas e ordem solicitadas (ordem original)
     if produto_id == 4970919917:

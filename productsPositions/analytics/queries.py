@@ -174,8 +174,12 @@ def posicoes_abertas(produto_id=None):
                 # PnL para Crypto Signals: calcular como long e inverter sinal para short
                 preco_entrada = row.get('preco_entrada')
                 side = str(row.get('side', 'long')).lower()
+                ativo = str(row.get('ativo', '')).strip().upper()
                 eh_signals = (produto_id == 4970919917) or (produto_id is None and row.get('produto_id') == 4970919917)
-                if eh_signals and preco_atual is not None and pd.notna(preco_entrada) and preco_entrada not in (0,):
+                # Se for USDT, PnL deve ser None (será exibido como "—")
+                if ativo == 'USDT':
+                    pnl = None
+                elif eh_signals and preco_atual is not None and pd.notna(preco_entrada) and preco_entrada not in (0,):
                     try:
                         # Calcular como long (rendimento normal)
                         pnl = ((preco_atual / preco_entrada) - 1) * 100.0
@@ -195,6 +199,12 @@ def posicoes_abertas(produto_id=None):
         if tipo_spot:
             pnls_spot = []
             for _, row in df.iterrows():
+                ativo = str(row.get('ativo', '')).strip().upper()
+                # Se for USDT, PnL deve ser None (será exibido como "—")
+                if ativo == 'USDT':
+                    pnls_spot.append(None)
+                    continue
+                
                 preco_entrada = row.get('preco_entrada')
                 preco_atual = row.get('preco_atual')
                 quantidade = row.get('quantidade')
@@ -244,6 +254,12 @@ def posicoes_abertas(produto_id=None):
             # Calcular PnL para Perpétuos: calcular como long e inverter sinal para short
             pnls_perpetuos = []
             for _, row in df.iterrows():
+                ativo = str(row.get('ativo', '')).strip().upper()
+                # Se for USDT, PnL deve ser None (será exibido como "—")
+                if ativo == 'USDT':
+                    pnls_perpetuos.append(None)
+                    continue
+                
                 quantidade = row.get('quantidade')
                 preco_entrada = row.get('preco_entrada')
                 preco_saida_total = row.get('preco_saida_total')
@@ -276,6 +292,59 @@ def posicoes_abertas(produto_id=None):
                 pnls_perpetuos.append(pnl)
 
             df['pnl'] = pnls_perpetuos
+        
+        # Para o produto Alphacoins (ID 3476245316), EXC (ID 2150859854), HB (ID 2000449260) e LC (ID 2394004756), calcular PnL e adicionar alocação atual
+        if produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:
+            # Calcular PnL simples: (preco_atual / preco_entrada - 1) * 100
+            if 'pnl' not in df.columns:
+                pnls_alphacoins = []
+                for _, row in df.iterrows():
+                    ativo = str(row.get('ativo', '')).strip().upper()
+                    # Se for USDT, PnL deve ser None (será exibido como "—")
+                    if ativo == 'USDT':
+                        pnls_alphacoins.append(None)
+                        continue
+                    
+                    preco_entrada = row.get('preco_entrada')
+                    preco_atual = row.get('preco_atual')
+                    if pd.notna(preco_entrada) and pd.notna(preco_atual) and preco_entrada != 0:
+                        try:
+                            pnl = ((preco_atual / preco_entrada) - 1.0) * 100.0
+                        except ZeroDivisionError:
+                            pnl = None
+                    else:
+                        pnl = None
+                    pnls_alphacoins.append(pnl)
+                df['pnl'] = pnls_alphacoins
+            
+            # Adicionar alocação atual (percentual mais recente por ATIVO, não por posição)
+            # Isso é necessário porque posições podem ter sido recriadas, mas a alocação é por ativo
+            alocacoes_atuais = []
+            if not df.empty:
+                import sqlite3
+                conn_aloc = sqlite3.connect(repo.db_path)
+                try:
+                    for _, row in df.iterrows():
+                        ativo = str(row.get('ativo', '')).strip().upper()
+                        # Buscar a última alocação do ativo (via JOIN com posições), independente do status
+                        df_aloc = pd.read_sql_query("""
+                            SELECT a.percentual 
+                            FROM alocacoes a
+                            JOIN posicoes p ON a.posicao_id = p.id
+                            WHERE p.ativo = ? AND p.produto_id = ?
+                            ORDER BY a.data DESC 
+                            LIMIT 1
+                        """, conn_aloc, params=(ativo, produto_id))
+                        if not df_aloc.empty:
+                            alocacoes_atuais.append(df_aloc.iloc[0]['percentual'])
+                        else:
+                            alocacoes_atuais.append(None)
+                finally:
+                    conn_aloc.close()
+            else:
+                alocacoes_atuais = []
+            
+            df['alocacao'] = alocacoes_atuais
     
     return df
 
@@ -421,7 +490,21 @@ def posicoes_fechadas(produto_id=None):
             # PnL: para Crypto Signals: ((preco_saida / preco_entrada) - 1) * 100
             # Para Spot: ((quantidade * preco_saida) / (quantidade * preco_entrada) - 1) * 100
             # Para Perpétuos: ((preco_saida_total / (quantidade * preco_entrada)) - 1) * 100
-            if tipo_spot:
+            # Para Alphacoins: ((preco_saida / preco_entrada) - 1) * 100
+            ativo = str(row.get('ativo', '')).strip().upper()
+            # Se for USDT, PnL deve ser None (será exibido como "—")
+            if ativo == 'USDT':
+                pnl = None
+            elif produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:
+                # Alphacoins/EXC: calcular PnL simples (preco_saida / preco_entrada - 1) * 100
+                if pd.notna(preco_entrada) and pd.notna(preco_saida) and preco_entrada != 0:
+                    try:
+                        pnl = ((preco_saida / preco_entrada) - 1.0) * 100.0
+                    except ZeroDivisionError:
+                        pnl = None
+                else:
+                    pnl = None
+            elif tipo_spot:
                 quantidade = row.get('quantidade')
                 if pd.notna(preco_entrada) and pd.notna(preco_saida) and pd.notna(quantidade) and quantidade != 0:
                     a = quantidade * preco_entrada
@@ -471,6 +554,37 @@ def posicoes_fechadas(produto_id=None):
 
         df['rr'] = rrs
         df['pnl'] = pnls
+    
+    # Para o produto Alphacoins (ID 3476245316), EXC (ID 2150859854), HB (ID 2000449260) e LC (ID 2394004756), adicionar alocação atual
+    if produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:
+        # Adicionar alocação atual (percentual mais recente por ATIVO, não por posição)
+        # Isso é necessário porque posições podem ter sido recriadas, mas a alocação é por ativo
+        alocacoes_atuais = []
+        if not df.empty:
+            import sqlite3
+            conn_aloc = sqlite3.connect(repo.db_path)
+            try:
+                for _, row in df.iterrows():
+                    ativo = str(row.get('ativo', '')).strip().upper()
+                    # Buscar a última alocação do ativo (via JOIN com posições), independente do status
+                    df_aloc = pd.read_sql_query("""
+                        SELECT a.percentual 
+                        FROM alocacoes a
+                        JOIN posicoes p ON a.posicao_id = p.id
+                        WHERE p.ativo = ? AND p.produto_id = ?
+                        ORDER BY a.data DESC 
+                        LIMIT 1
+                    """, conn_aloc, params=(ativo, produto_id))
+                    if not df_aloc.empty:
+                        alocacoes_atuais.append(df_aloc.iloc[0]['percentual'])
+                    else:
+                        alocacoes_atuais.append(None)
+            finally:
+                conn_aloc.close()
+        else:
+            alocacoes_atuais = []
+        
+        df['alocacao'] = alocacoes_atuais
     
     return df
 
@@ -561,6 +675,10 @@ def manutencoes_signals(produto_id=4970919917):
 
     # Calcular PnL: calcular como long e inverter sinal para short
     def _calc_pnl(row):
+        ativo = str(row.get('ativo', '')).strip().upper()
+        # Se for USDT, PnL deve ser None (será exibido como "—")
+        if ativo == 'USDT':
+            return None
         pe = row.get('preco_entrada')
         pa = row.get('preco_atual')
         side = str(row.get('side', 'long')).lower()
