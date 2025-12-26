@@ -192,6 +192,12 @@ class SQLiteRepo:
             if 'preco_entrada_total' not in colunas_atributos:
                 cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN preco_entrada_total REAL")
             # preco_saida_total foi removido - agora é calculado dinamicamente como quantidade * preco_saida
+
+            # Colunas para ATR Trailing Stop automático
+            if 'atr_period' not in colunas_atributos:
+                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN atr_period INTEGER")
+            if 'atr_multiplier' not in colunas_atributos:
+                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN atr_multiplier REAL")
             
             # Criar índices para performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto ON posicoes(produto_id)")
@@ -580,8 +586,9 @@ class SQLiteRepo:
         """Atualiza uma posição existente"""
         self._validar_posicao_existe(posicao_id)
         
-        campos_permitidos = ['ativo', 'coingecko_id', 'side', 'data_entrada', 
-                            'preco_entrada', 'data_saida', 'preco_saida', 'status']
+        campos_permitidos = ['ativo', 'coingecko_id', 'side', 'data_entrada',
+                            'preco_entrada', 'data_saida', 'preco_saida', 'status',
+                            'atr_period', 'atr_multiplier']
         
         updates = []
         valores = []
@@ -613,7 +620,28 @@ class SQLiteRepo:
                     self.registrar_ativo(ativo, kwargs['coingecko_id'])
         
         return posicao_id
-    
+
+    def obter_ultimo_stop(self, posicao_id):
+        """
+        Obtém o último stop salvo para uma posição.
+
+        Args:
+            posicao_id: ID da posição
+
+        Returns:
+            float or None: Valor do último stop, ou None se não houver
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT valor FROM stops
+                WHERE posicao_id = ?
+                ORDER BY data DESC
+                LIMIT 1
+            """, (posicao_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+
     def adicionar_stop_posicao(self, posicao_id, data, valor):
         """
         Adiciona um novo stop a uma posição existente
@@ -685,10 +713,11 @@ class SQLiteRepo:
     
     def salvar_atributos_posicao(self, posicao_id, produto_id, motivo=None, perfil=None,
                                  alvo1=None, alvo2=None,
-                                 quantidade=None, preco_entrada_total=None):
+                                 quantidade=None, preco_entrada_total=None,
+                                 atr_period=None, atr_multiplier=None):
         """
         Salva ou atualiza atributos específicos de uma posição por produto
-        
+
         Args:
             posicao_id: ID da posição
             produto_id: ID do produto
@@ -698,34 +727,36 @@ class SQLiteRepo:
             alvo2: Segundo alvo de preço (Crypto Signals)
             quantidade: Quantidade (Spot/Perpétuos)
             preco_entrada_total: Preço de entrada total (Spot/Perpétuos)
-        
+            atr_period: Período para cálculo do ATR (default: 14)
+            atr_multiplier: Multiplicador do ATR para trailing stop
+
         Returns:
             int: posicao_id
-        
-        Nota: 
+
+        Nota:
             - RR é calculado dinamicamente, não é armazenado
             - preco_saida_total é calculado dinamicamente como quantidade * preco_saida (não é armazenado)
         """
         self._validar_posicao_existe(posicao_id)
         self._validar_produto_existe(produto_id)
-        
+
         # Verificar se posição pertence ao produto
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM posicoes WHERE id = ? AND produto_id = ?", 
+            cursor.execute("SELECT id FROM posicoes WHERE id = ? AND produto_id = ?",
                          (posicao_id, produto_id))
             if cursor.fetchone() is None:
                 raise ValueError(f"Posição {posicao_id} não pertence ao produto {produto_id}")
-        
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             # UPSERT: atualiza apenas os campos explicitamente informados (não sobrescreve com NULL)
             cursor.execute("""
                 INSERT INTO posicao_atributos_produto (
                     posicao_id, produto_id, motivo, perfil, alvo1, alvo2,
-                    quantidade, preco_entrada_total
+                    quantidade, preco_entrada_total, atr_period, atr_multiplier
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(posicao_id) DO UPDATE SET
                     produto_id = excluded.produto_id,
                     motivo = COALESCE(excluded.motivo, posicao_atributos_produto.motivo),
@@ -734,14 +765,16 @@ class SQLiteRepo:
                     alvo2 = COALESCE(excluded.alvo2, posicao_atributos_produto.alvo2),
                     quantidade = COALESCE(excluded.quantidade, posicao_atributos_produto.quantidade),
                     preco_entrada_total = COALESCE(
-                        excluded.preco_entrada_total, 
+                        excluded.preco_entrada_total,
                         posicao_atributos_produto.preco_entrada_total
-                    )
+                    ),
+                    atr_period = COALESCE(excluded.atr_period, posicao_atributos_produto.atr_period),
+                    atr_multiplier = COALESCE(excluded.atr_multiplier, posicao_atributos_produto.atr_multiplier)
             """, (
                 posicao_id, produto_id, motivo, perfil, alvo1, alvo2,
-                quantidade, preco_entrada_total
+                quantidade, preco_entrada_total, atr_period, atr_multiplier
             ))
-        
+
         return posicao_id
     
     def carregar_atributos_posicao(self, posicao_id):
@@ -770,20 +803,22 @@ class SQLiteRepo:
     def atualizar_atributos_posicao(self, posicao_id, **kwargs):
         """
         Atualiza atributos específicos de uma posição
-        
+
         Args:
             posicao_id: ID da posição
-            **kwargs: Campos a atualizar (motivo, perfil, alvo1, alvo2, quantidade, preco_entrada_total)
-            
-        Nota: 
+            **kwargs: Campos a atualizar (motivo, perfil, alvo1, alvo2, quantidade,
+                      preco_entrada_total, atr_period, atr_multiplier)
+
+        Nota:
             - RR é calculado dinamicamente, não pode ser atualizado
             - preco_saida_total é calculado dinamicamente, não pode ser atualizado
-        
+
         Returns:
             int: posicao_id
         """
         campos_permitidos = ['motivo', 'perfil', 'alvo1', 'alvo2',
-                             'quantidade', 'preco_entrada_total']
+                             'quantidade', 'preco_entrada_total',
+                             'atr_period', 'atr_multiplier']
         
         updates = []
         valores = []

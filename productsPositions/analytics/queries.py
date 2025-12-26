@@ -98,7 +98,15 @@ def posicoes_abertas(produto_id=None):
             df = pd.read_sql_query(query, conn)
     finally:
         conn.close()
-    
+
+    # Auto-update ATR stops before loading (only saves if value changed)
+    if not df.empty:
+        try:
+            from services.atr_stop_service import atualizar_stops_posicoes_abertas
+            atualizar_stops_posicoes_abertas(repo, produto_id=produto_id, verbose=False)
+        except Exception:
+            pass  # Silently ignore errors in auto-update
+
     # Adicionar preço atual, stop atual, RR e PnL dinamicamente para posições abertas
     if not df.empty:
         # Primeiro, calcular preço atual para todas as posições

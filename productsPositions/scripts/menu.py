@@ -19,13 +19,14 @@ def main():
         print("Escolha uma opção:")
         print("1. Criar produto")
         print("2. Criar posição")
-        print("3. Adicionar stop a posição")
-        print("4. Criar alocação")
-        print("5. Criar/atualizar carteira")
-        print("6. Visualizar dados (gráficos e tabelas)")
+        print("3. Adicionar stop a posição (manual)")
+        print("4. Configurar ATR Trailing Stop (automático)")
+        print("5. Criar alocação")
+        print("6. Criar/atualizar carteira")
+        print("7. Visualizar dados (gráficos e tabelas)")
         print("0. Sair")
-        
-        opcao = obter_input("\nOpção: ", opcoes=["0", "1", "2", "3", "4", "5", "6"], obrigatorio=True)
+
+        opcao = obter_input("\nOpção: ", opcoes=["0", "1", "2", "3", "4", "5", "6", "7"], obrigatorio=True)
         
         if opcao == "0":
             print("\n👋 Até logo!")
@@ -40,12 +41,15 @@ def main():
             from adicionar_stop import main as adicionar_stop_main
             adicionar_stop_main()
         elif opcao == "4":
+            from configurar_atr_stop import main as configurar_atr_stop_main
+            configurar_atr_stop_main()
+        elif opcao == "5":
             from criar_alocacao import main as criar_alocacao_main
             criar_alocacao_main()
-        elif opcao == "5":
+        elif opcao == "6":
             from criar_carteira import main as criar_carteira_main
             criar_carteira_main()
-        elif opcao == "6":
+        elif opcao == "7":
             from visualizar_dados import main as visualizar_dados_main
             visualizar_dados_main()
         

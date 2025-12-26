@@ -81,3 +81,65 @@ def imprimir_secao(titulo, largura=60):
     print("=" * largura)
     print()
 
+
+def listar_posicoes_por_produto(status='open'):
+    """
+    Lista posições agrupadas por produto.
+
+    Args:
+        status: 'open', 'closed', ou 'all'
+
+    Returns:
+        list: Lista de IDs de todas as posições listadas
+    """
+    import sqlite3
+    from pathlib import Path
+
+    db_path = Path(__file__).parent.parent / "data" / "products_positions.db"
+    conn = sqlite3.connect(db_path)
+
+    status_filter = ""
+    if status == 'open':
+        status_filter = "AND p.status = 'open'"
+    elif status == 'closed':
+        status_filter = "AND p.status = 'closed'"
+
+    query = f"""
+        SELECT p.id, p.ativo, p.side, p.data_entrada, p.preco_entrada,
+               p.data_saida, p.preco_saida, p.status,
+               pr.nome as produto_nome, pr.id as produto_id
+        FROM posicoes p
+        JOIN produtos pr ON p.produto_id = pr.id
+        WHERE 1=1 {status_filter}
+        ORDER BY pr.nome, p.data_entrada
+    """
+
+    import pandas as pd
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+
+    if df.empty:
+        return []
+
+    todas_posicoes = []
+
+    for produto in df['produto_nome'].unique():
+        prod_pos = df[df['produto_nome'] == produto]
+        emoji = "+" if status == 'open' else ("-" if status == 'closed' else "*")
+        print(f"\n{emoji} {produto}:")
+
+        for _, row in prod_pos.iterrows():
+            todas_posicoes.append(row['id'])
+            preco = row['preco_entrada']
+
+            if row['status'] == 'open':
+                print(f"    ID: {row['id']} | {row['ativo']} | {row['side']} | "
+                      f"{row['data_entrada']} | ${preco:.2f}")
+            else:
+                preco_saida = row['preco_saida'] if pd.notna(row['preco_saida']) else 0
+                print(f"    ID: {row['id']} | {row['ativo']} | {row['side']} | "
+                      f"{row['data_entrada']} -> {row['data_saida']} | "
+                      f"${preco:.2f} -> ${preco_saida:.2f}")
+
+    return todas_posicoes
+

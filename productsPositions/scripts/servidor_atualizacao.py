@@ -18,6 +18,8 @@ from analytics.notebook_utils import (
     display_resumo_completo,
     display_manutencoes_signals
 )
+from services.atr_stop_service import atualizar_stops_posicoes_abertas
+from storage.sqlite_repo import SQLiteRepo as ATRRepo
 import tempfile
 import webbrowser
 from datetime import datetime
@@ -72,6 +74,22 @@ class AtualizacaoHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({'erro': 'produto_id deve ser um numero'}).encode())
                 return
             
+            # Atualizar stops ATR antes de exibir dados
+            # (apenas para posições com atr_multiplier configurado)
+            try:
+                atr_repo = ATRRepo()
+                atr_result = atualizar_stops_posicoes_abertas(
+                    repo=atr_repo,
+                    produto_id=produto_id,
+                    verbose=False
+                )
+                print(f"[ATR] Produto {produto_id}: {atr_result['updated']} atualizados, "
+                      f"{atr_result.get('unchanged', 0)} inalterados, "
+                      f"{atr_result['skipped']} ignorados, {atr_result['breached']} breached")
+            except Exception as e:
+                print(f"[ATR] Erro ao atualizar stops: {e}")
+                # Continua mesmo se ATR falhar - não bloqueia a visualização
+
             # Mapear tipo_dado para função de display
             funcoes_display = {
                 'posicoes_abertas': lambda: display_posicoes_abertas(produto_id, formatar=True),

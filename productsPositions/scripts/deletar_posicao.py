@@ -6,39 +6,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from storage.sqlite_repo import SQLiteRepo
-from analytics.queries import posicoes_abertas, posicoes_fechadas
-from utils.cli_utils import obter_input, imprimir_titulo, imprimir_secao
+from utils.cli_utils import obter_input, imprimir_titulo, imprimir_secao, listar_posicoes_por_produto
 
 def main():
     imprimir_titulo("DELETAR POSIÇÃO")
-    
+
     repo = SQLiteRepo()
-    
-    # Listar posições (abertas e fechadas)
-    imprimir_secao("POSIÇÕES DISPONÍVEIS")
-    
-    posicoes_abertas_df = posicoes_abertas()
-    posicoes_fechadas_df = posicoes_fechadas()
-    
-    todas_posicoes = []
-    
-    if not posicoes_abertas_df.empty:
-        print("🟢 POSIÇÕES ABERTAS:")
-        for idx, row in posicoes_abertas_df.iterrows():
-            print(f"  ID: {row['id']} | Ativo: {row['ativo']} | Side: {row['side']} | "
-                  f"Entrada: {row['data_entrada']} | Preço: ${row['preco_entrada']:.2f}")
-            todas_posicoes.append(row['id'])
-    
-    if not posicoes_fechadas_df.empty:
-        print("\n🔴 POSIÇÕES FECHADAS:")
-        for idx, row in posicoes_fechadas_df.iterrows():
-            print(f"  ID: {row['id']} | Ativo: {row['ativo']} | Side: {row['side']} | "
-                  f"Entrada: {row['data_entrada']} | Saída: {row['data_saida']} | "
-                  f"Preço Entrada: ${row['preco_entrada']:.2f} | Preço Saída: ${row['preco_saida']:.2f}")
-            todas_posicoes.append(row['id'])
-    
+
+    # Listar posições agrupadas por produto
+    imprimir_secao("POSIÇÕES ABERTAS (por produto)")
+    todas_posicoes = listar_posicoes_por_produto(status='open')
+
+    print()
+    imprimir_secao("POSIÇÕES FECHADAS (por produto)")
+    todas_posicoes += listar_posicoes_por_produto(status='closed')
+
     if not todas_posicoes:
-        print("❌ Nenhuma posição encontrada.")
+        print("Nenhuma posição encontrada.")
         return
     
     # Selecionar posição
