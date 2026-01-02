@@ -29,14 +29,16 @@ def display_produtos():
     df = pd.DataFrame(produtos)
     return df
 
-def display_posicoes_abertas(produto_id=None, formatar=True):
+def display_posicoes_abertas(produto_id=None, formatar=True, filtrar_colunas=True):
     """
     Exibe posições abertas em formato de tabela com atributos do produto
-    
+
     Args:
         produto_id: ID do produto (opcional, None para todos)
         formatar: Se True, formata valores monetários e atributos
-    
+        filtrar_colunas: Se True, aplica filtros de colunas hard-coded por produto.
+                        Se False, mantém todas as colunas (para uso com visualizações do banco).
+
     Returns:
         pd.DataFrame: DataFrame com posições abertas e atributos
     """
@@ -149,8 +151,10 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         df = df.sort_values('_data_entrada_sort').drop(columns=['_data_entrada_sort'])
 
     # Remover colunas que não fazem sentido na visualização de posições abertas
-    colunas_para_remover = ['produto_id', 'coingecko_id', 'data_saida', 'preco_saida', 'status', 'motivo']
-    df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
+    # (apenas se filtrar_colunas=True)
+    if filtrar_colunas:
+        colunas_para_remover = ['produto_id', 'coingecko_id', 'data_saida', 'preco_saida', 'status', 'motivo']
+        df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
 
     # Detectar tipo de produto (Spot ou Perpétuos, exceto 4970919917)
     tipo_spot = False
@@ -259,12 +263,14 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         )
 
     # Para produtos que NÃO são Crypto Signals, não exibir perfil/alvo1/alvo2 em posições abertas
-    if produto_id is not None and produto_id != 4970919917:
+    # (apenas se filtrar_colunas=True)
+    if filtrar_colunas and produto_id is not None and produto_id != 4970919917:
         colunas_para_ocultar = ['perfil', 'alvo1', 'alvo2']
         df = df.drop(columns=[c for c in colunas_para_ocultar if c in df.columns])
 
     # Se for o produto Alphacoins (ID 3476245316), EXC (ID 2150859854), HB (ID 2000449260) ou LC (ID 2394004756), mostrar apenas colunas específicas
-    if produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:
+    # (apenas se filtrar_colunas=True)
+    if filtrar_colunas and (produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756):
         colunas_alphacoins_exc = [
             'data_entrada',
             'ativo',
@@ -277,9 +283,10 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         colunas_existentes = [c for c in colunas_alphacoins_exc if c in df.columns]
         df = df[colunas_existentes]
         return df
-    
+
     # Para o produto Crypto Signals, usar exatamente as colunas e ordem solicitadas (ordem original)
-    if produto_id == 4970919917:
+    # (apenas se filtrar_colunas=True)
+    if filtrar_colunas and produto_id == 4970919917:
         colunas_signals = [
             'data_entrada',
             'ativo',
@@ -298,6 +305,11 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         return df
 
     # Para outros produtos, manter ordenação mais genérica
+    # (apenas se filtrar_colunas=True)
+    if not filtrar_colunas:
+        # Se não estamos filtrando colunas, apenas retornar o DataFrame formatado
+        return df
+
     colunas_ordenadas = []
     colunas_principais = ['id', 'ativo', 'side', 'data_entrada', 'preco_entrada', 'preco_atual']
     colunas_atributos = ['perfil', 'pnl', 'rr', 'alvo1', 'alvo2', 'stop_atual']
@@ -317,7 +329,7 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
     elif tipo_perpetuos:
         # Salvar stop_atual antes de remover colunas
         stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
-        
+
         colunas_perpetuos = [
             'data_entrada',
             'ativo',
@@ -331,11 +343,11 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
         ]
         colunas_existentes = [c for c in colunas_perpetuos if c in df.columns]
         df = df[colunas_existentes]
-        
+
         # Remover colunas indesejadas
         colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'preco_atual', 'status']
         df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
-        
+
         # Adicionar stop_atual como última coluna
         if stop_atual_col is not None:
             df['stop_atual'] = stop_atual_col
@@ -348,25 +360,25 @@ def display_posicoes_abertas(produto_id=None, formatar=True):
                         return f"${x:,.2f}"
                     return str(x)
                 df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
-        
+
         return df
 
     colunas_outras = [col for col in df.columns if col not in colunas_atributos + colunas_principais + ['stop_atual']]
-    
+
     # Construir ordem: principais + outros + atributos (exceto stop_atual) + stop_atual por último
     for col in colunas_principais + colunas_outras:
         if col in df.columns and col != 'stop_atual':
             colunas_ordenadas.append(col)
-    
+
     # Adicionar atributos exceto stop_atual
     for col in colunas_atributos:
         if col in df.columns and col != 'stop_atual':
             colunas_ordenadas.append(col)
-    
+
     # stop_atual sempre por último
     if 'stop_atual' in df.columns:
         colunas_ordenadas.append('stop_atual')
-    
+
     df = df[colunas_ordenadas]
 
     # Se for produto Spot, remover colunas side e id da visualização
@@ -481,14 +493,16 @@ def get_valores_ativo(ativo, data_inicio=None, data_fim=None):
     
     return df
 
-def display_posicoes_fechadas(produto_id=None, formatar=True):
+def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=True):
     """
     Exibe posições fechadas em formato de tabela com atributos do produto
-    
+
     Args:
         produto_id: ID do produto (opcional, None para todos)
         formatar: Se True, formata valores monetários e atributos
-    
+        filtrar_colunas: Se True, aplica filtros de colunas hard-coded por produto.
+                        Se False, mantém todas as colunas (para uso com visualizações do banco).
+
     Returns:
         pd.DataFrame: DataFrame com posições fechadas e atributos
     """
@@ -615,6 +629,10 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
             df['_data_entrada_sort'] = df['data_entrada']
         df = df.sort_values('_data_entrada_sort').drop(columns=['_data_entrada_sort'])
 
+    # Se não estamos filtrando colunas, retornar DataFrame formatado
+    if not filtrar_colunas:
+        return df
+
     # Se for o produto Alphacoins (ID 3476245316), EXC (ID 2150859854), HB (ID 2000449260) ou LC (ID 2394004756), mostrar apenas colunas específicas
     if produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:
         colunas_alphacoins_exc = [
@@ -637,7 +655,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         # Substituir quaisquer NaN remanescentes por "—"
         df = df.fillna("—")
         return df
-    
+
     # Para Crypto Signals, usar exatamente as colunas e ordem solicitadas (ordem original)
     if produto_id == 4970919917:
         colunas_signals = [
@@ -655,12 +673,12 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         colunas_existentes = [c for c in colunas_signals if c in df.columns]
         df = df[colunas_existentes]
         return df
-    
+
     # Para produtos Spot, usar ordem específica e remover colunas indesejadas
     if tipo_spot:
         # Salvar stop_atual antes de remover colunas
         stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
-        
+
         colunas_spot = [
             'data_entrada',
             'data_saida',
@@ -674,11 +692,11 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         ]
         colunas_existentes = [c for c in colunas_spot if c in df.columns]
         df = df[colunas_existentes]
-        
+
         # Remover colunas indesejadas explicitamente
         colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'status', 'side', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2']
         df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
-        
+
         # Adicionar stop_atual como última coluna
         if stop_atual_col is not None:
             df['stop_atual'] = stop_atual_col
@@ -691,14 +709,14 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
                         return f"${x:,.2f}"
                     return str(x)
                 df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
-        
+
         return df
 
     # Para produtos Perpétuos, usar ordem específica
     if tipo_perpetuos:
         # Salvar stop_atual antes de remover colunas
         stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
-        
+
         colunas_perpetuos = [
             'data_entrada',
             'data_saida',
@@ -713,11 +731,11 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
         ]
         colunas_existentes = [c for c in colunas_perpetuos if c in df.columns]
         df = df[colunas_existentes]
-        
+
         # Remover colunas indesejadas
         colunas_para_remover = ['id', 'produto_id', 'coingecko_id', 'status', 'perfil', 'motivo', 'rr', 'alvo1', 'alvo2', 'preco_atual']
         df = df.drop(columns=[c for c in colunas_para_remover if c in df.columns])
-        
+
         # Adicionar stop_atual como última coluna
         if stop_atual_col is not None:
             df['stop_atual'] = stop_atual_col
@@ -730,21 +748,21 @@ def display_posicoes_fechadas(produto_id=None, formatar=True):
                         return f"${x:,.2f}"
                     return str(x)
                 df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
-        
+
         return df
-    
+
     # Reordenar colunas para melhor visualização (caso genérico - não Spot, não Perpétuos, não Signals)
     colunas_ordenadas = []
     colunas_atributos = ['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2']
     colunas_principais = ['id', 'ativo', 'side', 'data_entrada', 'preco_entrada', 'data_saida', 'preco_saida', 'status']
     colunas_outras = [col for col in df.columns if col not in colunas_atributos + colunas_principais]
-    
+
     for col in colunas_principais + colunas_atributos + colunas_outras:
         if col in df.columns:
             colunas_ordenadas.append(col)
-    
+
     df = df[colunas_ordenadas]
-    
+
     return df
 
 
@@ -855,10 +873,16 @@ def display_manutencoes_signals(produto_id=4970919917, formatar=True):
     return df
 
 
-def display_historico_posicoes(produto_id=None, formatar=True):
+def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=True):
     """
     Exibe histórico consolidado de posições (abertas + fechadas)
     ordenado pela data de entrada.
+
+    Args:
+        produto_id: ID do produto (opcional, None para todos)
+        formatar: Se True, formata valores monetários e atributos
+        filtrar_colunas: Se True, aplica filtros de colunas hard-coded por produto.
+                        Se False, mantém todas as colunas (para uso com visualizações do banco).
     """
     from analytics.queries import historico_posicoes
 
@@ -1086,6 +1110,10 @@ def display_historico_posicoes(produto_id=None, formatar=True):
             df['perfil'] = df['perfil'].apply(lambda x: x if pd.notna(x) else "—")
         if 'motivo' in df.columns:
             df['motivo'] = df['motivo'].apply(lambda x: x if pd.notna(x) else "—")
+
+    # Se não estamos filtrando colunas, retornar DataFrame formatado
+    if not filtrar_colunas:
+        return df
 
     # Para o produto Alphacoins (ID 3476245316), EXC (ID 2150859854), HB (ID 2000449260) ou LC (ID 2394004756), mostrar apenas colunas específicas
     if produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:

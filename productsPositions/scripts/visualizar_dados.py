@@ -431,160 +431,301 @@ def exibir_dataframe_html(df, titulo="DataFrame", produto_id=None, tipo_dado=Non
         print(df.to_string(index=False))
         return True
 
-def main():
-    imprimir_titulo("VISUALIZAÇÃO DE DADOS")
-    
+def _exibir_e_exportar(df, titulo, produto_id, tipo_dado):
+    """Helper para exibir DataFrame e mostrar opções de exportação"""
+    if df is not None and not df.empty:
+        print("\n📊 DataFrame criado com sucesso!")
+        print(f"   Total de registros: {len(df)}")
+        if len(df.columns) <= 10:
+            print(f"   Colunas: {', '.join(df.columns.tolist())}")
+        print(f"   Forma: {df.shape[0]} linhas x {df.shape[1]} colunas")
+        print("\n" + "="*80)
+        exibir_dataframe_bonito(df, titulo)
+        print("="*80)
+        mostrar_opcoes_exportacao(df, titulo, produto_id, tipo_dado)
+        return True
+    return False
+
+
+def aplicar_visualizacao(df, visualizacao):
+    """
+    Aplica uma visualização salva a um DataFrame.
+    Seleciona colunas, aplica ordenação, filtros e renomeia colunas.
+
+    Args:
+        df: DataFrame original
+        visualizacao: Dict com configuração da visualização
+
+    Returns:
+        DataFrame filtrado, ordenado e com colunas renomeadas
+    """
+    if df is None or df.empty:
+        return df
+
+    # Selecionar apenas colunas que existem no DataFrame
+    colunas_config = visualizacao.get('colunas', [])
+    if colunas_config:
+        colunas_disponiveis = [c for c in colunas_config if c in df.columns]
+        if colunas_disponiveis:
+            df = df[colunas_disponiveis]
+        else:
+            # Nenhuma coluna da visualizacao existe nos dados - retornar vazio
+            print(f"Aviso: nenhuma coluna da visualizacao encontrada nos dados.")
+            print(f"  Colunas configuradas: {colunas_config}")
+            print(f"  Colunas disponiveis: {list(df.columns)}")
+            return df.head(0)  # DataFrame vazio com mesma estrutura
+
+    # Aplicar filtros
+    if visualizacao.get('filtros'):
+        for filtro in visualizacao['filtros']:
+            coluna = filtro['coluna']
+            operador = filtro['operador']
+            valor = filtro['valor']
+
+            if coluna not in df.columns:
+                continue
+
+            try:
+                if operador == '=':
+                    df = df[df[coluna] == valor]
+                elif operador == '!=':
+                    df = df[df[coluna] != valor]
+                elif operador == '>':
+                    df = df[df[coluna] > valor]
+                elif operador == '<':
+                    df = df[df[coluna] < valor]
+                elif operador == '>=':
+                    df = df[df[coluna] >= valor]
+                elif operador == '<=':
+                    df = df[df[coluna] <= valor]
+                elif operador == 'contém':
+                    df = df[df[coluna].astype(str).str.contains(str(valor), case=False, na=False)]
+            except Exception:
+                pass  # Ignorar erros de filtro
+
+    # Aplicar ordenação
+    if visualizacao.get('ordenacao') and visualizacao['ordenacao'].get('coluna'):
+        coluna = visualizacao['ordenacao']['coluna']
+        direcao = visualizacao['ordenacao'].get('direcao', 'asc')
+        if coluna in df.columns:
+            df = df.sort_values(by=coluna, ascending=(direcao == 'asc'))
+
+    # Renomear colunas com labels customizados
+    if visualizacao.get('colunas_labels'):
+        rename_map = {}
+        for col_nome, col_label in visualizacao['colunas_labels'].items():
+            if col_nome in df.columns and col_label:
+                rename_map[col_nome] = col_label
+        if rename_map:
+            df = df.rename(columns=rename_map)
+
+    return df
+
+
+def usar_visualizacao_salva(repo, produto_id):
+    """Permite escolher e usar uma visualização salva"""
+    visualizacoes = repo.listar_visualizacoes(produto_id)
+
+    if not visualizacoes:
+        print("Nenhuma visualização salva para este produto.")
+        print("Crie visualizações em: Produtos > Gerenciar visualizações")
+        return
+
+    print("\nVisualizações disponíveis:")
+    for v in visualizacoes:
+        print(f"  [{v['id']}] {v['nome']}")
+
+    viz_id = obter_input("\nID da visualização: ", tipo=int, obrigatorio=True)
+
+    viz = repo.carregar_visualizacao(viz_id)
+    if not viz or viz['produto_id'] != produto_id:
+        print("Visualização não encontrada.")
+        return
+
+    # Escolher fonte de dados
+    print("\nAplicar a:")
+    print("1. Posições abertas")
+    print("2. Posições fechadas")
+    print("3. Histórico completo")
+
+    fonte = obter_input("Opção: ", opcoes=["1", "2", "3"], obrigatorio=True)
+
+    # filtrar_colunas=False permite que aplicar_visualizacao() selecione as colunas
+    # conforme configurado no banco de dados
+    if fonte == "1":
+        df = display_posicoes_abertas(produto_id, formatar=True, filtrar_colunas=False)
+        titulo = f"{viz['nome']} - Posições Abertas"
+        tipo_dado = "viz_abertas"
+    elif fonte == "2":
+        df = display_posicoes_fechadas(produto_id, formatar=True, filtrar_colunas=False)
+        titulo = f"{viz['nome']} - Posições Fechadas"
+        tipo_dado = "viz_fechadas"
+    else:
+        df = display_historico_posicoes(produto_id, formatar=True, filtrar_colunas=False)
+        titulo = f"{viz['nome']} - Histórico"
+        tipo_dado = "viz_historico"
+
+    if df is None or df.empty:
+        print("Nenhum dado encontrado.")
+        return
+
+    # Aplicar visualização
+    df_viz = aplicar_visualizacao(df, viz)
+
+    if not _exibir_e_exportar(df_viz, titulo, produto_id, tipo_dado):
+        print("Nenhum dado após aplicar filtros.")
+
+
+def _obter_dados_para_visualizacao(produto_id, visualizacao):
+    """
+    Obtém os dados apropriados para uma visualização baseado nos filtros.
+    Determina se deve buscar posições abertas, fechadas ou todas.
+
+    IMPORTANTE: Passa filtrar_colunas=False para que as funções de display
+    não apliquem filtros hard-coded de colunas. A seleção de colunas será
+    feita pelo aplicar_visualizacao() usando a configuração do banco de dados.
+
+    Args:
+        produto_id: ID do produto
+        visualizacao: Dicionário com configuração da visualização
+
+    Returns:
+        tuple: (DataFrame, titulo, tipo_dado)
+    """
+    # Verificar filtros para determinar fonte de dados
+    filtros = visualizacao.get('filtros', []) or []
+
+    # Procurar filtro de status
+    status_filtro = None
+    for f in filtros:
+        if f.get('coluna') == 'status':
+            status_filtro = f.get('valor')
+            break
+
+    nome_viz = visualizacao.get('nome', 'Visualização')
+
+    # filtrar_colunas=False permite que aplicar_visualizacao() selecione as colunas
+    # conforme configurado no banco de dados, sem interferência dos filtros hard-coded
+    if status_filtro == 'open':
+        # Posições abertas
+        df = display_posicoes_abertas(produto_id, formatar=True, filtrar_colunas=False)
+        titulo = nome_viz
+        tipo_dado = f"viz_{visualizacao.get('id', 'custom')}_abertas"
+    elif status_filtro == 'closed':
+        # Posições fechadas
+        df = display_posicoes_fechadas(produto_id, formatar=True, filtrar_colunas=False)
+        titulo = nome_viz
+        tipo_dado = f"viz_{visualizacao.get('id', 'custom')}_fechadas"
+    else:
+        # Histórico (todas)
+        df = display_historico_posicoes(produto_id, formatar=True, filtrar_colunas=False)
+        titulo = nome_viz
+        tipo_dado = f"viz_{visualizacao.get('id', 'custom')}_historico"
+
+    return df, titulo, tipo_dado
+
+
+def submenu_posicoes(produto_id):
+    """Submenu para visualização de posições usando visualizações do banco de dados"""
     repo = SQLiteRepo()
-    
-    # Listar produtos disponíveis
-    produtos = repo.listar_produtos()
-    if not produtos:
-        print("❌ Nenhum produto encontrado.")
-        return
-    
-    print("Produtos disponíveis:")
-    for produto_dict in produtos:
-        print(f"  ID: {produto_dict['id']} - {produto_dict['nome']} ({produto_dict['tipo']})")
-    
-    produto_id = obter_input("\nID do produto: ", tipo=int, obrigatorio=True)
-    
-    # Verificar se produto existe
-    produto = repo.carregar_produto(produto_id)
-    if not produto:
-        print(f"❌ Produto com ID {produto_id} não encontrado!")
-        return
-    
+
     while True:
-        imprimir_secao("OPÇÕES DE VISUALIZAÇÃO")
-        print("=== DADOS ===")
-        print("1. Exibir produtos")
-        print("2. Exibir posições abertas")
-        print("3. Exibir posições fechadas (histórico)")
-        print("4. Exibir histórico (abertas + fechadas)")
-        print("5. Exibir carteira")
-        print("6. Exibir alocações")
-        print("7. Exibir resumo completo")
-        print("8. Valores diários de uma posição")
-        print("9. Valores diários de um ativo")
-        print("\n=== GRÁFICOS ===")
-        print("10. Gráfico de evolução de preço (ativo)")
-        print("11. Gráfico de composição da carteira")
-        print("12. Gráfico de distribuição de alocações")
-        print("13. Comparativo de ativos")
-        print("14. Dashboard completo")
-        print("15. Exibir manutenções (Crypto Signals)")
-        print("\n0. Voltar")
-        
-        opcao = obter_input(
-            "\nEscolha uma opção: ",
-            opcoes=["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"],
-            obrigatorio=True
-        )
-        
+        imprimir_secao("VISUALIZAR POSIÇÕES")
+
+        # Listar visualizações disponíveis do banco de dados
+        visualizacoes = repo.listar_visualizacoes(produto_id)
+
+        if not visualizacoes:
+            print("Nenhuma visualização configurada para este produto.")
+            print("\nPara criar visualizações:")
+            print("  Acesse: Menu > Produtos > Gerenciar visualizações")
+            print("\n0. Voltar")
+            opcao = obter_input("\nOpção: ", opcoes=["0"], obrigatorio=True)
+            if opcao == "0":
+                break
+            continue
+
+        # Mostrar visualizações disponíveis
+        opcoes_validas = ["0"]
+        for i, viz in enumerate(visualizacoes, 1):
+            # Mostrar info resumida da visualização
+            filtro_info = ""
+            if viz.get('filtros'):
+                for f in viz['filtros']:
+                    if f.get('coluna') == 'status':
+                        filtro_info = f" [{f.get('valor', '')}]"
+                        break
+            print(f"{i}. {viz['nome']}{filtro_info}")
+            opcoes_validas.append(str(i))
+
+        print("0. Voltar")
+
+        opcao = obter_input("\nOpção: ", opcoes=opcoes_validas, obrigatorio=True)
+
+        if opcao == "0":
+            break
+
+        try:
+            idx = int(opcao) - 1
+            if 0 <= idx < len(visualizacoes):
+                viz = visualizacoes[idx]
+
+                # Obter dados apropriados
+                df, titulo, tipo_dado = _obter_dados_para_visualizacao(produto_id, viz)
+
+                if df is None or df.empty:
+                    print(f"Nenhum dado encontrado para '{viz['nome']}'")
+                    continue
+
+                # Aplicar visualização (colunas, filtros adicionais, ordenação)
+                df_viz = aplicar_visualizacao(df, viz)
+
+                if not _exibir_e_exportar(df_viz, titulo, produto_id, tipo_dado):
+                    print(f"Nenhum dado após aplicar filtros de '{viz['nome']}'")
+        except (ValueError, IndexError):
+            print("Opção inválida")
+
+
+def submenu_carteira_alocacoes(produto_id):
+    """Submenu para visualização de carteira e alocações"""
+    while True:
+        imprimir_secao("VISUALIZAR CARTEIRA E ALOCAÇÕES")
+        print("1. Carteira")
+        print("2. Alocações")
+        print("3. Resumo completo")
+        print("0. Voltar")
+
+        opcao = obter_input("\nOpção: ", opcoes=["0", "1", "2", "3"], obrigatorio=True)
+
         if opcao == "0":
             break
         elif opcao == "1":
-            imprimir_secao("PRODUTOS")
-            df = display_produtos()
-            if df is not None and not df.empty:
-                print("\n📊 DataFrame criado com sucesso!")
-                print(f"   Total de produtos: {len(df)}")
-                print("\n" + "="*80)
-                exibir_dataframe_bonito(df, "Produtos")
-                print("="*80)
-                mostrar_opcoes_exportacao(df, "Produtos", None, "produtos")
-            else:
-                print("❌ Nenhum produto encontrado")
-        
-        elif opcao == "2":
-            imprimir_secao("POSIÇÕES ABERTAS")
-            # Usar formatar=True para incluir preco_atual formatado
-            df = display_posicoes_abertas(produto_id, formatar=True)
-            if df is not None and not df.empty:
-                print("\n📊 DataFrame criado com sucesso!")
-                print(f"   Total de posições: {len(df)}")
-                print(f"   Colunas: {', '.join(df.columns.tolist())}")
-                print(f"   Forma: {df.shape[0]} linhas x {df.shape[1]} colunas")
-                
-                # Exibir de forma bonita
-                print("\n" + "="*80)
-                exibir_dataframe_bonito(df, "Posições Abertas")
-                print("="*80)
-                
-                # Opções adicionais após exibir
-                mostrar_opcoes_exportacao(df, "Posições Abertas", produto_id, "posicoes_abertas")
-            else:
-                print("❌ Nenhuma posição aberta encontrada")
-        
-        elif opcao == "3":
-            imprimir_secao("POSIÇÕES FECHADAS (HISTÓRICO)")
-            df = display_posicoes_fechadas(produto_id, formatar=True)
-            if df is not None and not df.empty:
-                print("\n📊 DataFrame criado com sucesso!")
-                print(f"   Total de posições fechadas: {len(df)}")
-                print(f"   Colunas: {', '.join(df.columns.tolist())}")
-                print(f"   Forma: {df.shape[0]} linhas x {df.shape[1]} colunas")
-                print("\n" + "="*80)
-                exibir_dataframe_bonito(df, "Posições Fechadas")
-                print("="*80)
-                mostrar_opcoes_exportacao(df, "Posições Fechadas", produto_id, "posicoes_fechadas")
-            else:
-                print("❌ Nenhuma posição fechada encontrada")
-        
-        elif opcao == "4":
-            imprimir_secao("HISTÓRICO (ABERTAS + FECHADAS)")
-            df = display_historico_posicoes(produto_id, formatar=True)
-            if df is not None and not df.empty:
-                print("\n📊 DataFrame criado com sucesso!")
-                print(f"   Total de posições: {len(df)}")
-                print(f"   Colunas: {', '.join(df.columns.tolist())}")
-                print(f"   Forma: {df.shape[0]} linhas x {df.shape[1]} colunas")
-                print("\n" + "="*80)
-                exibir_dataframe_bonito(df, "Histórico (Abertas + Fechadas)")
-                print("="*80)
-                mostrar_opcoes_exportacao(df, "Histórico (Abertas + Fechadas)", produto_id, "historico")
-            else:
-                print("❌ Nenhuma posição encontrada para o histórico")
-
-        elif opcao == "5":
-            imprimir_secao("CARTEIRA")
             df = display_carteira(produto_id, formatar=False)
-            if df is not None and not df.empty:
-                print("\n📊 DataFrame criado com sucesso!")
-                print("\n" + "="*80)
-                exibir_dataframe_bonito(df, "Carteira")
-                print("="*80)
-                mostrar_opcoes_exportacao(df, "Carteira", produto_id, "carteira")
-            else:
+            if not _exibir_e_exportar(df, "Carteira", produto_id, "carteira"):
                 print("❌ Carteira não encontrada")
-        
-        elif opcao == "6":
-            imprimir_secao("ALOCAÇÕES")
+        elif opcao == "2":
             df = display_alocacoes(produto_id, formatar=False)
-            if df is not None and not df.empty:
-                print("\n📊 DataFrame criado com sucesso!")
-                print(f"   Total de alocações: {len(df)}")
-                print("\n" + "="*80)
-                exibir_dataframe_bonito(df, "Alocações")
-                print("="*80)
-                mostrar_opcoes_exportacao(df, "Alocações", produto_id, "alocacoes")
-            else:
+            if not _exibir_e_exportar(df, "Alocações", produto_id, "alocacoes"):
                 print("❌ Nenhuma alocação encontrada")
-        
-        elif opcao == "7":
-            imprimir_secao("RESUMO COMPLETO")
+        elif opcao == "3":
             df = display_resumo_completo(produto_id, formatar=False)
-            if df is not None and not df.empty:
-                print("\n📊 DataFrame criado com sucesso!")
-                print("\n" + "="*80)
-                exibir_dataframe_bonito(df, "Resumo Completo")
-                print("="*80)
-                mostrar_opcoes_exportacao(df, "Resumo Completo", produto_id, "resumo")
-            else:
+            if not _exibir_e_exportar(df, "Resumo Completo", produto_id, "resumo"):
                 print("❌ Produto não encontrado")
-        
-        elif opcao == "8":
-            imprimir_secao("VALORES DIÁRIOS DA POSIÇÃO")
+
+
+def submenu_valores_diarios(produto_id):
+    """Submenu para visualização de valores diários"""
+    while True:
+        imprimir_secao("VISUALIZAR VALORES DIÁRIOS")
+        print("1. Valores diários de uma posição")
+        print("2. Valores diários de um ativo")
+        print("0. Voltar")
+
+        opcao = obter_input("\nOpção: ", opcoes=["0", "1", "2"], obrigatorio=True)
+
+        if opcao == "0":
+            break
+        elif opcao == "1":
             from analytics.queries import valores_da_posicao
             posicao_id = obter_input("ID da posição: ", tipo=int, obrigatorio=True)
             df = valores_da_posicao(posicao_id)
@@ -596,9 +737,7 @@ def main():
                 print("=" * 80)
             else:
                 print("❌ Nenhum valor encontrado para esta posição")
-        
-        elif opcao == "9":
-            imprimir_secao("VALORES DIÁRIOS DO ATIVO")
+        elif opcao == "2":
             ativo = obter_input("Nome do ativo (ex: BTC): ", obrigatorio=True).upper()
             df = get_valores_ativo(ativo)
             if df is not None and not df.empty:
@@ -609,9 +748,24 @@ def main():
                 print("=" * 80)
             else:
                 print(f"❌ Nenhum valor encontrado para {ativo}")
-        
-        elif opcao == "10":
-            imprimir_secao("GRÁFICO DE EVOLUÇÃO DE PREÇO")
+
+
+def submenu_graficos(produto_id):
+    """Submenu para visualização de gráficos"""
+    while True:
+        imprimir_secao("GRÁFICOS")
+        print("1. Evolução de preço (ativo)")
+        print("2. Composição da carteira")
+        print("3. Distribuição de alocações")
+        print("4. Comparativo de ativos")
+        print("5. Dashboard completo")
+        print("0. Voltar")
+
+        opcao = obter_input("\nOpção: ", opcoes=["0", "1", "2", "3", "4", "5"], obrigatorio=True)
+
+        if opcao == "0":
+            break
+        elif opcao == "1":
             ativo = obter_input("Nome do ativo (ex: BTC): ", obrigatorio=True).upper()
             df_valores = get_valores_ativo(ativo)
             if not df_valores.empty:
@@ -621,29 +775,23 @@ def main():
                 print("✅ Gráfico aberto no navegador!")
             else:
                 print(f"❌ Nenhum dado encontrado para {ativo}")
-        
-        elif opcao == "11":
-            imprimir_secao("GRÁFICO DE COMPOSIÇÃO DA CARTEIRA")
-            print(f"\n📊 Gerando gráfico da carteira...")
+        elif opcao == "2":
+            print("\n📊 Gerando gráfico da carteira...")
             fig = grafico_carteira(produto_id)
             if fig:
                 fig.show()
                 print("✅ Gráfico aberto no navegador!")
             else:
                 print("❌ Erro ao gerar gráfico")
-        
-        elif opcao == "12":
-            imprimir_secao("GRÁFICO DE DISTRIBUIÇÃO DE ALOCAÇÕES")
-            print(f"\n📊 Gerando gráfico de alocações...")
+        elif opcao == "3":
+            print("\n📊 Gerando gráfico de alocações...")
             fig = grafico_alocacoes(produto_id)
             if fig:
                 fig.show()
                 print("✅ Gráfico aberto no navegador!")
             else:
                 print("❌ Erro ao gerar gráfico")
-        
-        elif opcao == "13":
-            imprimir_secao("COMPARATIVO DE ATIVOS")
+        elif opcao == "4":
             print("Digite os nomes dos ativos separados por vírgula (ex: BTC,ETH,SYRUP)")
             ativos_str = obter_input("Ativos: ", obrigatorio=True)
             ativos = [a.strip().upper() for a in ativos_str.split(",")]
@@ -654,10 +802,8 @@ def main():
                 print("✅ Gráfico aberto no navegador!")
             else:
                 print("❌ Erro ao gerar gráfico")
-        
-        elif opcao == "14":
-            imprimir_secao("DASHBOARD COMPLETO")
-            print(f"\n📊 Gerando dashboard completo...")
+        elif opcao == "5":
+            print("\n📊 Gerando dashboard completo...")
             fig = dashboard_produto(produto_id)
             if fig:
                 fig.show()
@@ -665,27 +811,55 @@ def main():
             else:
                 print("❌ Erro ao gerar dashboard")
 
-        elif opcao == "15":
-            imprimir_secao("MANUTENÇÕES - CRYPTO SIGNALS")
-            if produto_id != 4970919917:
-                print("\n⚠️ Esta visualização está disponível apenas para o produto Crypto Signals (ID 4970919917).")
-            else:
-                df = display_manutencoes_signals(produto_id, formatar=True)
-                if df is not None and not df.empty:
-                    print("\n📊 DataFrame criado com sucesso!")
-                    print(f"   Total de manutenções: {len(df)}")
-                    print(f"   Colunas: {', '.join(df.columns.tolist())}")
-                    print(f"   Forma: {df.shape[0]} linhas x {df.shape[1]} colunas")
-                    print("\n" + "="*80)
-                    exibir_dataframe_bonito(df, "Manutenções - Crypto Signals")
-                    print("="*80)
-                    mostrar_opcoes_exportacao(df, "Manutenções - Crypto Signals", produto_id, "manutencoes_signals")
-                else:
-                    print("❌ Nenhuma manutenção encontrada para o produto Crypto Signals")
 
-        continuar = obter_input("\nDeseja visualizar outra coisa? (s/n): ", opcoes=["s", "n", "S", "N"], obrigatorio=True).lower()
-        if continuar == "n":
+def main():
+    imprimir_titulo("VISUALIZAÇÃO DE DADOS")
+
+    repo = SQLiteRepo()
+
+    # Listar produtos disponíveis
+    produtos = repo.listar_produtos()
+    if not produtos:
+        print("❌ Nenhum produto encontrado.")
+        return
+
+    print("Produtos disponíveis:")
+    for produto_dict in produtos:
+        print(f"  ID: {produto_dict['id']} - {produto_dict['nome']} ({produto_dict['tipo']})")
+
+    produto_id = obter_input("\nID do produto: ", tipo=int, obrigatorio=True)
+
+    # Verificar se produto existe
+    produto = repo.carregar_produto(produto_id)
+    if not produto:
+        print(f"❌ Produto com ID {produto_id} não encontrado!")
+        return
+
+    while True:
+        imprimir_secao(f"VISUALIZAÇÃO - {produto.get('nome', f'Produto {produto_id}')}")
+        print("1. Posições")
+        print("2. Carteira e Alocações")
+        print("3. Valores Diários")
+        print("4. Gráficos")
+        print("5. Todos os Produtos")
+        print("0. Voltar")
+
+        opcao = obter_input("\nOpção: ", opcoes=["0", "1", "2", "3", "4", "5"], obrigatorio=True)
+
+        if opcao == "0":
             break
+        elif opcao == "1":
+            submenu_posicoes(produto_id)
+        elif opcao == "2":
+            submenu_carteira_alocacoes(produto_id)
+        elif opcao == "3":
+            submenu_valores_diarios(produto_id)
+        elif opcao == "4":
+            submenu_graficos(produto_id)
+        elif opcao == "5":
+            df = display_produtos()
+            if not _exibir_e_exportar(df, "Produtos", None, "produtos"):
+                print("❌ Nenhum produto encontrado")
 
 if __name__ == "__main__":
     main()

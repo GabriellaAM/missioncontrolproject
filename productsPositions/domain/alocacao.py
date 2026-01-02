@@ -8,7 +8,3 @@ class Alocacao:
         self.data = data                  # Data da alocação
         self.status = "active"            # active/inactive
 
-    def desativar(self):
-        """Desativa uma alocação"""
-        self.status = "inactive"
-

@@ -14,11 +14,6 @@ class Carteira:
         else:
             self.valor_total = valor_total
 
-    def recalcular_valor_total(self):
-        """Recalcula o valor total da carteira"""
-        self.valor_total = self.valor_disponivel + self.valor_investido + self.pnl_nao_realizado
-        return self.valor_total
-
     def __repr__(self):
         return (f"Carteira(produto_id={self.produto_id}, "
                 f"disponivel=${self.valor_disponivel:.2f}, "

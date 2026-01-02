@@ -69,10 +69,10 @@ def _editar_posicao_dinamica(repo: SQLiteRepo, produto_id: int, posicao_id: int)
     Edição dinâmica que se adapta aos campos necessários de cada produto.
     """
     imprimir_secao("EDIÇÃO DE POSIÇÃO")
-    
+
     # Obter campos editáveis para este produto específico
     campos = obter_campos_editaveis_produto(produto_id)
-    
+
     while True:
         print("\nCampos disponíveis para edição:")
         for idx, campo in enumerate(campos, start=1):
@@ -91,34 +91,35 @@ def _editar_posicao_dinamica(repo: SQLiteRepo, produto_id: int, posicao_id: int)
             if idx < 0 or idx >= len(campos):
                 print("❌ Opção inválida.")
                 continue
-            
+
             campo = campos[idx]
             nome_campo = campo['nome']
-            
-            # Editar campo básico da posição
-            if nome_campo not in ['quantidade', 'perfil', 'alvo1', 'alvo2', 'motivo', 'preco_entrada_total']:
+            is_atributo = campo.get('atributo', False)
+
+            # Editar campo básico da posição (não é atributo dinâmico)
+            if not is_atributo:
                 if nome_campo == 'ativo':
                     novo_valor = obter_input(f"Novo {campo['label']}: ", obrigatorio=campo.get('obrigatorio', True)).upper()
                     repo.atualizar_posicao(posicao_id, ativo=novo_valor)
-                
+
                 elif nome_campo == 'side':
-                    novo_valor = obter_input(f"Novo {campo['label']} ({'/'.join(campo.get('opcoes', []))}): ", 
+                    novo_valor = obter_input(f"Novo {campo['label']} ({'/'.join(campo.get('opcoes', []))}): ",
                                             opcoes=campo.get('opcoes', []), obrigatorio=campo.get('obrigatorio', True))
                     repo.atualizar_posicao(posicao_id, side=novo_valor)
-                
+
                 elif nome_campo == 'coingecko_id':
                     novo_valor = obter_input(f"Novo {campo['label']}: ", obrigatorio=False)
                     repo.atualizar_posicao(posicao_id, coingecko_id=novo_valor if novo_valor else None)
-                
+
                 elif nome_campo in ['data_entrada', 'data_saida']:
                     novo_valor = obter_input(f"Nova {campo['label']} (YYYY-MM-DD): ", obrigatorio=campo.get('obrigatorio', True))
                     novo_valor = validar_data(novo_valor, campo['label'])
                     repo.atualizar_posicao(posicao_id, **{nome_campo: novo_valor})
-                
+
                 elif nome_campo in ['preco_entrada', 'preco_saida']:
                     novo_valor = obter_input(f"Novo {campo['label']}: ", tipo=float, obrigatorio=campo.get('obrigatorio', True))
                     repo.atualizar_posicao(posicao_id, **{nome_campo: novo_valor})
-                    
+
                     # Se for preco_entrada e houver quantidade, recalcular preco_entrada_total
                     if nome_campo == 'preco_entrada':
                         attrs = repo.carregar_atributos_posicao(posicao_id)
@@ -129,18 +130,18 @@ def _editar_posicao_dinamica(repo: SQLiteRepo, produto_id: int, posicao_id: int)
                                 posicao_id,
                                 produto_id,
                                 quantidade=quantidade,
-                                preco_entrada_total=preco_total,
+                                preco_entrada_total=preco_total
                             )
                             print(f"   Preço total recalculado: ${preco_total:,.2f}")
-                
+
                 elif nome_campo == 'status':
-                    novo_valor = obter_input(f"Novo {campo['label']} ({'/'.join(campo.get('opcoes', []))}): ", 
+                    novo_valor = obter_input(f"Novo {campo['label']} ({'/'.join(campo.get('opcoes', []))}): ",
                                             opcoes=campo.get('opcoes', []), obrigatorio=campo.get('obrigatorio', True))
                     repo.atualizar_posicao(posicao_id, status=novo_valor)
-                
+
                 print(f"✅ {campo['label']} atualizado com sucesso.")
-            
-            # Editar atributos específicos do produto
+
+            # Editar atributos específicos do produto (dinâmicos)
             else:
                 if nome_campo == 'quantidade':
                     nova_qtd = obter_input(f"Nova {campo['label']}: ", tipo=float, obrigatorio=campo.get('obrigatorio', True))
@@ -150,46 +151,38 @@ def _editar_posicao_dinamica(repo: SQLiteRepo, produto_id: int, posicao_id: int)
                     preco_total = None
                     if preco_ent is not None:
                         preco_total = nova_qtd * preco_ent
-                    
-                    # Carregar atributos existentes para preservar outros campos
-                    attrs = repo.carregar_atributos_posicao(posicao_id) or {}
+
                     repo.salvar_atributos_posicao(
                         posicao_id,
                         produto_id,
                         quantidade=nova_qtd,
-                        preco_entrada_total=preco_total,
-                        perfil=attrs.get('perfil'),
-                        alvo1=attrs.get('alvo1'),
-                        alvo2=attrs.get('alvo2'),
+                        preco_entrada_total=preco_total
                     )
                     if preco_total is not None:
                         print(f"✅ {campo['label']} atualizada. Preço total: ${preco_total:,.2f}")
                     else:
                         print(f"✅ {campo['label']} atualizada.")
-                
+
                 elif nome_campo == 'preco_entrada_total':
                     # Preço total é calculado automaticamente, não deve ser editado diretamente
                     print("ℹ️  Preço de entrada total é calculado automaticamente (quantidade × preço de entrada).")
                     print("   Edite a quantidade ou o preço de entrada para alterar o total.")
-                
+
                 else:
-                    # perfil, alvo1, alvo2, motivo
+                    # Outros atributos dinâmicos
                     if campo['tipo'] == float:
                         novo_valor = obter_input(f"Novo {campo['label']}: ", tipo=float, obrigatorio=campo.get('obrigatorio', False))
                     else:
                         novo_valor = obter_input(f"Novo {campo['label']}: ", obrigatorio=campo.get('obrigatorio', False))
-                    
-                    # Carregar atributos existentes para preservar outros campos
-                    attrs = repo.carregar_atributos_posicao(posicao_id) or {}
-                    kwargs = {nome_campo: novo_valor if novo_valor else None}
-                    # Preservar outros atributos
-                    for key in ['quantidade', 'preco_entrada_total', 'perfil', 'alvo1', 'alvo2', 'motivo']:
-                        if key != nome_campo and key in attrs:
-                            kwargs[key] = attrs[key]
-                    
-                    repo.salvar_atributos_posicao(posicao_id, produto_id, **kwargs)
+
+                    # Salvar apenas o atributo específico (o repo já faz UPSERT com COALESCE)
+                    repo.salvar_atributos_posicao(
+                        posicao_id,
+                        produto_id,
+                        **{nome_campo: novo_valor if novo_valor else None}
+                    )
                     print(f"✅ {campo['label']} atualizado com sucesso.")
-        
+
         except ValueError as e:
             print(f"❌ Erro ao processar valor: {e}")
         except Exception as e:

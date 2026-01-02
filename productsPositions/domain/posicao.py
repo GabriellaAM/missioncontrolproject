@@ -39,13 +39,6 @@ class Posicao:
         if not self.stops:
             return None
         return self.stops[-1]
-    
-    def obter_stop_por_data(self, data):
-        """Retorna o stop de uma data específica"""
-        for stop in self.stops:
-            if stop["data"] == data:
-                return stop
-        return None
 
     def fechar(self, preco_saida, data_saida):
         self.preco_saida = preco_saida

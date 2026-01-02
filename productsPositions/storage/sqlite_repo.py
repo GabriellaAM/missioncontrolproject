@@ -192,13 +192,46 @@ class SQLiteRepo:
             if 'preco_entrada_total' not in colunas_atributos:
                 cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN preco_entrada_total REAL")
             # preco_saida_total foi removido - agora é calculado dinamicamente como quantidade * preco_saida
-
-            # Colunas para ATR Trailing Stop automático
-            if 'atr_period' not in colunas_atributos:
-                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN atr_period INTEGER")
-            if 'atr_multiplier' not in colunas_atributos:
-                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN atr_multiplier REAL")
+            # Nota: Colunas adicionais (como atr_period, atr_multiplier) são gerenciadas
+            # dinamicamente através do sistema de atributos (produto_atributos_config)
             
+            # Tabela de configuração de atributos por produto
+            # Define quais atributos cada produto usa (formulários dinâmicos)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS produto_atributos_config (
+                    produto_id INTEGER NOT NULL,
+                    atributo_nome TEXT NOT NULL,
+                    atributo_tipo TEXT NOT NULL DEFAULT 'text',
+                    atributo_label TEXT,
+                    obrigatorio INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (produto_id, atributo_nome),
+                    FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Tabela de visualizações customizadas por produto
+            # colunas_labels: JSON com mapeamento nome_coluna -> label customizado
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS visualizacoes_config (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    produto_id INTEGER NOT NULL,
+                    nome TEXT NOT NULL,
+                    colunas TEXT NOT NULL,
+                    colunas_labels TEXT,
+                    ordenacao TEXT,
+                    filtros TEXT,
+                    data_criacao TEXT NOT NULL,
+                    FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE,
+                    UNIQUE(produto_id, nome)
+                )
+            """)
+
+            # Garantir que colunas_labels existe em bancos antigos
+            cursor.execute("PRAGMA table_info(visualizacoes_config)")
+            colunas_viz = [row[1] for row in cursor.fetchall()]
+            if 'colunas_labels' not in colunas_viz:
+                cursor.execute("ALTER TABLE visualizacoes_config ADD COLUMN colunas_labels TEXT")
+
             # Criar índices para performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto ON posicoes(produto_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_status ON posicoes(status)")
@@ -208,7 +241,9 @@ class SQLiteRepo:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_status ON alocacoes(status)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_produto ON posicao_atributos_produto(produto_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_posicao ON posicao_atributos_produto(posicao_id)")
-            
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_config_produto ON produto_atributos_config(produto_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_visualizacoes_produto ON visualizacoes_config(produto_id)")
+
             # Habilitar WAL mode para melhor concorrência
             cursor.execute("PRAGMA journal_mode=WAL")
             
@@ -433,7 +468,627 @@ class SQLiteRepo:
             return None
         finally:
             conn.close()
-    
+
+    def atualizar_produto(self, produto_id, **kwargs):
+        """
+        Atualiza um produto existente
+
+        Args:
+            produto_id: ID do produto
+            **kwargs: Campos a atualizar (nome, data_inicio, tipo, capital_inicial)
+
+        Returns:
+            int: produto_id
+        """
+        self._validar_produto_existe(produto_id)
+
+        campos_permitidos = ['nome', 'data_inicio', 'tipo', 'capital_inicial']
+
+        updates = []
+        valores = []
+        for campo, valor in kwargs.items():
+            if campo in campos_permitidos:
+                # Validar tipo se estiver sendo atualizado
+                if campo == 'tipo':
+                    self._validar_tipo_existe(valor)
+                updates.append(f"{campo} = ?")
+                valores.append(valor)
+            else:
+                raise ValueError(f"Campo '{campo}' não é permitido para atualização")
+
+        if not updates:
+            return produto_id
+
+        valores.append(produto_id)
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                UPDATE produtos SET {', '.join(updates)} WHERE id = ?
+            """, valores)
+
+        return produto_id
+
+    def deletar_produto(self, produto_id, forcar=False):
+        """
+        Deleta um produto e todos os dados associados
+
+        Args:
+            produto_id: ID do produto a ser deletado
+            forcar: Se True, deleta mesmo se houver posições/alocações
+
+        Returns:
+            dict: Resumo do que foi deletado
+
+        Raises:
+            ValueError: Se o produto não existe ou se há dados associados e forcar=False
+        """
+        # Validar que o produto existe
+        produto = self.carregar_produto(produto_id)
+        if not produto:
+            raise ValueError(f"Produto com ID {produto_id} não existe")
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Contar dados associados
+            cursor.execute("SELECT COUNT(*) FROM posicoes WHERE produto_id = ?", (produto_id,))
+            count_posicoes = cursor.fetchone()[0]
+
+            cursor.execute("SELECT COUNT(*) FROM alocacoes WHERE produto_id = ?", (produto_id,))
+            count_alocacoes = cursor.fetchone()[0]
+
+            cursor.execute("SELECT COUNT(*) FROM carteiras WHERE produto_id = ?", (produto_id,))
+            count_carteiras = cursor.fetchone()[0]
+
+            # Contar stops das posições
+            cursor.execute("""
+                SELECT COUNT(*) FROM stops s
+                JOIN posicoes p ON s.posicao_id = p.id
+                WHERE p.produto_id = ?
+            """, (produto_id,))
+            count_stops = cursor.fetchone()[0]
+
+            # Contar atributos das posições
+            cursor.execute("""
+                SELECT COUNT(*) FROM posicao_atributos_produto
+                WHERE produto_id = ?
+            """, (produto_id,))
+            count_atributos = cursor.fetchone()[0]
+
+            # Contar visualizações
+            cursor.execute("SELECT COUNT(*) FROM visualizacoes_config WHERE produto_id = ?", (produto_id,))
+            count_visualizacoes = cursor.fetchone()[0]
+
+            resumo = {
+                'posicoes': count_posicoes,
+                'alocacoes': count_alocacoes,
+                'carteiras': count_carteiras,
+                'stops': count_stops,
+                'atributos': count_atributos,
+                'visualizacoes': count_visualizacoes
+            }
+
+            if not forcar and (count_posicoes > 0 or count_alocacoes > 0):
+                raise ValueError(
+                    f"Produto {produto_id} possui dados associados: "
+                    f"{count_posicoes} posição(ões), {count_alocacoes} alocação(ões). "
+                    f"Use forcar=True para deletar mesmo assim."
+                )
+
+            # Deletar em ordem (respeitando foreign keys)
+            # 1. Stops das posições do produto
+            cursor.execute("""
+                DELETE FROM stops WHERE posicao_id IN (
+                    SELECT id FROM posicoes WHERE produto_id = ?
+                )
+            """, (produto_id,))
+
+            # 2. Atributos das posições
+            cursor.execute("DELETE FROM posicao_atributos_produto WHERE produto_id = ?", (produto_id,))
+
+            # 3. Alocações
+            cursor.execute("DELETE FROM alocacoes WHERE produto_id = ?", (produto_id,))
+
+            # 4. Posições
+            cursor.execute("DELETE FROM posicoes WHERE produto_id = ?", (produto_id,))
+
+            # 5. Carteira
+            cursor.execute("DELETE FROM carteiras WHERE produto_id = ?", (produto_id,))
+
+            # 6. Visualizações
+            cursor.execute("DELETE FROM visualizacoes_config WHERE produto_id = ?", (produto_id,))
+
+            # 7. Produto (produto_atributos_config é deletado via CASCADE)
+            cursor.execute("DELETE FROM produtos WHERE id = ?", (produto_id,))
+
+        # 7. Limpar colunas órfãs (fora da transação principal)
+        colunas_removidas = self.limpar_colunas_orfas()
+        if colunas_removidas:
+            resumo['colunas_removidas'] = colunas_removidas
+
+        return resumo
+
+    # ========== ATRIBUTOS CONFIG ==========
+
+    def carregar_atributos_config(self, produto_id):
+        """
+        Carrega configuração de atributos de um produto.
+
+        Args:
+            produto_id: ID do produto
+
+        Returns:
+            list: Lista de dicionários com configuração de cada atributo
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            df = pd.read_sql_query("""
+                SELECT atributo_nome, atributo_tipo, atributo_label, obrigatorio
+                FROM produto_atributos_config
+                WHERE produto_id = ?
+                ORDER BY atributo_nome
+            """, conn, params=(produto_id,))
+            return df.to_dict('records') if not df.empty else []
+        finally:
+            conn.close()
+
+    def adicionar_atributo_config(self, produto_id, atributo_nome, atributo_tipo='text',
+                                   atributo_label=None, obrigatorio=False):
+        """
+        Adiciona configuração de atributo para um produto.
+        Se o atributo não existir na tabela posicao_atributos_produto, cria a coluna.
+
+        Args:
+            produto_id: ID do produto
+            atributo_nome: Nome do atributo (será nome da coluna)
+            atributo_tipo: Tipo do atributo ('text', 'float', 'int', 'date')
+            atributo_label: Label para exibição (se None, usa atributo_nome)
+            obrigatorio: Se o atributo é obrigatório
+
+        Returns:
+            bool: True se adicionado com sucesso
+        """
+        self._validar_produto_existe(produto_id)
+
+        # Normalizar nome do atributo (lowercase, sem espaços)
+        atributo_nome = atributo_nome.lower().strip().replace(' ', '_')
+
+        # Mapear tipo para SQLite
+        tipo_sqlite = {
+            'text': 'TEXT',
+            'float': 'REAL',
+            'int': 'INTEGER',
+            'date': 'TEXT'
+        }.get(atributo_tipo.lower(), 'TEXT')
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Verificar se coluna existe na tabela posicao_atributos_produto
+            cursor.execute("PRAGMA table_info(posicao_atributos_produto)")
+            colunas_existentes = [row[1] for row in cursor.fetchall()]
+
+            if atributo_nome not in colunas_existentes:
+                # Criar coluna
+                cursor.execute(f"""
+                    ALTER TABLE posicao_atributos_produto
+                    ADD COLUMN {atributo_nome} {tipo_sqlite}
+                """)
+
+            # Adicionar config
+            cursor.execute("""
+                INSERT OR REPLACE INTO produto_atributos_config
+                (produto_id, atributo_nome, atributo_tipo, atributo_label, obrigatorio)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                produto_id,
+                atributo_nome,
+                atributo_tipo.lower(),
+                atributo_label or atributo_nome.replace('_', ' ').title(),
+                1 if obrigatorio else 0
+            ))
+
+        return True
+
+    def remover_atributo_config(self, produto_id, atributo_nome):
+        """
+        Remove configuração de atributo de um produto.
+        Não remove a coluna da tabela (pode ser usada por outros produtos).
+
+        Args:
+            produto_id: ID do produto
+            atributo_nome: Nome do atributo
+
+        Returns:
+            bool: True se removido com sucesso
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM produto_atributos_config
+                WHERE produto_id = ? AND atributo_nome = ?
+            """, (produto_id, atributo_nome.lower().strip()))
+            return cursor.rowcount > 0
+
+    def listar_colunas_atributos(self):
+        """
+        Lista todas as colunas disponíveis na tabela posicao_atributos_produto.
+
+        Returns:
+            list: Lista de nomes de colunas (exceto posicao_id e produto_id)
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(posicao_atributos_produto)")
+            colunas = [row[1] for row in cursor.fetchall()]
+            # Excluir colunas de sistema
+            excluir = ['posicao_id', 'produto_id']
+            return [c for c in colunas if c not in excluir]
+
+    def editar_atributo_config(self, produto_id, atributo_nome, novo_label=None,
+                               novo_tipo=None, novo_obrigatorio=None):
+        """
+        Edita configuração de um atributo para um produto.
+
+        Args:
+            produto_id: ID do produto
+            atributo_nome: Nome do atributo a editar
+            novo_label: Novo label (opcional)
+            novo_tipo: Novo tipo (opcional) - não altera a coluna, apenas a config
+            novo_obrigatorio: Novo valor de obrigatório (opcional)
+
+        Returns:
+            bool: True se editado com sucesso
+        """
+        updates = []
+        valores = []
+
+        if novo_label is not None:
+            updates.append("atributo_label = ?")
+            valores.append(novo_label)
+
+        if novo_tipo is not None:
+            updates.append("atributo_tipo = ?")
+            valores.append(novo_tipo)
+
+        if novo_obrigatorio is not None:
+            updates.append("obrigatorio = ?")
+            valores.append(1 if novo_obrigatorio else 0)
+
+        if not updates:
+            return False
+
+        valores.extend([produto_id, atributo_nome.lower().strip()])
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                UPDATE produto_atributos_config
+                SET {', '.join(updates)}
+                WHERE produto_id = ? AND atributo_nome = ?
+            """, valores)
+            return cursor.rowcount > 0
+
+    def deletar_coluna_atributo(self, nome_coluna):
+        """
+        Deleta uma coluna de atributo da tabela posicao_atributos_produto.
+        Só permite deletar se nenhum produto usa esse atributo.
+
+        Args:
+            nome_coluna: Nome da coluna a deletar
+
+        Returns:
+            bool: True se deletada com sucesso
+
+        Raises:
+            ValueError: Se a coluna ainda é usada por algum produto
+        """
+        nome_coluna = nome_coluna.lower().strip()
+
+        # Verificar se coluna existe
+        colunas = self.listar_colunas_atributos()
+        if nome_coluna not in colunas:
+            raise ValueError(f"Coluna '{nome_coluna}' não existe")
+
+        # Verificar se algum produto ainda usa essa coluna
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT p.id, p.nome
+                FROM produto_atributos_config pac
+                JOIN produtos p ON pac.produto_id = p.id
+                WHERE pac.atributo_nome = ?
+            """, (nome_coluna,))
+            produtos_usando = cursor.fetchall()
+
+            if produtos_usando:
+                nomes = [f"{p[1]} (ID: {p[0]})" for p in produtos_usando]
+                raise ValueError(
+                    f"Coluna '{nome_coluna}' ainda é usada por: {', '.join(nomes)}"
+                )
+        finally:
+            conn.close()
+
+        # Deletar a coluna usando autocommit mode (SQLite 3.35.0+)
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"ALTER TABLE posicao_atributos_produto DROP COLUMN {nome_coluna}")
+            return True
+        except Exception as e:
+            raise ValueError(f"Erro ao deletar coluna: {e}")
+        finally:
+            conn.close()
+
+    def listar_colunas_orfas(self):
+        """
+        Lista colunas que existem na tabela mas não são usadas por nenhum produto.
+
+        Returns:
+            list: Lista de nomes de colunas órfãs
+        """
+        colunas = self.listar_colunas_atributos()
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT atributo_nome FROM produto_atributos_config")
+            colunas_em_uso = {row[0] for row in cursor.fetchall()}
+
+        return [c for c in colunas if c not in colunas_em_uso]
+
+    def limpar_colunas_orfas(self):
+        """
+        Remove todas as colunas órfãs (não usadas por nenhum produto).
+
+        Returns:
+            list: Lista de colunas removidas
+        """
+        orfas = self.listar_colunas_orfas()
+        removidas = []
+
+        for coluna in orfas:
+            try:
+                self.deletar_coluna_atributo(coluna)
+                removidas.append(coluna)
+            except Exception:
+                pass  # Ignora erros silenciosamente
+
+        return removidas
+
+    # ========== VISUALIZAÇÕES ==========
+
+    def obter_colunas_disponiveis(self, produto_id):
+        """
+        Retorna todas as colunas disponíveis para visualização de um produto.
+        Inclui colunas da tabela posicoes + atributos configurados + campos calculados.
+
+        Args:
+            produto_id: ID do produto
+
+        Returns:
+            list: Lista de dicts com nome, label e tipo de cada coluna
+        """
+        # Colunas internas que não devem aparecer nas visualizações
+        colunas_internas = ['atr_period', 'atr_multiplier']
+
+        colunas = []
+
+        # Colunas básicas da posição
+        colunas_posicao = [
+            {'nome': 'id', 'label': 'ID', 'tipo': 'int', 'origem': 'posicao'},
+            {'nome': 'ativo', 'label': 'Ativo', 'tipo': 'text', 'origem': 'posicao'},
+            {'nome': 'side', 'label': 'Side', 'tipo': 'text', 'origem': 'posicao'},
+            {'nome': 'data_entrada', 'label': 'Data Entrada', 'tipo': 'date', 'origem': 'posicao'},
+            {'nome': 'preco_entrada', 'label': 'Preço Entrada', 'tipo': 'float', 'origem': 'posicao'},
+            {'nome': 'data_saida', 'label': 'Data Saída', 'tipo': 'date', 'origem': 'posicao'},
+            {'nome': 'preco_saida', 'label': 'Preço Saída', 'tipo': 'float', 'origem': 'posicao'},
+            {'nome': 'status', 'label': 'Status', 'tipo': 'text', 'origem': 'posicao'},
+            {'nome': 'coingecko_id', 'label': 'CoinGecko ID', 'tipo': 'text', 'origem': 'posicao'},
+        ]
+        colunas.extend(colunas_posicao)
+
+        # Atributos configurados para este produto (excluindo colunas internas)
+        configs = self.carregar_atributos_config(produto_id)
+        for config in configs:
+            if config['atributo_nome'] not in colunas_internas:
+                colunas.append({
+                    'nome': config['atributo_nome'],
+                    'label': config['atributo_label'] or config['atributo_nome'].replace('_', ' ').title(),
+                    'tipo': config['atributo_tipo'],
+                    'origem': 'atributo'
+                })
+
+        # Campos calculados
+        colunas_calculadas = [
+            {'nome': 'pnl', 'label': 'PnL (%)', 'tipo': 'float', 'origem': 'calculado'},
+            {'nome': 'pnl_valor', 'label': 'PnL ($)', 'tipo': 'float', 'origem': 'calculado'},
+            {'nome': 'preco_atual', 'label': 'Preço Atual', 'tipo': 'float', 'origem': 'calculado'},
+            {'nome': 'preco_atual_total', 'label': 'Preço Atual Total', 'tipo': 'float', 'origem': 'calculado'},
+            {'nome': 'preco_saida_total', 'label': 'Preço Saída Total', 'tipo': 'float', 'origem': 'calculado'},
+            {'nome': 'preco_entrada_total', 'label': 'Preço Entrada Total', 'tipo': 'float', 'origem': 'calculado'},
+            {'nome': 'stop_atual', 'label': 'Stop Atual', 'tipo': 'float', 'origem': 'calculado'},
+            {'nome': 'risco_stop', 'label': 'Risco Stop (%)', 'tipo': 'float', 'origem': 'calculado'},
+            {'nome': 'rr', 'label': 'RR', 'tipo': 'float', 'origem': 'calculado'},
+            {'nome': 'alocacao', 'label': 'Alocação (%)', 'tipo': 'float', 'origem': 'calculado'},
+        ]
+        colunas.extend(colunas_calculadas)
+
+        return colunas
+
+    def criar_visualizacao(self, produto_id, nome, colunas, ordenacao=None, filtros=None, colunas_labels=None):
+        """
+        Cria uma nova visualização customizada para um produto.
+
+        Args:
+            produto_id: ID do produto
+            nome: Nome da visualização
+            colunas: Lista de nomes de colunas na ordem desejada
+            ordenacao: Dict com {'coluna': 'nome', 'direcao': 'asc'|'desc'} (opcional)
+            filtros: Lista de dicts com {'coluna': 'nome', 'operador': '>', 'valor': 0} (opcional)
+            colunas_labels: Dict com mapeamento nome_coluna -> label_customizado (opcional)
+
+        Returns:
+            int: ID da visualização criada
+        """
+        import json
+
+        self._validar_produto_existe(produto_id)
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO visualizacoes_config (produto_id, nome, colunas, colunas_labels, ordenacao, filtros, data_criacao)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                produto_id,
+                nome,
+                json.dumps(colunas),
+                json.dumps(colunas_labels) if colunas_labels else None,
+                json.dumps(ordenacao) if ordenacao else None,
+                json.dumps(filtros) if filtros else None,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ))
+            return cursor.lastrowid
+
+    def listar_visualizacoes(self, produto_id):
+        """
+        Lista todas as visualizações de um produto.
+
+        Args:
+            produto_id: ID do produto
+
+        Returns:
+            list: Lista de visualizações
+        """
+        import json
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, nome, colunas, colunas_labels, ordenacao, filtros, data_criacao
+                FROM visualizacoes_config
+                WHERE produto_id = ?
+                ORDER BY nome
+            """, (produto_id,))
+
+            visualizacoes = []
+            for row in cursor.fetchall():
+                visualizacoes.append({
+                    'id': row[0],
+                    'nome': row[1],
+                    'colunas': json.loads(row[2]),
+                    'colunas_labels': json.loads(row[3]) if row[3] else None,
+                    'ordenacao': json.loads(row[4]) if row[4] else None,
+                    'filtros': json.loads(row[5]) if row[5] else None,
+                    'data_criacao': row[6]
+                })
+            return visualizacoes
+
+    def carregar_visualizacao(self, visualizacao_id):
+        """
+        Carrega uma visualização específica.
+
+        Args:
+            visualizacao_id: ID da visualização
+
+        Returns:
+            dict: Dados da visualização ou None
+        """
+        import json
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, produto_id, nome, colunas, colunas_labels, ordenacao, filtros, data_criacao
+                FROM visualizacoes_config
+                WHERE id = ?
+            """, (visualizacao_id,))
+
+            row = cursor.fetchone()
+            if row:
+                return {
+                    'id': row[0],
+                    'produto_id': row[1],
+                    'nome': row[2],
+                    'colunas': json.loads(row[3]),
+                    'colunas_labels': json.loads(row[4]) if row[4] else None,
+                    'ordenacao': json.loads(row[5]) if row[5] else None,
+                    'filtros': json.loads(row[6]) if row[6] else None,
+                    'data_criacao': row[7]
+                }
+            return None
+
+    def atualizar_visualizacao(self, visualizacao_id, nome=None, colunas=None, colunas_labels=None, ordenacao=None, filtros=None):
+        """
+        Atualiza uma visualização existente.
+
+        Args:
+            visualizacao_id: ID da visualização
+            nome: Novo nome (opcional)
+            colunas: Nova lista de colunas (opcional)
+            colunas_labels: Novo mapeamento de labels (opcional)
+            ordenacao: Nova ordenação (opcional)
+            filtros: Novos filtros (opcional)
+
+        Returns:
+            bool: True se atualizado com sucesso
+        """
+        import json
+
+        updates = []
+        valores = []
+
+        if nome is not None:
+            updates.append("nome = ?")
+            valores.append(nome)
+
+        if colunas is not None:
+            updates.append("colunas = ?")
+            valores.append(json.dumps(colunas))
+
+        if colunas_labels is not None:
+            updates.append("colunas_labels = ?")
+            valores.append(json.dumps(colunas_labels) if colunas_labels else None)
+
+        if ordenacao is not None:
+            updates.append("ordenacao = ?")
+            valores.append(json.dumps(ordenacao) if ordenacao else None)
+
+        if filtros is not None:
+            updates.append("filtros = ?")
+            valores.append(json.dumps(filtros) if filtros else None)
+
+        if not updates:
+            return False
+
+        valores.append(visualizacao_id)
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                UPDATE visualizacoes_config
+                SET {', '.join(updates)}
+                WHERE id = ?
+            """, valores)
+            return cursor.rowcount > 0
+
+    def deletar_visualizacao(self, visualizacao_id):
+        """
+        Deleta uma visualização.
+
+        Args:
+            visualizacao_id: ID da visualização
+
+        Returns:
+            bool: True se deletado com sucesso
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM visualizacoes_config WHERE id = ?", (visualizacao_id,))
+            return cursor.rowcount > 0
+
     # ========== POSIÇÕES ==========
     
     def salvar_posicao(self, produto_id, posicao):
@@ -698,8 +1353,14 @@ class SQLiteRepo:
                     f"Posição {posicao_id} possui {count_alocacoes} alocação(ões) ativa(s). "
                     f"Use forcar=True para deletar mesmo assim."
                 )
-            
-            # Deletar a posição (stops e alocações serão deletados em cascata devido ao ON DELETE CASCADE)
+
+            # Deletar stops da posição
+            cursor.execute("DELETE FROM stops WHERE posicao_id = ?", (posicao_id,))
+
+            # Deletar alocações da posição
+            cursor.execute("DELETE FROM alocacoes WHERE posicao_id = ?", (posicao_id,))
+
+            # Deletar a posição
             cursor.execute("DELETE FROM posicoes WHERE id = ?", (posicao_id,))
             
             # Verificar se foi deletado
@@ -711,24 +1372,15 @@ class SQLiteRepo:
     
     # ========== ATRIBUTOS POR PRODUTO ==========
     
-    def salvar_atributos_posicao(self, posicao_id, produto_id, motivo=None, perfil=None,
-                                 alvo1=None, alvo2=None,
-                                 quantidade=None, preco_entrada_total=None,
-                                 atr_period=None, atr_multiplier=None):
+    def salvar_atributos_posicao(self, posicao_id, produto_id, **kwargs):
         """
-        Salva ou atualiza atributos específicos de uma posição por produto
+        Salva ou atualiza atributos específicos de uma posição por produto.
+        Aceita atributos dinâmicos baseados nas colunas da tabela.
 
         Args:
             posicao_id: ID da posição
             produto_id: ID do produto
-            motivo: Motivo do encerramento (Crypto Signals)
-            perfil: Perfil de risco (Crypto Signals)
-            alvo1: Primeiro alvo de preço (Crypto Signals)
-            alvo2: Segundo alvo de preço (Crypto Signals)
-            quantidade: Quantidade (Spot/Perpétuos)
-            preco_entrada_total: Preço de entrada total (Spot/Perpétuos)
-            atr_period: Período para cálculo do ATR (default: 14)
-            atr_multiplier: Multiplicador do ATR para trailing stop
+            **kwargs: Atributos a salvar (ex: quantidade=10, perfil='conservador')
 
         Returns:
             int: posicao_id
@@ -748,32 +1400,40 @@ class SQLiteRepo:
             if cursor.fetchone() is None:
                 raise ValueError(f"Posição {posicao_id} não pertence ao produto {produto_id}")
 
+        if not kwargs:
+            return posicao_id
+
+        # Obter colunas existentes na tabela
+        colunas_existentes = self.listar_colunas_atributos()
+
+        # Filtrar apenas atributos válidos (que existem como colunas)
+        atributos_validos = {k: v for k, v in kwargs.items() if k in colunas_existentes}
+
+        if not atributos_validos:
+            return posicao_id
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            # UPSERT: atualiza apenas os campos explicitamente informados (não sobrescreve com NULL)
-            cursor.execute("""
-                INSERT INTO posicao_atributos_produto (
-                    posicao_id, produto_id, motivo, perfil, alvo1, alvo2,
-                    quantidade, preco_entrada_total, atr_period, atr_multiplier
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+            # Construir query dinâmica
+            colunas = ['posicao_id', 'produto_id'] + list(atributos_validos.keys())
+            placeholders = ['?'] * len(colunas)
+            valores = [posicao_id, produto_id] + list(atributos_validos.values())
+
+            # Construir parte de UPDATE para UPSERT
+            updates = []
+            for col in atributos_validos.keys():
+                updates.append(f"{col} = COALESCE(excluded.{col}, posicao_atributos_produto.{col})")
+
+            query = f"""
+                INSERT INTO posicao_atributos_produto ({', '.join(colunas)})
+                VALUES ({', '.join(placeholders)})
                 ON CONFLICT(posicao_id) DO UPDATE SET
                     produto_id = excluded.produto_id,
-                    motivo = COALESCE(excluded.motivo, posicao_atributos_produto.motivo),
-                    perfil = COALESCE(excluded.perfil, posicao_atributos_produto.perfil),
-                    alvo1 = COALESCE(excluded.alvo1, posicao_atributos_produto.alvo1),
-                    alvo2 = COALESCE(excluded.alvo2, posicao_atributos_produto.alvo2),
-                    quantidade = COALESCE(excluded.quantidade, posicao_atributos_produto.quantidade),
-                    preco_entrada_total = COALESCE(
-                        excluded.preco_entrada_total,
-                        posicao_atributos_produto.preco_entrada_total
-                    ),
-                    atr_period = COALESCE(excluded.atr_period, posicao_atributos_produto.atr_period),
-                    atr_multiplier = COALESCE(excluded.atr_multiplier, posicao_atributos_produto.atr_multiplier)
-            """, (
-                posicao_id, produto_id, motivo, perfil, alvo1, alvo2,
-                quantidade, preco_entrada_total, atr_period, atr_multiplier
-            ))
+                    {', '.join(updates)}
+            """
+
+            cursor.execute(query, valores)
 
         return posicao_id
     
@@ -802,12 +1462,12 @@ class SQLiteRepo:
     
     def atualizar_atributos_posicao(self, posicao_id, **kwargs):
         """
-        Atualiza atributos específicos de uma posição
+        Atualiza atributos específicos de uma posição.
+        Aceita atributos dinâmicos baseados nas colunas da tabela.
 
         Args:
             posicao_id: ID da posição
-            **kwargs: Campos a atualizar (motivo, perfil, alvo1, alvo2, quantidade,
-                      preco_entrada_total, atr_period, atr_multiplier)
+            **kwargs: Campos a atualizar (qualquer coluna existente na tabela)
 
         Nota:
             - RR é calculado dinamicamente, não pode ser atualizado
@@ -816,32 +1476,30 @@ class SQLiteRepo:
         Returns:
             int: posicao_id
         """
-        campos_permitidos = ['motivo', 'perfil', 'alvo1', 'alvo2',
-                             'quantidade', 'preco_entrada_total',
-                             'atr_period', 'atr_multiplier']
-        
+        # Obter colunas permitidas dinamicamente da tabela
+        colunas_existentes = self.listar_colunas_atributos()
+
         updates = []
         valores = []
         for campo, valor in kwargs.items():
-            if campo in campos_permitidos:
+            if campo in colunas_existentes:
                 updates.append(f"{campo} = ?")
                 valores.append(valor)
-            else:
-                raise ValueError(f"Campo '{campo}' não é permitido para atualização")
-        
+            # Ignorar campos não existentes silenciosamente
+
         if not updates:
             return posicao_id
-        
+
         valores.append(posicao_id)
-        
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f"""
-                UPDATE posicao_atributos_produto 
-                SET {', '.join(updates)} 
+                UPDATE posicao_atributos_produto
+                SET {', '.join(updates)}
                 WHERE posicao_id = ?
             """, valores)
-        
+
         return posicao_id
     
     # ========== ALOCAÇÕES ==========

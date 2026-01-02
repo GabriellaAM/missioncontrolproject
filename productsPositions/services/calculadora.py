@@ -1,40 +1,5 @@
-# Calculadora simples para PnL, taxa etc.
+# Calculadora simples para valores de carteira
 class Calculadora:
-
-    @staticmethod
-    def pnl(posicao):
-        """Calcula PnL realizado de uma posição fechada"""
-        if posicao.status == "open":
-            return None
-        return posicao.preco_saida - posicao.preco_entrada
-
-    @staticmethod
-    def pnl_nao_realizado(posicao, preco_atual, valor_investido):
-        """
-        Calcula PnL não realizado de uma posição aberta
-        
-        Args:
-            posicao: Objeto Posicao
-            preco_atual: Preço atual do ativo
-            valor_investido: Valor investido nesta posição
-        
-        Returns:
-            float: PnL não realizado em USD
-        """
-        if posicao.status != "open":
-            return 0.0
-        
-        if valor_investido <= 0:
-            return 0.0
-        
-        # Calcular variação percentual
-        variacao_pct = (preco_atual - posicao.preco_entrada) / posicao.preco_entrada
-        
-        # Para short, inverter o sinal
-        if posicao.side == "short":
-            variacao_pct = -variacao_pct
-        
-        return valor_investido * variacao_pct
 
     @staticmethod
     def calcular_valor_investido(alocacoes):

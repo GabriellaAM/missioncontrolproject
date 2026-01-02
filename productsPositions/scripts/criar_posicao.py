@@ -8,9 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from services.posicao_service import PosicaoService
 from services.valor_diario_service import ValorDiarioService
 from storage.sqlite_repo import SQLiteRepo
-from domain.produto import Produto
 from utils.cli_utils import obter_input, validar_data, imprimir_titulo, imprimir_secao
-from utils.produto_utils import obter_atributos_necessarios_produto
 
 def main():
     imprimir_titulo("CRIAR POSIÇÃO")
@@ -57,34 +55,81 @@ def main():
     data_entrada = obter_input("Data de entrada (YYYY-MM-DD): ", obrigatorio=True)
     data_entrada = validar_data(data_entrada, "Data de entrada")
     
-    preco_entrada = obter_input("Preço de entrada: ", tipo=float, obrigatorio=True)
+    preco_entrada = obter_input("Preco de entrada: ", tipo=float, obrigatorio=True)
 
-    # Detectar atributos necessários para este produto específico
-    atributos_necessarios = obter_atributos_necessarios_produto(produto_id)
-    
+    # Carregar configuração de atributos do produto
+    atributos_config = repo.carregar_atributos_config(produto_id)
+    atributos_nomes = {c['atributo_nome'] for c in atributos_config}
+
+    # Verificar colunas usadas nas visualizações do produto
+    # e adicionar atributos que estão nas visualizações mas não na config
+    visualizacoes = repo.listar_visualizacoes(produto_id)
+    colunas_viz = set()
+    for viz in visualizacoes:
+        colunas_viz.update(viz.get('colunas', []))
+
+    # Colunas que são atributos de posição (não calculados nem de posição básica)
+    colunas_posicao_basicas = {'id', 'ativo', 'side', 'data_entrada', 'preco_entrada',
+                               'data_saida', 'preco_saida', 'status', 'coingecko_id', 'produto_id'}
+    colunas_calculadas = {'pnl', 'pnl_valor', 'preco_atual', 'preco_atual_total',
+                          'preco_saida_total', 'preco_entrada_total', 'stop_atual',
+                          'risco_stop', 'rr', 'alocacao'}
+
+    # Atributos necessários que estão nas visualizações
+    atributos_necessarios = colunas_viz - colunas_posicao_basicas - colunas_calculadas
+
+    # Adicionar atributos que estão nas visualizações mas não na config
+    for atrib in atributos_necessarios:
+        if atrib not in atributos_nomes:
+            # Determinar tipo baseado no nome do atributo
+            if atrib in ['quantidade', 'alvo1', 'alvo2']:
+                tipo_atrib = 'float'
+            elif atrib in ['perfil', 'motivo']:
+                tipo_atrib = 'text'
+            else:
+                tipo_atrib = 'text'  # Default
+
+            # Adicionar ao config do produto
+            try:
+                repo.adicionar_atributo_config(produto_id, atrib, tipo_atrib)
+                print(f"   Atributo '{atrib}' adicionado automaticamente (usado nas visualizacoes)")
+            except Exception:
+                pass  # Ignorar se já existe
+
+    # Recarregar configuração após adicionar atributos
+    atributos_config = repo.carregar_atributos_config(produto_id)
+
+    # Mapear tipos para obter_input
+    tipo_map = {
+        'text': str,
+        'float': float,
+        'int': int,
+        'date': str
+    }
+
     # Coletar atributos dinamicamente
-    quantidade = None
-    preco_entrada_total = None
-    perfil = None
-    alvo1 = None
-    alvo2 = None
-    
-    if atributos_necessarios.get('quantidade'):
-        quantidade = obter_input("Quantidade: ", tipo=float, obrigatorio=True)
-        preco_entrada_total = quantidade * preco_entrada
-        print(f"   Preço de entrada total: ${preco_entrada_total:,.2f}")
-    
-    if atributos_necessarios.get('perfil'):
-        perfil = obter_input("Perfil de risco: ", obrigatorio=False)
-    
-    if atributos_necessarios.get('alvo1'):
-        alvo1_input = obter_input("Alvo 1 (preço): ", tipo=float, obrigatorio=False)
-        alvo1 = alvo1_input if alvo1_input else None
-    
-    if atributos_necessarios.get('alvo2'):
-        alvo2_input = obter_input("Alvo 2 (preço): ", tipo=float, obrigatorio=False)
-        alvo2 = alvo2_input if alvo2_input else None
-    
+    atributos_valores = {}
+
+    for config in atributos_config:
+        nome = config['atributo_nome']
+        label = config['atributo_label'] or nome.replace('_', ' ').title()
+        tipo = tipo_map.get(config['atributo_tipo'], str)
+        obrigatorio = bool(config['obrigatorio'])
+
+        # Pular preco_entrada_total (será calculado automaticamente se tiver quantidade)
+        if nome == 'preco_entrada_total':
+            continue
+
+        valor = obter_input(f"{label}: ", tipo=tipo, obrigatorio=obrigatorio)
+        if valor is not None:
+            atributos_valores[nome] = valor
+
+    # Calcular preco_entrada_total se tiver quantidade
+    if 'quantidade' in atributos_valores and atributos_valores['quantidade']:
+        preco_entrada_total = atributos_valores['quantidade'] * preco_entrada
+        atributos_valores['preco_entrada_total'] = preco_entrada_total
+        print(f"   Preco de entrada total: ${preco_entrada_total:,.2f}")
+
     coingecko_id = obter_input("CoinGecko ID (ex: bitcoin, ethereum): ", obrigatorio=False)
     
     # Abrir posição
@@ -110,34 +155,35 @@ def main():
     # Salvar posição
     posicao_id = repo.salvar_posicao(produto_id, p)
 
-    # Salvar atributos específicos do produto (se houver algum necessário)
-    if any([quantidade is not None, preco_entrada_total is not None, perfil, alvo1 is not None, alvo2 is not None]):
+    # Salvar atributos específicos do produto (se houver algum)
+    if atributos_valores:
         try:
             repo.salvar_atributos_posicao(
                 posicao_id,
                 produto_id,
-                quantidade=quantidade,
-                preco_entrada_total=preco_entrada_total,
-                perfil=perfil,
-                alvo1=alvo1,
-                alvo2=alvo2,
+                **atributos_valores
             )
         except Exception as e:
             print(f"⚠️  Não foi possível salvar atributos da posição: {e}")
-    
+
     print(f"\n✅ Posição criada com ID: {posicao_id}")
     print(f"   Ativo: {ativo}")
     print(f"   Side: {side}")
     print(f"   Preço de entrada: ${preco_entrada:.2f}")
-    if quantidade is not None:
-        print(f"   Quantidade: {quantidade:,.4f}")
-        print(f"   Preço de entrada total: ${preco_entrada_total:,.2f}")
-    if perfil:
-        print(f"   Perfil: {perfil}")
-    if alvo1 is not None:
-        print(f"   Alvo 1: ${alvo1:.2f}")
-    if alvo2 is not None:
-        print(f"   Alvo 2: ${alvo2:.2f}")
+
+    # Exibir atributos dinâmicos
+    for config in atributos_config:
+        nome = config['atributo_nome']
+        label = config['atributo_label'] or nome.replace('_', ' ').title()
+        if nome in atributos_valores and atributos_valores[nome] is not None:
+            valor = atributos_valores[nome]
+            if isinstance(valor, float):
+                if nome in ['quantidade']:
+                    print(f"   {label}: {valor:,.4f}")
+                else:
+                    print(f"   {label}: ${valor:,.2f}")
+            else:
+                print(f"   {label}: {valor}")
     
     # Verificar se dados do CoinGecko estão disponíveis
     if coingecko_id:
