@@ -474,6 +474,16 @@ def get_menu_html():
             </div>
 
             <div class="menu-section">
+                <h3>Alocacoes</h3>
+                <div class="menu-grid">
+                    <a href="/alocacao/nova" class="menu-item">
+                        <div class="menu-item-icon">+</div>
+                        <div class="menu-item-label">Criar Alocacao</div>
+                    </a>
+                </div>
+            </div>
+
+            <div class="menu-section">
                 <h3>Visualizacao</h3>
                 <div class="menu-grid">
                     <a href="/" class="menu-item">
@@ -561,6 +571,8 @@ def get_produto_html(produto, visualizacoes, repo):
                 <div class="actions">
                     <button class="btn btn-primary" onclick="atualizarDados()">Atualizar Dados</button>
                     <a href="/produto/{produto_id}/editar" class="btn btn-secondary">Editar Produto</a>
+                    <a href="/produto/{produto_id}/visualizacoes" class="btn btn-secondary">Gerenciar Visualizacoes</a>
+                    <a href="/produto/{produto_id}/atributos" class="btn btn-secondary">Gerenciar Atributos</a>
                 </div>
             </div>
 
@@ -577,10 +589,12 @@ def get_produto_html(produto, visualizacoes, repo):
                     <h2 style="margin: 0;">{viz_nome}</h2>
                     <div class="actions" style="margin: 0;">
                         <a href="/posicao/nova?produto_id={produto_id}" class="btn btn-sm btn-primary">+ Nova Posicao</a>
+                        <a href="/alocacao/nova?produto_id={produto_id}" class="btn btn-sm btn-primary">+ Nova Alocacao</a>
                         <a href="/posicoes/editar?produto_id={produto_id}" class="btn btn-sm btn-secondary">Editar Posicao</a>
                         <a href="/stop/novo?produto_id={produto_id}" class="btn btn-sm btn-secondary">+ Stop</a>
                         <a href="/atr/config?produto_id={produto_id}" class="btn btn-sm btn-secondary">ATR Stop</a>
                         <a href="/posicao/fechar?produto_id={produto_id}" class="btn btn-sm btn-secondary">Fechar Posicao</a>
+                        <a href="/posicoes/deletar?produto_id={produto_id}" class="btn btn-sm btn-danger">Deletar Posicao</a>
                     </div>
                 </div>
                 {content_html}
@@ -670,6 +684,8 @@ def get_visualizacao_html(produto, visualizacao, df_viz):
                 <div class="actions">
                     <button class="btn btn-primary" onclick="atualizarDados()">Atualizar Dados</button>
                     <a href="/produto/{produto_id}/editar" class="btn btn-secondary">Editar Produto</a>
+                    <a href="/produto/{produto_id}/visualizacoes" class="btn btn-secondary">Gerenciar Visualizacoes</a>
+                    <a href="/produto/{produto_id}/atributos" class="btn btn-secondary">Gerenciar Atributos</a>
                 </div>
             </div>
 
@@ -686,10 +702,12 @@ def get_visualizacao_html(produto, visualizacao, df_viz):
                     <h2 style="margin: 0;">{nome_viz}</h2>
                     <div class="actions" style="margin: 0;">
                         <a href="/posicao/nova?produto_id={produto_id}" class="btn btn-sm btn-primary">+ Nova Posicao</a>
+                        <a href="/alocacao/nova?produto_id={produto_id}" class="btn btn-sm btn-primary">+ Nova Alocacao</a>
                         <a href="/posicoes/editar?produto_id={produto_id}" class="btn btn-sm btn-secondary">Editar Posicao</a>
                         <a href="/stop/novo?produto_id={produto_id}" class="btn btn-sm btn-secondary">+ Stop</a>
                         <a href="/atr/config?produto_id={produto_id}" class="btn btn-sm btn-secondary">ATR Stop</a>
                         <a href="/posicao/fechar?produto_id={produto_id}" class="btn btn-sm btn-secondary">Fechar Posicao</a>
+                        <a href="/posicoes/deletar?produto_id={produto_id}" class="btn btn-sm btn-danger">Deletar Posicao</a>
                     </div>
                 </div>
                 {content_html}
@@ -1015,12 +1033,13 @@ def get_confirmar_delete_html(produto):
 
 
 def get_lista_posicoes_html(produto, posicoes, acao="editar"):
-    """Lista posicoes de um produto para selecao (editar/stop/fechar/atr)"""
+    """Lista posicoes de um produto para selecao (editar/stop/fechar/atr/deletar)"""
     titulo_map = {
         "editar": "Editar Posicao",
         "stop": "Adicionar Stop",
         "fechar": "Fechar Posicao",
-        "atr": "Configurar ATR Stop"
+        "atr": "Configurar ATR Stop",
+        "deletar": "Deletar Posicao"
     }
     titulo = titulo_map.get(acao, "Selecionar Posicao")
 
@@ -1046,6 +1065,10 @@ def get_lista_posicoes_html(produto, posicoes, acao="editar"):
                 link = f"/posicao/{pos_id}/atr?produto_id={produto['id']}"
                 btn_class = "btn-secondary"
                 btn_text = "Configurar"
+            elif acao == "deletar":
+                link = f"/posicao/{pos_id}/deletar?produto_id={produto['id']}"
+                btn_class = "btn-danger"
+                btn_text = "Deletar"
             else:  # fechar
                 link = f"/posicao/{pos_id}/fechar?produto_id={produto['id']}"
                 btn_class = "btn-danger"
@@ -1491,6 +1514,955 @@ def get_form_atr_stop_html(produto, posicao):
 
 
 # ============================================================
+# VISUALIZACOES
+# ============================================================
+
+def get_lista_visualizacoes_html(produto, visualizacoes):
+    """Lista visualizacoes de um produto para gerenciamento"""
+    items_html = ""
+
+    if visualizacoes:
+        for viz in visualizacoes:
+            colunas_preview = ', '.join(viz.get('colunas', [])[:4])
+            if len(viz.get('colunas', [])) > 4:
+                colunas_preview += '...'
+
+            ordenacao_info = ""
+            if viz.get('ordenacao') and viz['ordenacao'].get('coluna'):
+                ordenacao_info = f" | Ordenado por: {viz['ordenacao']['coluna']}"
+
+            items_html += f"""
+            <div class="viz-item">
+                <div style="flex: 1;">
+                    <strong>{viz['nome']}</strong>
+                    <p style="color: #888; font-size: 0.85em; margin-top: 5px;">
+                        Colunas: {colunas_preview}{ordenacao_info}
+                    </p>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <a href="/produto/{produto['id']}/viz/{viz['id']}/editar" class="btn btn-sm btn-primary">Editar</a>
+                    <a href="/produto/{produto['id']}/viz/{viz['id']}/deletar" class="btn btn-sm btn-danger">Deletar</a>
+                </div>
+            </div>
+            """
+    else:
+        items_html = '<p style="text-align: center; color: #888; padding: 20px;">Nenhuma visualizacao cadastrada</p>'
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Visualizacoes - {produto['nome']}</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            <div class="card" style="max-width: 700px; margin: 0 auto;">
+                <h2>Gerenciar Visualizacoes</h2>
+                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <div id="alert" class="alert"></div>
+                <div class="viz-list">{items_html}</div>
+                <div class="actions" style="margin-top: 20px;">
+                    <a href="/produto/{produto['id']}/viz/nova" class="btn btn-primary">+ Nova Visualizacao</a>
+                    <a href="/produto/{produto['id']}" class="btn btn-secondary">Voltar</a>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def get_form_nova_visualizacao_html(produto, colunas_disponiveis):
+    """Formulario para criar nova visualizacao"""
+    colunas_html = ""
+    for i, col in enumerate(colunas_disponiveis):
+        origem_badge = f'<span class="badge badge-outro" style="font-size: 0.7em;">{col["origem"]}</span>'
+        colunas_html += f"""
+        <label style="display: flex; align-items: center; gap: 10px; padding: 8px; background: #16213e; border-radius: 5px; cursor: pointer;">
+            <input type="checkbox" name="colunas" value="{col['nome']}" style="width: 18px; height: 18px;">
+            <span>{col['label']}</span>
+            <span style="color: #666; font-size: 0.85em;">({col['nome']})</span>
+            {origem_badge}
+        </label>
+        """
+
+    colunas_ordenacao = ""
+    for col in colunas_disponiveis:
+        colunas_ordenacao += f'<option value="{col["nome"]}">{col["label"]}</option>'
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Nova Visualizacao - {produto['nome']}</title>
+        <style>
+            {get_base_styles()}
+            .colunas-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+                gap: 8px;
+                max-height: 400px;
+                overflow-y: auto;
+                padding: 10px;
+                background: #1a1a2e;
+                border-radius: 8px;
+                border: 1px solid #2a2a4a;
+            }}
+            .filtros-container {{ margin-top: 15px; }}
+            .filtro-item {{
+                display: flex;
+                gap: 10px;
+                margin-bottom: 10px;
+                padding: 10px;
+                background: #16213e;
+                border-radius: 8px;
+            }}
+            .filtro-item select, .filtro-item input {{
+                padding: 8px;
+                border: 1px solid #2a2a4a;
+                border-radius: 5px;
+                background: #1a1a2e;
+                color: #eee;
+            }}
+        </style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            <div class="card" style="max-width: 800px; margin: 0 auto;">
+                <h2>Nova Visualizacao</h2>
+                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <div id="alert" class="alert"></div>
+                <form id="vizForm">
+                    <div class="form-group">
+                        <label>Nome da Visualizacao</label>
+                        <input type="text" name="nome" required placeholder="Ex: Posicoes Abertas Long">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Colunas (selecione na ordem desejada)</label>
+                        <div style="margin-bottom: 10px;">
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="selecionarTodas()">Selecionar Todas</button>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="limparSelecao()">Limpar</button>
+                        </div>
+                        <div class="colunas-grid">
+                            {colunas_html}
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Ordenar por (opcional)</label>
+                            <select name="ordenacao_coluna">
+                                <option value="">Sem ordenacao</option>
+                                {colunas_ordenacao}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Direcao</label>
+                            <select name="ordenacao_direcao">
+                                <option value="asc">Crescente</option>
+                                <option value="desc">Decrescente</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Filtro de Status (opcional)</label>
+                        <select name="filtro_status">
+                            <option value="">Todas as posicoes</option>
+                            <option value="open">Apenas abertas</option>
+                            <option value="closed">Apenas fechadas</option>
+                        </select>
+                    </div>
+
+                    <div class="actions">
+                        <button type="submit" class="btn btn-primary">Criar Visualizacao</button>
+                        <a href="/produto/{produto['id']}/visualizacoes" class="btn btn-secondary">Cancelar</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <script>
+            function selecionarTodas() {{
+                document.querySelectorAll('input[name="colunas"]').forEach(cb => cb.checked = true);
+            }}
+            function limparSelecao() {{
+                document.querySelectorAll('input[name="colunas"]').forEach(cb => cb.checked = false);
+            }}
+
+            document.getElementById('vizForm').addEventListener('submit', async (e) => {{
+                e.preventDefault();
+                const form = e.target;
+                const alert = document.getElementById('alert');
+
+                // Coletar colunas selecionadas na ordem
+                const colunas = Array.from(form.querySelectorAll('input[name="colunas"]:checked'))
+                    .map(cb => cb.value);
+
+                if (colunas.length === 0) {{
+                    alert.className = 'alert alert-error show';
+                    alert.textContent = 'Selecione pelo menos uma coluna';
+                    return;
+                }}
+
+                const dados = {{
+                    produto_id: {produto['id']},
+                    nome: form.nome.value,
+                    colunas: colunas
+                }};
+
+                // Ordenacao
+                if (form.ordenacao_coluna.value) {{
+                    dados.ordenacao = {{
+                        coluna: form.ordenacao_coluna.value,
+                        direcao: form.ordenacao_direcao.value
+                    }};
+                }}
+
+                // Filtro de status
+                if (form.filtro_status.value) {{
+                    dados.filtros = [{{
+                        coluna: 'status',
+                        operador: '=',
+                        valor: form.filtro_status.value
+                    }}];
+                }}
+
+                try {{
+                    const response = await fetch('/api/visualizacao/criar', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify(dados)
+                    }});
+                    const result = await response.json();
+                    if (result.sucesso) {{
+                        alert.className = 'alert alert-success show';
+                        alert.textContent = 'Visualizacao criada!';
+                        setTimeout(() => window.location.href = '/produto/{produto["id"]}/visualizacoes', 1000);
+                    }} else {{
+                        throw new Error(result.erro);
+                    }}
+                }} catch (error) {{
+                    alert.className = 'alert alert-error show';
+                    alert.textContent = 'Erro: ' + error.message;
+                }}
+            }});
+        </script>
+    </body>
+    </html>
+    """
+
+
+def get_form_editar_visualizacao_html(produto, visualizacao, colunas_disponiveis):
+    """Formulario para editar visualizacao existente"""
+    colunas_selecionadas = visualizacao.get('colunas', [])
+
+    colunas_html = ""
+    for col in colunas_disponiveis:
+        checked = 'checked' if col['nome'] in colunas_selecionadas else ''
+        origem_badge = f'<span class="badge badge-outro" style="font-size: 0.7em;">{col["origem"]}</span>'
+        colunas_html += f"""
+        <label style="display: flex; align-items: center; gap: 10px; padding: 8px; background: #16213e; border-radius: 5px; cursor: pointer;">
+            <input type="checkbox" name="colunas" value="{col['nome']}" {checked} style="width: 18px; height: 18px;">
+            <span>{col['label']}</span>
+            <span style="color: #666; font-size: 0.85em;">({col['nome']})</span>
+            {origem_badge}
+        </label>
+        """
+
+    ordenacao = visualizacao.get('ordenacao', {}) or {}
+    ordenacao_coluna = ordenacao.get('coluna', '')
+    ordenacao_direcao = ordenacao.get('direcao', 'asc')
+
+    colunas_ordenacao = '<option value="">Sem ordenacao</option>'
+    for col in colunas_disponiveis:
+        selected = 'selected' if col['nome'] == ordenacao_coluna else ''
+        colunas_ordenacao += f'<option value="{col["nome"]}" {selected}>{col["label"]}</option>'
+
+    # Determinar filtro de status atual
+    filtros = visualizacao.get('filtros', []) or []
+    filtro_status = ''
+    for f in filtros:
+        if f.get('coluna') == 'status':
+            filtro_status = f.get('valor', '')
+            break
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Editar Visualizacao - {visualizacao['nome']}</title>
+        <style>
+            {get_base_styles()}
+            .colunas-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+                gap: 8px;
+                max-height: 400px;
+                overflow-y: auto;
+                padding: 10px;
+                background: #1a1a2e;
+                border-radius: 8px;
+                border: 1px solid #2a2a4a;
+            }}
+        </style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            <div class="card" style="max-width: 800px; margin: 0 auto;">
+                <h2>Editar Visualizacao</h2>
+                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <div id="alert" class="alert"></div>
+                <form id="vizForm">
+                    <div class="form-group">
+                        <label>Nome da Visualizacao</label>
+                        <input type="text" name="nome" required value="{visualizacao['nome']}">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Colunas</label>
+                        <div style="margin-bottom: 10px;">
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="selecionarTodas()">Selecionar Todas</button>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="limparSelecao()">Limpar</button>
+                        </div>
+                        <div class="colunas-grid">
+                            {colunas_html}
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Ordenar por</label>
+                            <select name="ordenacao_coluna">
+                                {colunas_ordenacao}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Direcao</label>
+                            <select name="ordenacao_direcao">
+                                <option value="asc" {'selected' if ordenacao_direcao == 'asc' else ''}>Crescente</option>
+                                <option value="desc" {'selected' if ordenacao_direcao == 'desc' else ''}>Decrescente</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Filtro de Status</label>
+                        <select name="filtro_status">
+                            <option value="" {'selected' if filtro_status == '' else ''}>Todas as posicoes</option>
+                            <option value="open" {'selected' if filtro_status == 'open' else ''}>Apenas abertas</option>
+                            <option value="closed" {'selected' if filtro_status == 'closed' else ''}>Apenas fechadas</option>
+                        </select>
+                    </div>
+
+                    <div class="actions">
+                        <button type="submit" class="btn btn-primary">Salvar</button>
+                        <a href="/produto/{produto['id']}/visualizacoes" class="btn btn-secondary">Cancelar</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <script>
+            function selecionarTodas() {{
+                document.querySelectorAll('input[name="colunas"]').forEach(cb => cb.checked = true);
+            }}
+            function limparSelecao() {{
+                document.querySelectorAll('input[name="colunas"]').forEach(cb => cb.checked = false);
+            }}
+
+            document.getElementById('vizForm').addEventListener('submit', async (e) => {{
+                e.preventDefault();
+                const form = e.target;
+                const alert = document.getElementById('alert');
+
+                const colunas = Array.from(form.querySelectorAll('input[name="colunas"]:checked'))
+                    .map(cb => cb.value);
+
+                if (colunas.length === 0) {{
+                    alert.className = 'alert alert-error show';
+                    alert.textContent = 'Selecione pelo menos uma coluna';
+                    return;
+                }}
+
+                const dados = {{
+                    visualizacao_id: {visualizacao['id']},
+                    nome: form.nome.value,
+                    colunas: colunas
+                }};
+
+                if (form.ordenacao_coluna.value) {{
+                    dados.ordenacao = {{
+                        coluna: form.ordenacao_coluna.value,
+                        direcao: form.ordenacao_direcao.value
+                    }};
+                }} else {{
+                    dados.ordenacao = null;
+                }}
+
+                if (form.filtro_status.value) {{
+                    dados.filtros = [{{
+                        coluna: 'status',
+                        operador: '=',
+                        valor: form.filtro_status.value
+                    }}];
+                }} else {{
+                    dados.filtros = null;
+                }}
+
+                try {{
+                    const response = await fetch('/api/visualizacao/editar', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify(dados)
+                    }});
+                    const result = await response.json();
+                    if (result.sucesso) {{
+                        alert.className = 'alert alert-success show';
+                        alert.textContent = 'Visualizacao atualizada!';
+                        setTimeout(() => window.location.href = '/produto/{produto["id"]}/visualizacoes', 1000);
+                    }} else {{
+                        throw new Error(result.erro);
+                    }}
+                }} catch (error) {{
+                    alert.className = 'alert alert-error show';
+                    alert.textContent = 'Erro: ' + error.message;
+                }}
+            }});
+        </script>
+    </body>
+    </html>
+    """
+
+
+def get_confirmar_delete_posicao_html(produto, posicao):
+    """Pagina de confirmacao para deletar posicao"""
+    pos_id = posicao.get('id') or posicao.get('ID')
+    ativo = posicao.get('ativo') or posicao.get('Ativo', 'N/A')
+    side = posicao.get('side') or posicao.get('tipo', 'N/A')
+    preco_entrada = posicao.get('preco_entrada') or posicao.get('Preço Entrada', 0)
+    status = posicao.get('status', 'open')
+    is_spot = 'spot' in produto.get('tipo', '').lower()
+    side_info = "" if is_spot else f" ({side})"
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Deletar Posicao - {ativo}</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            <div class="card" style="max-width: 500px; margin: 0 auto; text-align: center;">
+                <h2 style="color: #ff6b6b;">Deletar Posicao</h2>
+                <p style="margin: 20px 0;">Tem certeza que deseja deletar:</p>
+                <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{ativo}{side_info}</p>
+                <p style="color: #888;">Entrada: ${preco_entrada:,.4f} | Status: {status}</p>
+                <p style="color: #ff6b6b; margin: 20px 0; font-size: 0.9em;">
+                    Esta acao ira deletar a posicao e todos os stops e alocacoes associados!
+                </p>
+                <div id="alert" class="alert"></div>
+                <div class="actions" style="justify-content: center;">
+                    <button class="btn btn-danger" onclick="deletarPosicao()">Sim, Deletar</button>
+                    <a href="/produto/{produto['id']}" class="btn btn-secondary">Cancelar</a>
+                </div>
+            </div>
+        </div>
+        <script>
+            async function deletarPosicao() {{
+                const alert = document.getElementById('alert');
+                try {{
+                    const response = await fetch('/api/posicao/deletar', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{posicao_id: {pos_id}}})
+                    }});
+                    const result = await response.json();
+                    if (result.sucesso) {{
+                        alert.className = 'alert alert-success show';
+                        alert.textContent = 'Posicao deletada!';
+                        setTimeout(() => window.location.href = '/produto/{produto["id"]}', 1000);
+                    }} else {{
+                        throw new Error(result.erro);
+                    }}
+                }} catch (error) {{
+                    alert.className = 'alert alert-error show';
+                    alert.textContent = 'Erro: ' + error.message;
+                }}
+            }}
+        </script>
+    </body>
+    </html>
+    """
+
+
+def get_lista_atributos_html(produto, configs, colunas_orfas):
+    """Lista atributos de um produto para gerenciamento"""
+    items_html = ""
+
+    if configs:
+        for config in configs:
+            obrig_badge = '<span class="badge badge-danger" style="margin-left: 8px;">obrigatorio</span>' if config['obrigatorio'] else ''
+            items_html += f"""
+            <div class="viz-item">
+                <div style="flex: 1;">
+                    <strong>{config['atributo_label'] or config['atributo_nome']}</strong>
+                    <span style="color: #888; margin-left: 8px;">({config['atributo_nome']})</span>
+                    <span class="badge badge-outro" style="margin-left: 8px;">{config['atributo_tipo']}</span>
+                    {obrig_badge}
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <a href="/produto/{produto['id']}/atributos/{config['atributo_nome']}/editar" class="btn btn-sm btn-primary">Editar</a>
+                    <a href="/produto/{produto['id']}/atributos/{config['atributo_nome']}/remover" class="btn btn-sm btn-danger">Remover</a>
+                </div>
+            </div>
+            """
+    else:
+        items_html = '<p style="text-align: center; color: #888; padding: 20px;">Nenhum atributo configurado para este produto</p>'
+
+    # Mostrar colunas orfas se existirem
+    orfas_html = ""
+    if colunas_orfas:
+        orfas_html = f"""
+        <div style="margin-top: 30px; padding: 15px; background: rgba(255, 107, 107, 0.1); border-radius: 8px; border: 1px solid #ff6b6b;">
+            <h3 style="color: #ff6b6b; margin-bottom: 10px;">Colunas Orfas ({len(colunas_orfas)})</h3>
+            <p style="color: #888; font-size: 0.9em; margin-bottom: 10px;">Colunas que nao estao sendo usadas por nenhum produto:</p>
+            <p style="color: #888;">{', '.join(colunas_orfas)}</p>
+            <button class="btn btn-sm btn-danger" style="margin-top: 10px;" onclick="limparOrfas()">Limpar Colunas Orfas</button>
+        </div>
+        """
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Atributos - {produto['nome']}</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            <div class="card" style="max-width: 700px; margin: 0 auto;">
+                <h2>Gerenciar Atributos</h2>
+                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <div id="alert" class="alert"></div>
+                <div class="viz-list">{items_html}</div>
+                {orfas_html}
+                <div class="actions" style="margin-top: 20px;">
+                    <a href="/produto/{produto['id']}/atributos/novo" class="btn btn-primary">+ Novo Atributo</a>
+                    <a href="/produto/{produto['id']}" class="btn btn-secondary">Voltar</a>
+                </div>
+            </div>
+        </div>
+        <script>
+            async function limparOrfas() {{
+                if (!confirm('Remover todas as colunas orfas?')) return;
+                const alert = document.getElementById('alert');
+                try {{
+                    const response = await fetch('/api/atributos/limpar-orfas', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}}
+                    }});
+                    const result = await response.json();
+                    if (result.sucesso) {{
+                        alert.className = 'alert alert-success show';
+                        alert.textContent = 'Colunas orfas removidas: ' + result.removidas;
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        throw new Error(result.erro);
+                    }}
+                }} catch (error) {{
+                    alert.className = 'alert alert-error show';
+                    alert.textContent = 'Erro: ' + error.message;
+                }}
+            }}
+        </script>
+    </body>
+    </html>
+    """
+
+
+def get_form_atributo_html(produto, config=None, colunas_existentes=None):
+    """Formulario para criar/editar atributo"""
+    is_edit = config is not None
+    titulo = "Editar Atributo" if is_edit else "Novo Atributo"
+
+    nome_value = config['atributo_nome'] if is_edit else ''
+    label_value = config.get('atributo_label', '') or '' if is_edit else ''
+    tipo_value = config['atributo_tipo'] if is_edit else 'text'
+    obrig_checked = 'checked' if is_edit and config.get('obrigatorio') else ''
+
+    # Lista de colunas existentes para sugestao
+    colunas_datalist = ""
+    if colunas_existentes and not is_edit:
+        for col in colunas_existentes:
+            colunas_datalist += f'<option value="{col}">'
+
+    nome_field = f"""
+        <input type="text" name="nome" value="{nome_value}" list="colunas_existentes" required
+               placeholder="Ex: quantidade, risco, setor" {'readonly' if is_edit else ''}>
+        <datalist id="colunas_existentes">{colunas_datalist}</datalist>
+        <small style="color: #888;">Use colunas existentes ou crie uma nova</small>
+    """ if not is_edit else f'<input type="text" name="nome" value="{nome_value}" readonly>'
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{titulo} - {produto['nome']}</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            <div class="card" style="max-width: 600px; margin: 0 auto;">
+                <h2>{titulo}</h2>
+                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <div id="alert" class="alert"></div>
+                <form id="atributoForm">
+                    <div class="form-group">
+                        <label>Nome do Atributo (coluna)</label>
+                        {nome_field}
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Label (exibicao)</label>
+                            <input type="text" name="label" value="{label_value}" placeholder="Ex: Quantidade, Nivel de Risco">
+                        </div>
+                        <div class="form-group">
+                            <label>Tipo</label>
+                            <select name="tipo">
+                                <option value="text" {'selected' if tipo_value == 'text' else ''}>Texto</option>
+                                <option value="float" {'selected' if tipo_value == 'float' else ''}>Numero decimal</option>
+                                <option value="int" {'selected' if tipo_value == 'int' else ''}>Numero inteiro</option>
+                                <option value="date" {'selected' if tipo_value == 'date' else ''}>Data</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                            <input type="checkbox" name="obrigatorio" {obrig_checked} style="width: 20px; height: 20px;">
+                            <span>Campo obrigatorio</span>
+                        </label>
+                    </div>
+                    <div class="actions">
+                        <button type="submit" class="btn btn-primary">{'Salvar' if is_edit else 'Criar'}</button>
+                        <a href="/produto/{produto['id']}/atributos" class="btn btn-secondary">Cancelar</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <script>
+            document.getElementById('atributoForm').addEventListener('submit', async (e) => {{
+                e.preventDefault();
+                const form = e.target;
+                const alert = document.getElementById('alert');
+
+                const dados = {{
+                    produto_id: {produto['id']},
+                    nome: form.nome.value.toLowerCase().trim().replace(/ /g, '_'),
+                    label: form.label.value || null,
+                    tipo: form.tipo.value,
+                    obrigatorio: form.obrigatorio.checked
+                }};
+
+                const endpoint = '{"editar" if is_edit else "criar"}';
+
+                try {{
+                    const response = await fetch('/api/atributo/' + endpoint, {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify(dados)
+                    }});
+                    const result = await response.json();
+                    if (result.sucesso) {{
+                        alert.className = 'alert alert-success show';
+                        alert.textContent = 'Atributo {"atualizado" if is_edit else "criado"}!';
+                        setTimeout(() => window.location.href = '/produto/{produto["id"]}/atributos', 1000);
+                    }} else {{
+                        throw new Error(result.erro);
+                    }}
+                }} catch (error) {{
+                    alert.className = 'alert alert-error show';
+                    alert.textContent = 'Erro: ' + error.message;
+                }}
+            }});
+        </script>
+    </body>
+    </html>
+    """
+
+
+def get_confirmar_remover_atributo_html(produto, config):
+    """Pagina de confirmacao para remover atributo do produto"""
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Remover Atributo</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            <div class="card" style="max-width: 500px; margin: 0 auto; text-align: center;">
+                <h2 style="color: #ff6b6b;">Remover Atributo</h2>
+                <p style="margin: 20px 0;">Remover atributo do produto {produto['nome']}:</p>
+                <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{config['atributo_label'] or config['atributo_nome']}</p>
+                <p style="color: #888; margin: 20px 0; font-size: 0.9em;">
+                    A coluna permanecera no banco de dados e podera ser usada por outros produtos.
+                </p>
+                <div id="alert" class="alert"></div>
+                <div class="actions" style="justify-content: center;">
+                    <button class="btn btn-danger" onclick="removerAtributo()">Sim, Remover</button>
+                    <a href="/produto/{produto['id']}/atributos" class="btn btn-secondary">Cancelar</a>
+                </div>
+            </div>
+        </div>
+        <script>
+            async function removerAtributo() {{
+                const alert = document.getElementById('alert');
+                try {{
+                    const response = await fetch('/api/atributo/remover', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{
+                            produto_id: {produto['id']},
+                            nome: '{config["atributo_nome"]}'
+                        }})
+                    }});
+                    const result = await response.json();
+                    if (result.sucesso) {{
+                        alert.className = 'alert alert-success show';
+                        alert.textContent = 'Atributo removido!';
+                        setTimeout(() => window.location.href = '/produto/{produto["id"]}/atributos', 1000);
+                    }} else {{
+                        throw new Error(result.erro);
+                    }}
+                }} catch (error) {{
+                    alert.className = 'alert alert-error show';
+                    alert.textContent = 'Erro: ' + error.message;
+                }}
+            }}
+        </script>
+    </body>
+    </html>
+    """
+
+
+def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
+    """Formulario para criar alocacao"""
+    produtos_options = ""
+    if produtos:
+        for p in produtos:
+            selected = 'selected' if produto_id and p['id'] == produto_id else ''
+            produtos_options += f'<option value="{p["id"]}" {selected}>{p["nome"]}</option>'
+
+    posicoes_options = ""
+    if posicoes is not None and not posicoes.empty:
+        for _, pos in posicoes.iterrows():
+            pos_id = pos.get('id') or pos.get('ID')
+            ativo = pos.get('ativo') or pos.get('Ativo', 'N/A')
+            side = pos.get('side') or pos.get('tipo', '')
+            preco = pos.get('preco_entrada') or pos.get('Preço Entrada', 0)
+            posicoes_options += f'<option value="{pos_id}">{ativo} ({side}) - ${preco:,.2f}</option>'
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Nova Alocacao</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            <div class="card" style="max-width: 600px; margin: 0 auto;">
+                <h2>Nova Alocacao</h2>
+                <div id="alert" class="alert"></div>
+                <form id="alocacaoForm">
+                    <div class="form-group">
+                        <label>Produto</label>
+                        <select name="produto_id" id="produtoSelect" required onchange="carregarPosicoes()">
+                            <option value="">Selecione um produto</option>
+                            {produtos_options}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Posicao</label>
+                        <select name="posicao_id" id="posicaoSelect" required>
+                            <option value="">Selecione uma posicao</option>
+                            {posicoes_options}
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Percentual Alocado (%)</label>
+                            <input type="number" name="percentual" step="0.01" min="0" max="100" required placeholder="Ex: 10.5">
+                        </div>
+                        <div class="form-group">
+                            <label>Valor em USD (opcional)</label>
+                            <input type="number" name="valor_usd" step="0.01" placeholder="Ex: 1000.00">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Data da Alocacao (opcional)</label>
+                        <input type="date" name="data_alocacao" value="{date.today().isoformat()}">
+                    </div>
+                    <div class="actions">
+                        <button type="submit" class="btn btn-primary">Criar Alocacao</button>
+                        <a href="/" class="btn btn-secondary">Cancelar</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <script>
+            async function carregarPosicoes() {{
+                const produtoId = document.getElementById('produtoSelect').value;
+                const posicaoSelect = document.getElementById('posicaoSelect');
+
+                if (!produtoId) {{
+                    posicaoSelect.innerHTML = '<option value="">Selecione uma posicao</option>';
+                    return;
+                }}
+
+                try {{
+                    const response = await fetch('/api/posicoes/abertas/' + produtoId);
+                    const data = await response.json();
+
+                    posicaoSelect.innerHTML = '<option value="">Selecione uma posicao</option>';
+                    if (data.posicoes) {{
+                        data.posicoes.forEach(pos => {{
+                            const option = document.createElement('option');
+                            option.value = pos.id;
+                            option.textContent = pos.ativo + ' (' + pos.side + ') - $' + pos.preco_entrada.toFixed(2);
+                            posicaoSelect.appendChild(option);
+                        }});
+                    }}
+                }} catch (error) {{
+                    console.error('Erro ao carregar posicoes:', error);
+                }}
+            }}
+
+            document.getElementById('alocacaoForm').addEventListener('submit', async (e) => {{
+                e.preventDefault();
+                const form = e.target;
+                const alert = document.getElementById('alert');
+
+                const dados = {{
+                    produto_id: parseInt(form.produto_id.value),
+                    posicao_id: parseInt(form.posicao_id.value),
+                    percentual: parseFloat(form.percentual.value),
+                    valor_usd: form.valor_usd.value ? parseFloat(form.valor_usd.value) : null,
+                    data_alocacao: form.data_alocacao.value || null
+                }};
+
+                try {{
+                    const response = await fetch('/api/alocacao/criar', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify(dados)
+                    }});
+                    const result = await response.json();
+                    if (result.sucesso) {{
+                        alert.className = 'alert alert-success show';
+                        alert.textContent = 'Alocacao criada!';
+                        setTimeout(() => window.location.href = '/produto/' + dados.produto_id, 1000);
+                    }} else {{
+                        throw new Error(result.erro);
+                    }}
+                }} catch (error) {{
+                    alert.className = 'alert alert-error show';
+                    alert.textContent = 'Erro: ' + error.message;
+                }}
+            }});
+
+            // Carregar posicoes se produto ja selecionado
+            if (document.getElementById('produtoSelect').value) {{
+                carregarPosicoes();
+            }}
+        </script>
+    </body>
+    </html>
+    """
+
+
+def get_confirmar_delete_visualizacao_html(produto, visualizacao):
+    """Pagina de confirmacao para deletar visualizacao"""
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Deletar Visualizacao</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            <div class="card" style="max-width: 500px; margin: 0 auto; text-align: center;">
+                <h2 style="color: #ff6b6b;">Deletar Visualizacao</h2>
+                <p style="margin: 20px 0;">Tem certeza que deseja deletar:</p>
+                <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{visualizacao['nome']}</p>
+                <p style="color: #888; margin: 20px 0;">Esta acao nao pode ser desfeita.</p>
+                <div id="alert" class="alert"></div>
+                <div class="actions" style="justify-content: center;">
+                    <button class="btn btn-danger" onclick="deletarVisualizacao()">Sim, Deletar</button>
+                    <a href="/produto/{produto['id']}/visualizacoes" class="btn btn-secondary">Cancelar</a>
+                </div>
+            </div>
+        </div>
+        <script>
+            async function deletarVisualizacao() {{
+                const alert = document.getElementById('alert');
+                try {{
+                    const response = await fetch('/api/visualizacao/deletar', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{visualizacao_id: {visualizacao['id']}}})
+                    }});
+                    const result = await response.json();
+                    if (result.sucesso) {{
+                        alert.className = 'alert alert-success show';
+                        alert.textContent = 'Visualizacao deletada!';
+                        setTimeout(() => window.location.href = '/produto/{produto["id"]}/visualizacoes', 1000);
+                    }} else {{
+                        throw new Error(result.erro);
+                    }}
+                }} catch (error) {{
+                    alert.className = 'alert alert-error show';
+                    alert.textContent = 'Erro: ' + error.message;
+                }}
+            }}
+        </script>
+    </body>
+    </html>
+    """
+
+
+# ============================================================
 # HTTP SERVER
 # ============================================================
 
@@ -1674,6 +2646,125 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'sucesso': False, 'erro': str(e)}, 400)
             return
 
+        # Criar visualizacao
+        if path == '/api/visualizacao/criar':
+            try:
+                viz_id = repo.criar_visualizacao(
+                    produto_id=int(data.get('produto_id')),
+                    nome=data.get('nome'),
+                    colunas=data.get('colunas', []),
+                    ordenacao=data.get('ordenacao'),
+                    filtros=data.get('filtros')
+                )
+                self._send_json({'sucesso': True, 'visualizacao_id': viz_id})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
+        # Editar visualizacao
+        if path == '/api/visualizacao/editar':
+            try:
+                viz_id = int(data.get('visualizacao_id'))
+                repo.atualizar_visualizacao(
+                    visualizacao_id=viz_id,
+                    nome=data.get('nome'),
+                    colunas=data.get('colunas'),
+                    ordenacao=data.get('ordenacao'),
+                    filtros=data.get('filtros')
+                )
+                self._send_json({'sucesso': True})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
+        # Deletar visualizacao
+        if path == '/api/visualizacao/deletar':
+            try:
+                viz_id = int(data.get('visualizacao_id'))
+                repo.deletar_visualizacao(viz_id)
+                self._send_json({'sucesso': True})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
+        # Deletar posicao
+        if path == '/api/posicao/deletar':
+            try:
+                posicao_id = int(data.get('posicao_id'))
+                repo.deletar_posicao(posicao_id, forcar=True)
+                self._send_json({'sucesso': True})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
+        # Criar atributo
+        if path == '/api/atributo/criar':
+            try:
+                repo.adicionar_atributo_config(
+                    produto_id=int(data.get('produto_id')),
+                    atributo_nome=data.get('nome'),
+                    atributo_tipo=data.get('tipo', 'text'),
+                    atributo_label=data.get('label'),
+                    obrigatorio=data.get('obrigatorio', False)
+                )
+                self._send_json({'sucesso': True})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
+        # Editar atributo
+        if path == '/api/atributo/editar':
+            try:
+                repo.editar_atributo_config(
+                    produto_id=int(data.get('produto_id')),
+                    atributo_nome=data.get('nome'),
+                    novo_label=data.get('label'),
+                    novo_tipo=data.get('tipo'),
+                    novo_obrigatorio=data.get('obrigatorio')
+                )
+                self._send_json({'sucesso': True})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
+        # Remover atributo do produto
+        if path == '/api/atributo/remover':
+            try:
+                repo.remover_atributo_config(
+                    produto_id=int(data.get('produto_id')),
+                    atributo_nome=data.get('nome')
+                )
+                self._send_json({'sucesso': True})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
+        # Limpar colunas orfas
+        if path == '/api/atributos/limpar-orfas':
+            try:
+                removidas = repo.limpar_colunas_orfas()
+                self._send_json({'sucesso': True, 'removidas': len(removidas)})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
+        # Criar alocacao
+        if path == '/api/alocacao/criar':
+            try:
+                from services.alocacao_service import AlocacaoService
+                alocacao = AlocacaoService.criar_alocacao(
+                    produto_id=int(data.get('produto_id')),
+                    posicao_id=int(data.get('posicao_id')),
+                    percentual=float(data.get('percentual')),
+                    valor_usd=float(data.get('valor_usd')) if data.get('valor_usd') else None,
+                    data=data.get('data_alocacao')
+                )
+                alocacao_id = repo.salvar_alocacao(int(data.get('produto_id')), alocacao)
+                self._send_json({'sucesso': True, 'alocacao_id': alocacao_id})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
         self._send_json({'erro': 'Rota nao encontrada'}, 404)
 
     def do_GET(self):
@@ -1769,6 +2860,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_html("<h1>Produto nao encontrado</h1>", 404)
             return
 
+        # Lista posicoes para deletar
+        if path == '/posicoes/deletar':
+            produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
+            if produto_id:
+                produto = repo.carregar_produto(produto_id)
+                if produto:
+                    posicoes = repo.carregar_posicoes_abertas(produto_id)
+                    self._send_html(get_lista_posicoes_html(produto, posicoes, "deletar"))
+                    return
+            self._send_html("<h1>Produto nao encontrado</h1>", 404)
+            return
+
+        # Formulario nova alocacao
+        if path == '/alocacao/nova':
+            produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
+            produtos = repo.listar_produtos()
+            posicoes = None
+            if produto_id:
+                posicoes = repo.carregar_posicoes_abertas(produto_id)
+            self._send_html(get_form_alocacao_html(produto_id, produtos, posicoes))
+            return
+
+        # API: Listar posicoes abertas de um produto (para AJAX)
+        if path.startswith('/api/posicoes/abertas/'):
+            try:
+                produto_id = int(path.split('/')[-1])
+                posicoes_df = repo.carregar_posicoes_abertas(produto_id)
+                posicoes_list = []
+                if posicoes_df is not None and not posicoes_df.empty:
+                    for _, row in posicoes_df.iterrows():
+                        posicoes_list.append({
+                            'id': int(row.get('id') or row.get('ID')),
+                            'ativo': row.get('ativo') or row.get('Ativo', 'N/A'),
+                            'side': row.get('side') or row.get('tipo', 'N/A'),
+                            'preco_entrada': float(row.get('preco_entrada') or row.get('Preço Entrada', 0))
+                        })
+                self._send_json({'posicoes': posicoes_list})
+            except Exception as e:
+                self._send_json({'erro': str(e)}, 400)
+            return
+
         # Rotas de posicao especifica
         if path.startswith('/posicao/') and not path.startswith('/posicao/nova'):
             parts = path.split('/')
@@ -1794,6 +2926,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                 return
                             elif acao == 'fechar':
                                 self._send_html(get_form_fechar_posicao_html(produto, posicao))
+                                return
+                            elif acao == 'deletar':
+                                self._send_html(get_confirmar_delete_posicao_html(produto, posicao))
                                 return
                 except ValueError:
                     pass
@@ -1827,17 +2962,71 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_html(get_confirmar_delete_html(produto))
                     return
 
-                # Visualizacao especifica
+                # Gerenciar visualizacoes - lista
+                if len(parts) >= 4 and parts[3] == 'visualizacoes':
+                    visualizacoes = repo.listar_visualizacoes(produto_id)
+                    self._send_html(get_lista_visualizacoes_html(produto, visualizacoes))
+                    return
+
+                # Gerenciar atributos
+                if len(parts) >= 4 and parts[3] == 'atributos':
+                    # Novo atributo
+                    if len(parts) >= 5 and parts[4] == 'novo':
+                        colunas_existentes = repo.listar_colunas_atributos()
+                        self._send_html(get_form_atributo_html(produto, None, colunas_existentes))
+                        return
+
+                    # Atributo especifico
+                    if len(parts) >= 6:
+                        atributo_nome = parts[4]
+                        acao = parts[5]
+                        configs = repo.carregar_atributos_config(produto_id)
+                        config = next((c for c in configs if c['atributo_nome'] == atributo_nome), None)
+
+                        if config:
+                            if acao == 'editar':
+                                self._send_html(get_form_atributo_html(produto, config))
+                                return
+                            elif acao == 'remover':
+                                self._send_html(get_confirmar_remover_atributo_html(produto, config))
+                                return
+
+                    # Lista de atributos (default)
+                    configs = repo.carregar_atributos_config(produto_id)
+                    colunas_orfas = repo.listar_colunas_orfas()
+                    self._send_html(get_lista_atributos_html(produto, configs, colunas_orfas))
+                    return
+
+                # Visualizacoes - criar/editar/deletar/ver
                 if len(parts) >= 5 and parts[3] == 'viz':
+                    # Nova visualizacao
+                    if parts[4] == 'nova':
+                        colunas_disponiveis = repo.obter_colunas_disponiveis(produto_id)
+                        self._send_html(get_form_nova_visualizacao_html(produto, colunas_disponiveis))
+                        return
+
+                    # Visualizacao especifica
                     try:
                         viz_id = int(parts[4])
                         viz = repo.carregar_visualizacao(viz_id)
                         if viz and viz['produto_id'] == produto_id:
+                            # Editar visualizacao
+                            if len(parts) >= 6 and parts[5] == 'editar':
+                                colunas_disponiveis = repo.obter_colunas_disponiveis(produto_id)
+                                self._send_html(get_form_editar_visualizacao_html(produto, viz, colunas_disponiveis))
+                                return
+
+                            # Deletar visualizacao
+                            if len(parts) >= 6 and parts[5] == 'deletar':
+                                self._send_html(get_confirmar_delete_visualizacao_html(produto, viz))
+                                return
+
+                            # Ver visualizacao
                             df = obter_dados_para_visualizacao(produto_id, viz)
                             df_viz = aplicar_visualizacao(df, viz)
                             self._send_html(get_visualizacao_html(produto, viz, df_viz))
                             return
-                    except:
+                    except ValueError:
                         pass
                     self._send_html("<h1>Visualizacao nao encontrada</h1>", 404)
                     return

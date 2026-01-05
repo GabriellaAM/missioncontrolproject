@@ -220,9 +220,9 @@ def calcular_stop_para_posicao(
     Returns:
         Tuple of (stop_value, breached, error_message)
     """
-    # Use defaults if not specified
-    period = atr_period if atr_period is not None else DEFAULT_ATR_PERIOD
-    mult = atr_multiplier if atr_multiplier is not None else DEFAULT_ATR_MULTIPLIER
+    # Use defaults if not specified, ensure proper types
+    period = int(atr_period) if atr_period is not None else DEFAULT_ATR_PERIOD
+    mult = float(atr_multiplier) if atr_multiplier is not None else DEFAULT_ATR_MULTIPLIER
 
     # Load OHLC data
     df = ler_ohlc_parquet(coingecko_id)
@@ -281,6 +281,12 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
         # Get ATR config directly from position (now in posicoes table)
         atr_multiplier = pos.get('atr_multiplier')
         atr_period = pos.get('atr_period')
+
+        # Convert to proper types (may come as float from DataFrame)
+        if atr_period is not None and not pd.isna(atr_period):
+            atr_period = int(atr_period)
+        if atr_multiplier is not None and not pd.isna(atr_multiplier):
+            atr_multiplier = float(atr_multiplier)
 
         # Skip if no ATR multiplier configured (manual stop management)
         if pd.isna(atr_multiplier) or atr_multiplier is None:
