@@ -119,6 +119,16 @@ def menu_visualizacao():
     visualizar_dados_main()
 
 
+def iniciar_dashboard_web():
+    """Inicia o dashboard web no navegador"""
+    print("\nIniciando Dashboard Web...")
+    print("O navegador sera aberto automaticamente.")
+    print("Pressione Ctrl+C no terminal para encerrar o servidor.\n")
+
+    from servidor_dashboard import iniciar_servidor
+    iniciar_servidor(porta=8080)
+
+
 def main():
     while True:
         imprimir_titulo("SISTEMA DE GESTÃO DE POSIÇÕES E PRODUTOS")
@@ -127,13 +137,14 @@ def main():
         print("2. Posições")
         print("3. Stops")
         print("4. Alocações e Carteira")
-        print("5. Visualização")
+        print("5. Visualização (CLI)")
+        print("6. Dashboard Web")
         print("0. Sair")
 
-        opcao = obter_input("\nOpção: ", opcoes=["0", "1", "2", "3", "4", "5"], obrigatorio=True)
+        opcao = obter_input("\nOpção: ", opcoes=["0", "1", "2", "3", "4", "5", "6"], obrigatorio=True)
 
         if opcao == "0":
-            print("\n👋 Até logo!")
+            print("\nAte logo!")
             break
         elif opcao == "1":
             menu_produtos()
@@ -145,6 +156,8 @@ def main():
             menu_alocacoes_carteira()
         elif opcao == "5":
             menu_visualizacao()
+        elif opcao == "6":
+            iniciar_dashboard_web()
 
 
 if __name__ == "__main__":

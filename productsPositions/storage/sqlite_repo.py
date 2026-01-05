@@ -235,6 +235,7 @@ class SQLiteRepo:
             # Criar índices para performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto ON posicoes(produto_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_status ON posicoes(status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto_status ON posicoes(produto_id, status)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_stops_posicao ON stops(posicao_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_produto ON alocacoes(produto_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_posicao ON alocacoes(posicao_id)")
@@ -451,6 +452,21 @@ class SQLiteRepo:
         try:
             df = pd.read_sql_query("SELECT * FROM produtos", conn)
             return df.to_dict('records') if not df.empty else []
+        finally:
+            conn.close()
+
+    def contar_posicoes_abertas_por_produto(self):
+        """Conta posições abertas de todos os produtos em uma única query"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT produto_id, COUNT(*) as count
+                FROM posicoes
+                WHERE status = 'open'
+                GROUP BY produto_id
+            """)
+            return {row[0]: row[1] for row in cursor.fetchall()}
         finally:
             conn.close()
     

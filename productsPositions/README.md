@@ -46,7 +46,7 @@ Cria ou atualiza a carteira de um produto com 3 opções:
 2. Automática (calcula a partir das posições)
 3. Com capital inicial (recalcula tudo)
 
-#### 6. Visualizar Dados
+#### 6. Visualizar Dados (CLI)
 ```bash
 python scripts/visualizar_dados.py
 ```
@@ -55,23 +55,56 @@ Visualiza dados do sistema com tabelas formatadas e gráficos interativos:
 - Gráficos interativos (evolução de preços, composição da carteira, etc.)
 - Dashboard completo
 
+#### 7. Dashboard Web
+```bash
+python scripts/servidor_dashboard.py
+```
+Interface web para visualizar todos os produtos e posições no navegador:
+- Dashboard principal com cards de todos os produtos
+- Visualizacao detalhada por produto
+- Posicoes abertas e fechadas
+- Atualizacao de dados com um clique
+- Auto-refresh a cada 5 minutos
+
+O navegador abre automaticamente em `http://localhost:8080`
+
+**Rotas disponiveis:**
+| Rota | Descricao |
+|------|-----------|
+| `/` | Dashboard principal |
+| `/produto/{id}` | Detalhes do produto |
+| `/produto/{id}/abertas` | Posicoes abertas |
+| `/produto/{id}/fechadas` | Posicoes fechadas |
+| `/api/produtos` | Lista produtos (JSON) |
+| `/api/atualizar/{id}` | Atualizar dados |
+
 ## Estrutura
 
 ```
 productsPositions/
-├── domain/          # Entidades do domínio
-├── services/        # Lógica de negócio
-├── storage/         # Persistência (SQLite)
-├── analytics/       # Consultas e análises
-├── utils/           # Utilitários compartilhados
+├── domain/          # Entidades do dominio
+├── services/        # Logica de negocio
+├── storage/         # Persistencia (SQLite)
+├── analytics/       # Consultas e analises
+├── utils/           # Utilitarios compartilhados
 └── scripts/         # Scripts CLI
-    ├── menu.py
+    ├── menu.py              # Menu principal
     ├── criar_produto.py
+    ├── editar_produto.py
+    ├── deletar_produto.py
     ├── criar_posicao.py
+    ├── editar_posicao.py
+    ├── deletar_posicao.py
     ├── adicionar_stop.py
+    ├── configurar_atr_stop.py
+    ├── atualizar_stops_atr.py
     ├── criar_alocacao.py
     ├── criar_carteira.py
-    └── visualizar_dados.py
+    ├── visualizar_dados.py
+    ├── gerenciar_atributos.py
+    ├── gerenciar_visualizacoes.py
+    ├── servidor_atualizacao.py  # Servidor para botao Atualizar
+    └── servidor_dashboard.py    # Dashboard Web
 ```
 
 ## Fluxo Recomendado
