@@ -105,6 +105,7 @@ class SQLiteRepo:
                     produto_id INTEGER NOT NULL,
                     ativo TEXT NOT NULL,
                     coingecko_id TEXT,
+                    exchange_symbol TEXT,
                     side TEXT NOT NULL CHECK(side IN ('long', 'short')),
                     data_entrada TEXT NOT NULL,
                     preco_entrada REAL NOT NULL,
@@ -185,6 +186,13 @@ class SQLiteRepo:
             """)
 
             # Garantir que colunas mais novas existam mesmo em bancos antigos
+            # Posicoes: exchange_symbol
+            cursor.execute("PRAGMA table_info(posicoes)")
+            colunas_posicoes = [row[1] for row in cursor.fetchall()]
+            if 'exchange_symbol' not in colunas_posicoes:
+                cursor.execute("ALTER TABLE posicoes ADD COLUMN exchange_symbol TEXT")
+
+            # Atributos: quantidade e preco_entrada_total
             cursor.execute("PRAGMA table_info(posicao_atributos_produto)")
             colunas_atributos = [row[1] for row in cursor.fetchall()]
             if 'quantidade' not in colunas_atributos:
@@ -1133,15 +1141,16 @@ class SQLiteRepo:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO posicoes (
-                    id, produto_id, ativo, coingecko_id, side, data_entrada,
+                    id, produto_id, ativo, coingecko_id, exchange_symbol, side, data_entrada,
                     preco_entrada, data_saida, preco_saida, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 posicao_id,
                 produto_id,
                 posicao.ativo,
                 posicao.coingecko_id if posicao.coingecko_id else None,
+                getattr(posicao, 'exchange_symbol', None),
                 posicao.side,
                 posicao.data_entrada,
                 posicao.preco_entrada,
@@ -1256,8 +1265,8 @@ class SQLiteRepo:
     def atualizar_posicao(self, posicao_id, **kwargs):
         """Atualiza uma posição existente"""
         self._validar_posicao_existe(posicao_id)
-        
-        campos_permitidos = ['ativo', 'coingecko_id', 'side', 'data_entrada',
+
+        campos_permitidos = ['ativo', 'coingecko_id', 'exchange_symbol', 'side', 'data_entrada',
                             'preco_entrada', 'data_saida', 'preco_saida', 'status',
                             'atr_period', 'atr_multiplier']
         

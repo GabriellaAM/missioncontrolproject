@@ -1,8 +1,9 @@
 # Representa uma operação: abertura, fechamento, preço, status
 class Posicao:
-    def __init__(self, ativo, side, data_entrada, preco_entrada, coingecko_id=None):
+    def __init__(self, ativo, side, data_entrada, preco_entrada, coingecko_id=None, exchange_symbol=None):
         self.ativo = ativo           # Nome do ativo (ex.: "BTC")
         self.coingecko_id = coingecko_id  # ID do CoinGecko (ex.: "bitcoin")
+        self.exchange_symbol = exchange_symbol  # Symbol na exchange para sync (ex.: "BTCUSDT")
         self.side = side             # long/short
         self.data_entrada = data_entrada
         self.preco_entrada = preco_entrada

@@ -13,6 +13,7 @@ from datetime import datetime, date
 import pandas as pd
 
 from storage.sqlite_repo import SQLiteRepo
+from domain.posicao import Posicao
 from analytics.notebook_utils import (
     display_posicoes_abertas,
     display_posicoes_fechadas,
@@ -21,6 +22,7 @@ from analytics.notebook_utils import (
     display_alocacoes,
 )
 from services.atr_stop_service import atualizar_stops_posicoes_abertas
+from services.bitget_service import sync_positions_with_exchange
 
 
 # ============================================================
@@ -868,26 +870,30 @@ def get_form_posicao_html(produto_id=None, produtos=None):
                     </div>
                     <div class="form-row">
                         <div class="form-group">
+                            <label>Exchange Symbol (para sync)</label>
+                            <input type="text" name="exchange_symbol" placeholder="BTCUSDT">
+                        </div>
+                        <div class="form-group">
                             <label>Side</label>
                             <select name="side">
                                 <option value="long">Long</option>
                                 <option value="short">Short</option>
                             </select>
                         </div>
+                    </div>
+                    <div class="form-row">
                         <div class="form-group">
                             <label>Data de Entrada</label>
                             <input type="date" name="data_entrada" value="{date.today().isoformat()}">
                         </div>
-                    </div>
-                    <div class="form-row">
                         <div class="form-group">
                             <label>Preco de Entrada (USD)</label>
                             <input type="number" name="preco_entrada" step="0.00000001" required>
                         </div>
-                        <div class="form-group">
-                            <label>Quantidade (opcional)</label>
-                            <input type="number" name="quantidade" step="0.00000001">
-                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Quantidade (opcional)</label>
+                        <input type="number" name="quantidade" step="0.00000001">
                     </div>
                     <div class="actions">
                         <button type="submit" class="btn btn-primary">Criar Posicao</button>
@@ -1291,6 +1297,7 @@ def get_form_editar_posicao_html(produto, posicao):
     pos_id = posicao.get('id') or posicao.get('ID')
     ativo = posicao.get('ativo') or posicao.get('Ativo', '')
     coingecko_id = posicao.get('coingecko_id') or posicao.get('CoinGecko ID', '')
+    exchange_symbol = posicao.get('exchange_symbol') or posicao.get('Exchange Symbol', '')
     side = posicao.get('side') or posicao.get('tipo') or posicao.get('Tipo', 'long')
     preco_entrada = posicao.get('preco_entrada') or posicao.get('Preço Entrada', 0)
     quantidade = posicao.get('quantidade') or posicao.get('Quantidade', '')
@@ -1348,6 +1355,10 @@ def get_form_editar_posicao_html(produto, posicao):
                         </div>
                     </div>
                     <div class="form-row">
+                        <div class="form-group">
+                            <label>Exchange Symbol (para sync)</label>
+                            <input type="text" name="exchange_symbol" value="{exchange_symbol or ''}" placeholder="BTCUSDT">
+                        </div>
                         {tipo_field_html}
                     </div>
                     <div class="form-row">
@@ -2544,19 +2555,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Criar posicao
         if path == '/api/posicao/criar':
             try:
-                posicao_id = repo.salvar_posicao(
-                    produto_id=int(data.get('produto_id')),
+                produto_id = int(data.get('produto_id'))
+                posicao = Posicao(
                     ativo=data.get('ativo'),
                     side=data.get('side', 'long'),
                     data_entrada=data.get('data_entrada'),
                     preco_entrada=float(data.get('preco_entrada')),
-                    coingecko_id=data.get('coingecko_id') or None
+                    coingecko_id=data.get('coingecko_id') or None,
+                    exchange_symbol=data.get('exchange_symbol') or None
                 )
+                posicao_id = repo.salvar_posicao(produto_id, posicao)
                 # Salvar quantidade como atributo se fornecida
                 if data.get('quantidade'):
                     repo.salvar_atributos_posicao(
                         posicao_id=posicao_id,
-                        produto_id=int(data.get('produto_id')),
+                        produto_id=produto_id,
                         quantidade=float(data.get('quantidade'))
                     )
                 self._send_json({'sucesso': True, 'posicao_id': posicao_id})
@@ -2574,7 +2587,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     side=data.get('tipo'),
                     data_entrada=data.get('data_entrada'),
                     preco_entrada=float(data.get('preco_entrada')),
-                    coingecko_id=data.get('coingecko_id') or None
+                    coingecko_id=data.get('coingecko_id') or None,
+                    exchange_symbol=data.get('exchange_symbol') or None
                 )
                 # Atualizar quantidade como atributo se fornecida
                 if data.get('quantidade'):
@@ -3061,8 +3075,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path.startswith('/api/atualizar/'):
             try:
                 produto_id = int(path.split('/')[-1])
+
+                # 1. Sync positions with Bitget (if configured)
+                try:
+                    bitget_result = sync_positions_with_exchange(repo, produto_id, verbose=False)
+                    if bitget_result["synced"] > 0:
+                        print(f"[BITGET] Produto {produto_id}: {bitget_result['synced']} posições sincronizadas")
+                except Exception as e:
+                    print(f"[BITGET] Erro ao sincronizar: {e}")
+
+                # 2. Update ATR trailing stops
                 resultado = atualizar_stops_posicoes_abertas(repo=repo, produto_id=produto_id, verbose=False)
-                print(f"[ATR] Produto {produto_id}: {resultado['updated']} atualizados")
+                print(f"[ATR] Produto {produto_id}: {resultado['updated']} stops atualizados")
+
                 self._send_json({'sucesso': True, 'timestamp': datetime.now().strftime("%d/%m/%Y %H:%M:%S")})
             except Exception as e:
                 self._send_json({'sucesso': False, 'erro': str(e)}, 500)
