@@ -245,9 +245,13 @@ class SQLiteRepo:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_status ON posicoes(status)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto_status ON posicoes(produto_id, status)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_stops_posicao ON stops(posicao_id)")
+            # Covering index for stop lookups (posicao_id + data DESC for ORDER BY)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_stops_posicao_data ON stops(posicao_id, data DESC)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_produto ON alocacoes(produto_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_posicao ON alocacoes(posicao_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_status ON alocacoes(status)")
+            # Covering index for allocation lookups by ativo
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_data ON alocacoes(data DESC)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_produto ON posicao_atributos_produto(produto_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_posicao ON posicao_atributos_produto(posicao_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_config_produto ON produto_atributos_config(produto_id)")

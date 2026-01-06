@@ -134,3 +134,66 @@ class ValorDiarioService:
         except Exception:
             return None
 
+    @staticmethod
+    def obter_precos_batch(coingecko_ids):
+        """
+        Obtém preços atuais de múltiplos ativos em uma única chamada à API do CoinGecko.
+
+        Args:
+            coingecko_ids: Lista de IDs do CoinGecko (ex: ["bitcoin", "ethereum"])
+
+        Returns:
+            dict: Mapeamento de coingecko_id -> preço em USD
+        """
+        if not coingecko_ids:
+            return {}
+
+        # Remove duplicates and None values
+        unique_ids = list(set(cid for cid in coingecko_ids if cid))
+        if not unique_ids:
+            return {}
+
+        api_key = os.getenv('GECKO_API_KEY')
+        prices = {}
+
+        if api_key:
+            try:
+                url = 'https://pro-api.coingecko.com/api/v3/simple/price'
+                # CoinGecko accepts comma-separated IDs
+                params = {
+                    'vs_currencies': 'usd',
+                    'ids': ','.join(unique_ids)
+                }
+                headers = {
+                    'x-cg-pro-api-key': api_key
+                }
+
+                response = requests.get(url, params=params, headers=headers, timeout=15)
+                response.raise_for_status()
+
+                data = response.json()
+                for cid in unique_ids:
+                    if cid in data and 'usd' in data[cid]:
+                        prices[cid] = float(data[cid]['usd'])
+                    else:
+                        prices[cid] = None
+
+                return prices
+
+            except Exception:
+                # Fall through to parquet fallback
+                pass
+
+        # Fallback: read from parquet files
+        for cid in unique_ids:
+            try:
+                valores = ValorDiarioService.ler_valores_do_coingecko(cid)
+                if valores:
+                    prices[cid] = valores[-1]['preco']
+                else:
+                    prices[cid] = None
+            except Exception:
+                prices[cid] = None
+
+        return prices
+
