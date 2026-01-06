@@ -14,6 +14,8 @@ import pandas as pd
 
 from storage.sqlite_repo import SQLiteRepo
 from domain.posicao import Posicao
+from domain.produto import Produto
+from domain.tipo import Tipo
 from analytics.notebook_utils import (
     display_posicoes_abertas,
     display_posicoes_fechadas,
@@ -21,7 +23,7 @@ from analytics.notebook_utils import (
     display_carteira,
     display_alocacoes,
 )
-from services.atr_stop_service import atualizar_stops_posicoes_abertas
+from services.atr_stop_service import atualizar_stops_posicoes_abertas, calcular_stop_para_posicao
 from services.bitget_service import sync_positions_with_exchange
 
 
@@ -84,6 +86,9 @@ def aplicar_visualizacao(df, visualizacao):
                 rename_map[col_nome] = col_label
         if rename_map:
             df = df.rename(columns=rename_map)
+
+    # Substituir valores None por travessão
+    df = df.fillna("—")
 
     return df
 
@@ -525,6 +530,7 @@ def get_produto_html(produto, visualizacoes, repo):
         df_viz = aplicar_visualizacao(df, first_viz)
 
         if df_viz is not None and not df_viz.empty:
+            df_viz = df_viz.fillna("—")
             content_html = f'<div class="table-container">{df_viz.to_html(index=False, classes="dataframe", escape=False)}</div>'
             n_posicoes = len(df_viz)
         else:
@@ -538,6 +544,7 @@ def get_produto_html(produto, visualizacoes, repo):
         viz_nome = "Posições Abertas"
         df = display_posicoes_abertas(produto_id, formatar=True, filtrar_colunas=False)
         if df is not None and not df.empty:
+            df = df.fillna("—")
             content_html = f'<div class="table-container">{df.to_html(index=False, classes="dataframe", escape=False)}</div>'
             n_posicoes = len(df)
         else:
@@ -650,6 +657,7 @@ def get_visualizacao_html(produto, visualizacao, df_viz):
         tabs_html += f'<a href="/produto/{produto_id}/viz/{viz["id"]}" class="tab {active_class}">{viz["nome"]}</a>'
 
     if df_viz is not None and not df_viz.empty:
+        df_viz = df_viz.fillna("—")
         content_html = f'<div class="table-container">{df_viz.to_html(index=False, classes="dataframe", escape=False)}</div>'
         n_posicoes = len(df_viz)
     else:
@@ -1413,11 +1421,18 @@ def get_form_editar_posicao_html(produto, posicao):
 
 def get_form_atr_stop_html(produto, posicao):
     """Formulario para configurar ATR Trailing Stop"""
+    from datetime import date as dt_date
     pos_id = posicao.get('id') or posicao.get('ID')
     ativo = posicao.get('ativo') or posicao.get('Ativo', 'N/A')
     preco_entrada = posicao.get('preco_entrada') or posicao.get('Preço Entrada', 0)
+    data_entrada = posicao.get('data_entrada') or ''
     current_period = posicao.get('atr_period') or 14
     current_mult = posicao.get('atr_multiplier') or 3.0
+    current_data_inicio = posicao.get('atr_data_inicio') or ''
+    # Se não tiver data de início, usar ontem como padrão
+    if not current_data_inicio:
+        from datetime import timedelta
+        current_data_inicio = (dt_date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
 
     return f"""
     <!DOCTYPE html>
@@ -1434,11 +1449,11 @@ def get_form_atr_stop_html(produto, posicao):
             <div class="card" style="max-width: 600px; margin: 0 auto;">
                 <h2>Configurar ATR Trailing Stop</h2>
                 <p style="color: #4ecca3; margin-bottom: 20px;">
-                    {ativo} - Entrada: ${preco_entrada:,.4f}
+                    {ativo} - Entrada: ${preco_entrada:,.4f} (em {data_entrada})
                 </p>
                 <p style="color: #888; font-size: 0.9em; margin-bottom: 20px;">
                     O ATR Trailing Stop calcula automaticamente o stop baseado na volatilidade do ativo.
-                    O stop é atualizado quando você clica em "Atualizar Dados".
+                    Use a "Data de Início" para definir a partir de quando o cálculo deve considerar.
                 </p>
                 <div id="alert" class="alert"></div>
                 <form id="atrForm">
@@ -1454,6 +1469,11 @@ def get_form_atr_stop_html(produto, posicao):
                             <input type="number" name="atr_multiplier" value="{current_mult}" step="0.1" min="0.5" max="10" required>
                             <small style="color: #888;">Multiplicador do ATR (padrao: 3.0)</small>
                         </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Data de Início do Cálculo</label>
+                        <input type="date" name="atr_data_inicio" value="{current_data_inicio}" required>
+                        <small style="color: #888;">A partir de quando calcular o trailing stop (use data recente para posições antigas)</small>
                     </div>
                     <div class="actions">
                         <button type="submit" class="btn btn-primary">Salvar Configuracao</button>
@@ -1480,8 +1500,8 @@ def get_form_atr_stop_html(produto, posicao):
                     const result = await response.json();
                     if (result.sucesso) {{
                         alert.className = 'alert alert-success show';
-                        alert.textContent = 'ATR configurado! O stop sera calculado na proxima atualizacao.';
-                        setTimeout(() => window.location.href = '/produto/{produto["id"]}', 1500);
+                        alert.textContent = result.mensagem || 'ATR configurado!';
+                        setTimeout(() => window.location.href = '/produto/{produto["id"]}', 1000);
                     }} else {{
                         throw new Error(result.erro);
                     }}
@@ -2515,12 +2535,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Criar produto
         if path == '/api/produto/criar':
             try:
-                produto_id = repo.salvar_produto(
+                tipo_nome = data.get('tipo', 'Outro')
+                produto = Produto(
                     nome=data.get('nome'),
-                    tipo=data.get('tipo', 'Outro'),
                     data_inicio=data.get('data_inicio'),
-                    capital_inicial=float(data.get('capital_inicial', 0)) if data.get('capital_inicial') else None
+                    tipo=Tipo(tipo_nome),
+                    capital_inicial=float(data.get('capital_inicial', 0)) if data.get('capital_inicial') else 0.0
                 )
+                produto_id = repo.salvar_produto(produto)
                 self._send_json({'sucesso': True, 'produto_id': produto_id})
             except Exception as e:
                 self._send_json({'sucesso': False, 'erro': str(e)}, 400)
@@ -2612,7 +2634,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     posicao_id=posicao_id,
                     data_saida=data.get('data_saida'),
                     preco_saida=float(data.get('preco_saida')),
-                    status='fechada'
+                    status='closed'
                 )
                 self._send_json({'sucesso': True})
             except Exception as e:
@@ -2635,9 +2657,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Configurar ATR Stop
         if path == '/api/posicao/atr':
             try:
+                from datetime import date as dt_date
                 posicao_id = int(data.get('posicao_id'))
                 atr_period = data.get('atr_period')
                 atr_multiplier = data.get('atr_multiplier')
+                atr_data_inicio = data.get('atr_data_inicio')
 
                 # Se valores são None ou null string, remove a configuração
                 if atr_period in [None, 'null', '']:
@@ -2650,12 +2674,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 else:
                     atr_multiplier = float(atr_multiplier)
 
+                if atr_data_inicio in [None, 'null', '']:
+                    atr_data_inicio = None
+
                 repo.atualizar_posicao(
                     posicao_id=posicao_id,
                     atr_period=atr_period,
-                    atr_multiplier=atr_multiplier
+                    atr_multiplier=atr_multiplier,
+                    atr_data_inicio=atr_data_inicio
                 )
-                self._send_json({'sucesso': True})
+
+                # Se ATR foi configurado, calcular e salvar o stop imediatamente
+                mensagem = 'ATR configurado e stop calculado!'
+                if atr_multiplier is not None:
+                    # Buscar dados da posição
+                    posicao = repo.carregar_posicao(posicao_id)
+                    if posicao and posicao.get('coingecko_id'):
+                        # Usar atr_data_inicio se disponível, senão data_entrada
+                        data_calculo = atr_data_inicio or posicao['data_entrada']
+                        stop, breached, erro = calcular_stop_para_posicao(
+                            coingecko_id=posicao['coingecko_id'],
+                            side=posicao['side'],
+                            data_entrada=data_calculo,
+                            atr_period=atr_period,
+                            atr_multiplier=atr_multiplier
+                        )
+                        if breached:
+                            # Salvar um valor especial para indicar que foi breached
+                            hoje = dt_date.today().strftime('%Y-%m-%d')
+                            repo.adicionar_stop_posicao(posicao_id, hoje, -1)  # -1 indica breached
+                            mensagem = 'ATR configurado - STOP ATINGIDO!'
+                        elif stop is not None:
+                            hoje = dt_date.today().strftime('%Y-%m-%d')
+                            repo.adicionar_stop_posicao(posicao_id, hoje, stop)
+
+                self._send_json({'sucesso': True, 'mensagem': mensagem})
             except Exception as e:
                 self._send_json({'sucesso': False, 'erro': str(e)}, 400)
             return

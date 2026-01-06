@@ -145,10 +145,9 @@ def calcular_trailing_stop(
     df = df.copy()
     df['atr'] = calcular_atr(df, atr_period)
 
-    # Filter from ONE DAY BEFORE entry date (TradingView uses previous day's close/ATR for initial trail)
+    # Filter from entry date (entry_bar is first bar when time >= start_time)
     data_entrada_dt = pd.to_datetime(data_entrada)
-    data_inicio_dt = data_entrada_dt - pd.Timedelta(days=1)
-    df_filtered = df[df['timestamp'] >= data_inicio_dt].reset_index(drop=True)
+    df_filtered = df[df['timestamp'] >= data_entrada_dt].reset_index(drop=True)
 
     if df_filtered.empty:
         return None, False
@@ -165,15 +164,15 @@ def calcular_trailing_stop(
 
         close = row['close']
 
-        if trail is None:
-            # First bar (day before entry): set initial trail using this bar's close and ATR
+        if i == 0:
+            # Entry bar: trail = close - mu * atr (current bar's values)
             atr = row['atr']
             if is_long:
                 trail = close - (multiplier * atr)
             else:
                 trail = close + (multiplier * atr)
         else:
-            # Subsequent bars (entry day onwards): use PREVIOUS bar's close and ATR
+            # Subsequent bars: cand = close[1] - mu * atr[1] (previous bar's values)
             prev_row = df_filtered.iloc[i - 1]
             prev_close = prev_row['close']
             prev_atr = prev_row['atr']
@@ -281,6 +280,7 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
         coingecko_id = pos.get('coingecko_id')
         side = pos['side']
         data_entrada = pos['data_entrada']
+        atr_data_inicio = pos.get('atr_data_inicio')
 
         # Get ATR config directly from position (now in posicoes table)
         atr_multiplier = pos.get('atr_multiplier')
@@ -305,11 +305,14 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
                 print(f"  [{ativo}] Erro: sem coingecko_id")
             continue
 
+        # Usar atr_data_inicio se disponível, senão data_entrada
+        data_calculo = atr_data_inicio if (atr_data_inicio and not pd.isna(atr_data_inicio)) else data_entrada
+
         # Calculate new stop
         stop, breached, erro = calcular_stop_para_posicao(
             coingecko_id=coingecko_id,
             side=side,
-            data_entrada=data_entrada,
+            data_entrada=data_calculo,
             atr_period=atr_period,
             atr_multiplier=atr_multiplier
         )
@@ -322,8 +325,10 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
 
         if breached:
             resultado['breached'] += 1
+            # Salvar -1 para indicar que stop foi atingido
+            repo.adicionar_stop_posicao(posicao_id, hoje, -1)
             if verbose:
-                print(f"  [{ativo}] STOP BREACHED!")
+                print(f"  [{ativo}] STOP ATINGIDO!")
             continue
 
         if stop is not None:

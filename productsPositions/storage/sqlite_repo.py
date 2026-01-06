@@ -191,6 +191,8 @@ class SQLiteRepo:
             colunas_posicoes = [row[1] for row in cursor.fetchall()]
             if 'exchange_symbol' not in colunas_posicoes:
                 cursor.execute("ALTER TABLE posicoes ADD COLUMN exchange_symbol TEXT")
+            if 'atr_data_inicio' not in colunas_posicoes:
+                cursor.execute("ALTER TABLE posicoes ADD COLUMN atr_data_inicio TEXT")
 
             # Atributos: quantidade e preco_entrada_total
             cursor.execute("PRAGMA table_info(posicao_atributos_produto)")
@@ -899,7 +901,7 @@ class SQLiteRepo:
             list: Lista de dicts com nome, label e tipo de cada coluna
         """
         # Colunas internas que não devem aparecer nas visualizações
-        colunas_internas = ['atr_period', 'atr_multiplier']
+        colunas_internas = ['atr_period', 'atr_multiplier', 'atr_data_inicio']
 
         colunas = []
 
@@ -940,6 +942,7 @@ class SQLiteRepo:
             {'nome': 'risco_stop', 'label': 'Risco Stop (%)', 'tipo': 'float', 'origem': 'calculado'},
             {'nome': 'rr', 'label': 'RR', 'tipo': 'float', 'origem': 'calculado'},
             {'nome': 'alocacao', 'label': 'Alocação (%)', 'tipo': 'float', 'origem': 'calculado'},
+            {'nome': 'dias_carteira', 'label': 'Dias em Carteira', 'tipo': 'int', 'origem': 'calculado'},
         ]
         colunas.extend(colunas_calculadas)
 
@@ -1272,8 +1275,8 @@ class SQLiteRepo:
 
         campos_permitidos = ['ativo', 'coingecko_id', 'exchange_symbol', 'side', 'data_entrada',
                             'preco_entrada', 'data_saida', 'preco_saida', 'status',
-                            'atr_period', 'atr_multiplier']
-        
+                            'atr_period', 'atr_multiplier', 'atr_data_inicio']
+
         updates = []
         valores = []
         for campo, valor in kwargs.items():
@@ -1282,27 +1285,33 @@ class SQLiteRepo:
                 valores.append(valor)
             else:
                 raise ValueError(f"Campo '{campo}' não é permitido para atualização")
-        
+
         if not updates:
             return posicao_id
-        
+
         valores.append(posicao_id)
-        
+
+        # Se atualizando ativo, registrar o novo ativo antes do UPDATE
+        if 'ativo' in kwargs:
+            novo_ativo = kwargs['ativo']
+            coingecko_id = kwargs.get('coingecko_id')
+            self.registrar_ativo(novo_ativo, coingecko_id)
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f"""
                 UPDATE posicoes SET {', '.join(updates)} WHERE id = ?
             """, valores)
-            
-            # Se atualizando coingecko_id, atualizar também na tabela de ativos
-            if 'coingecko_id' in kwargs:
+
+            # Se atualizando coingecko_id sem mudar ativo, atualizar também na tabela de ativos
+            if 'coingecko_id' in kwargs and 'ativo' not in kwargs:
                 # Obter ativo da posição
                 cursor.execute("SELECT ativo FROM posicoes WHERE id = ?", (posicao_id,))
                 row = cursor.fetchone()
                 if row:
                     ativo = row[0]
                     self.registrar_ativo(ativo, kwargs['coingecko_id'])
-        
+
         return posicao_id
 
     def obter_ultimo_stop(self, posicao_id):

@@ -105,6 +105,8 @@ def display_posicoes_abertas(produto_id=None, formatar=True, filtrar_colunas=Tru
                         if pd.isna(x) or x is None:
                             return "—"
                         if isinstance(x, (int, float)):
+                            if x == -1:
+                                return "STOP ATINGIDO"
                             return f"${x:,.2f}"
                         return str(x)
                     df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
@@ -114,6 +116,8 @@ def display_posicoes_abertas(produto_id=None, formatar=True, filtrar_colunas=Tru
                     if pd.isna(x) or x is None:
                         return "—"
                     if isinstance(x, (int, float)):
+                        if x == -1:
+                            return "STOP ATINGIDO"
                         return f"${x:,.2f}"
                     return str(x)
                 df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
@@ -357,6 +361,8 @@ def display_posicoes_abertas(produto_id=None, formatar=True, filtrar_colunas=Tru
                     if pd.isna(x) or x is None:
                         return "—"
                     if isinstance(x, (int, float)):
+                        if x == -1:
+                            return "STOP ATINGIDO"
                         return f"${x:,.2f}"
                     return str(x)
                 df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
@@ -507,10 +513,23 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
         pd.DataFrame: DataFrame com posições fechadas e atributos
     """
     df = posicoes_fechadas(produto_id)
-    
+
     if df.empty:
         print("Nenhuma posição fechada encontrada")
         return df
+
+    # Calcular dias em carteira (data_saida - data_entrada)
+    if 'data_entrada' in df.columns and 'data_saida' in df.columns:
+        def _calcular_dias_carteira(row):
+            try:
+                data_entrada = pd.to_datetime(row['data_entrada'])
+                data_saida = pd.to_datetime(row['data_saida'])
+                if pd.notna(data_entrada) and pd.notna(data_saida):
+                    return (data_saida - data_entrada).days
+            except Exception:
+                pass
+            return None
+        df['dias_carteira'] = df.apply(_calcular_dias_carteira, axis=1)
 
     # Detectar tipo de produto (Spot ou Perpétuos, exceto 4970919917)
     tipo_spot = False
@@ -617,6 +636,8 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
                 if pd.isna(x) or x is None:
                     return "—"
                 if isinstance(x, (int, float)):
+                    if x == -1:
+                        return "STOP ATINGIDO"
                     return f"${x:,.2f}"
                 return str(x)
             df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual_fechadas)
@@ -636,6 +657,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
     # Se for o produto Alphacoins (ID 3476245316), EXC (ID 2150859854), HB (ID 2000449260) ou LC (ID 2394004756), mostrar apenas colunas específicas
     if produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:
         colunas_alphacoins_exc = [
+            'dias_carteira',
             'data_entrada',
             'data_saida',
             'ativo',
@@ -659,6 +681,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
     # Para Crypto Signals, usar exatamente as colunas e ordem solicitadas (ordem original)
     if produto_id == 4970919917:
         colunas_signals = [
+            'dias_carteira',
             'data_entrada',
             'data_saida',
             'ativo',
@@ -680,6 +703,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
         stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
 
         colunas_spot = [
+            'dias_carteira',
             'data_entrada',
             'data_saida',
             'ativo',
@@ -706,6 +730,8 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
                     if pd.isna(x) or x is None:
                         return "—"
                     if isinstance(x, (int, float)):
+                        if x == -1:
+                            return "STOP ATINGIDO"
                         return f"${x:,.2f}"
                     return str(x)
                 df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
@@ -718,6 +744,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
         stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
 
         colunas_perpetuos = [
+            'dias_carteira',
             'data_entrada',
             'data_saida',
             'ativo',
@@ -745,6 +772,8 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
                     if pd.isna(x) or x is None:
                         return "—"
                     if isinstance(x, (int, float)):
+                        if x == -1:
+                            return "STOP ATINGIDO"
                         return f"${x:,.2f}"
                     return str(x)
                 df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
@@ -754,7 +783,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
     # Reordenar colunas para melhor visualização (caso genérico - não Spot, não Perpétuos, não Signals)
     colunas_ordenadas = []
     colunas_atributos = ['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2']
-    colunas_principais = ['id', 'ativo', 'side', 'data_entrada', 'preco_entrada', 'data_saida', 'preco_saida', 'status']
+    colunas_principais = ['id', 'ativo', 'side', 'dias_carteira', 'data_entrada', 'preco_entrada', 'data_saida', 'preco_saida', 'status']
     colunas_outras = [col for col in df.columns if col not in colunas_atributos + colunas_principais]
 
     for col in colunas_principais + colunas_atributos + colunas_outras:
@@ -891,6 +920,25 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
     if df.empty:
         print("Nenhuma posição encontrada para o histórico")
         return df
+
+    # Calcular dias em carteira (data_saida - data_entrada)
+    # Para posições abertas, exibe "—"
+    if 'data_entrada' in df.columns:
+        def _calcular_dias_carteira_historico(row):
+            # Verificar se a posição é aberta (status == 'open' ou data_saida é nula)
+            status = row.get('status', '')
+            data_saida = row.get('data_saida')
+            if status == 'open' or pd.isna(data_saida) or data_saida is None:
+                return "—"
+            try:
+                data_entrada = pd.to_datetime(row['data_entrada'])
+                data_saida = pd.to_datetime(data_saida)
+                if pd.notna(data_entrada) and pd.notna(data_saida):
+                    return (data_saida - data_entrada).days
+            except Exception:
+                pass
+            return "—"
+        df['dias_carteira'] = df.apply(_calcular_dias_carteira_historico, axis=1)
 
     # Detectar tipo de produto (Spot ou Perpétuos, exceto 4970919917)
     tipo_spot = False
@@ -1075,6 +1123,8 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
                 if pd.isna(x) or x is None:
                     return "—"
                 if isinstance(x, (int, float)):
+                    if x == -1:
+                        return "STOP ATINGIDO"
                     return f"${x:,.2f}"
                 return str(x)
             df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual_historico)
@@ -1119,6 +1169,7 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
     if produto_id == 3476245316 or produto_id == 2150859854 or produto_id == 2000449260 or produto_id == 2394004756:
         colunas_alphacoins_exc = [
             'status',
+            'dias_carteira',
             'data_entrada',
             'data_saida',
             'ativo',
@@ -1143,6 +1194,7 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
     if produto_id == 4970919917:
         colunas_signals = [
             'status',
+            'dias_carteira',
             'data_entrada',
             'data_saida',
             'ativo',
@@ -1168,9 +1220,10 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
     if tipo_spot:
         # Salvar stop_atual antes de remover colunas
         stop_atual_col = df['stop_atual'].copy() if 'stop_atual' in df.columns else None
-        
+
         colunas_spot = [
             'status',
+            'dias_carteira',
             'data_entrada',
             'data_saida',
             'ativo',
@@ -1198,10 +1251,12 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
                     if pd.isna(x) or x is None:
                         return "—"
                     if isinstance(x, (int, float)):
+                        if x == -1:
+                            return "STOP ATINGIDO"
                         return f"${x:,.2f}"
                     return str(x)
                 df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
-        
+
         # Substituir quaisquer NaN remanescentes por "—"
         df = df.fillna("—")
         return df
@@ -1210,6 +1265,7 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
     if tipo_perpetuos:
         colunas_perpetuos = [
             'status',
+            'dias_carteira',
             'data_entrada',
             'data_saida',
             'ativo',
@@ -1240,18 +1296,20 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
                     if pd.isna(x) or x is None:
                         return "—"
                     if isinstance(x, (int, float)):
+                        if x == -1:
+                            return "STOP ATINGIDO"
                         return f"${x:,.2f}"
                     return str(x)
                 df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
-        
+
         # Substituir quaisquer NaN remanescentes por "—"
         df = df.fillna("—")
         return df
 
     # Caso genérico: manter ordenação padrão (priorizar principais + atributos)
     colunas_principais = [
-        'id', 'ativo', 'side', 'data_entrada', 'preco_entrada',
-        'data_saida', 'preco_saida', 'status', 'preco_atual'
+        'id', 'ativo', 'side', 'status', 'dias_carteira', 'data_entrada', 'preco_entrada',
+        'data_saida', 'preco_saida', 'preco_atual'
     ]
     colunas_atributos = ['perfil', 'motivo', 'pnl', 'rr', 'alvo1', 'alvo2', 'stop_atual']
     colunas_outras = [c for c in df.columns if c not in colunas_principais + colunas_atributos]
