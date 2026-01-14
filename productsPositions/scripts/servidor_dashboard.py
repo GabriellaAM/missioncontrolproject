@@ -10,6 +10,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 import urllib.parse
 from datetime import datetime, date
+import io
 import pandas as pd
 
 from storage.sqlite_repo import SQLiteRepo
@@ -25,6 +26,17 @@ from analytics.notebook_utils import (
 )
 from services.atr_stop_service import atualizar_stops_posicoes_abertas, calcular_stop_para_posicao
 from services.bitget_service import sync_positions_with_exchange
+from services.turmas_service import TurmasService
+from services.rentabilidade_service import RentabilidadeService
+from services.cotacoes_service import CotacoesService
+from turmas_dashboard import (
+    get_lista_turmas_html,
+    get_form_nova_turma_html,
+    get_turma_detalhes_html,
+    get_rentabilidade_chart_html,
+    get_comparar_turmas_html,
+    get_rentabilidade_historica_html
+)
 
 
 # ============================================================
@@ -356,6 +368,8 @@ def get_navbar(current_page=""):
         <div class="navbar-links">
             <a href="/" class="{'active' if current_page == 'home' else ''}">Dashboard</a>
             <a href="/menu" class="{'active' if current_page == 'menu' else ''}">Menu</a>
+            <a href="/turmas" class="{'active' if current_page == 'turmas' else ''}">Turmas</a>
+            <a href="/turmas/historico" class="{'active' if current_page == 'historico' else ''}">Rentab. Histórica</a>
         </div>
     </nav>
     """
@@ -486,6 +500,28 @@ def get_menu_html():
                     <a href="/alocacao/nova" class="menu-item">
                         <div class="menu-item-icon">+</div>
                         <div class="menu-item-label">Criar Alocacao</div>
+                    </a>
+                </div>
+            </div>
+
+            <div class="menu-section">
+                <h3>Turmas & Rentabilidade</h3>
+                <div class="menu-grid">
+                    <a href="/turmas" class="menu-item">
+                        <div class="menu-item-icon">T</div>
+                        <div class="menu-item-label">Ver Turmas</div>
+                    </a>
+                    <a href="/turmas/historico" class="menu-item">
+                        <div class="menu-item-icon">📊</div>
+                        <div class="menu-item-label">Rentab. Histórica</div>
+                    </a>
+                    <a href="/turmas/nova" class="menu-item">
+                        <div class="menu-item-icon">+</div>
+                        <div class="menu-item-label">Nova Turma</div>
+                    </a>
+                    <a href="/turmas/comparar" class="menu-item">
+                        <div class="menu-item-icon">C</div>
+                        <div class="menu-item-label">Comparar</div>
                     </a>
                 </div>
             </div>
@@ -2516,6 +2552,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._set_headers(status, 'text/html; charset=utf-8')
         self.wfile.write(html.encode('utf-8'))
 
+    def _send_excel(self, buffer, filename):
+        """Envia arquivo Excel para download"""
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(buffer.getvalue())
+
     def do_OPTIONS(self):
         self._set_headers(200)
 
@@ -2832,6 +2877,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'sucesso': False, 'erro': str(e)}, 400)
             return
 
+        # ============================================================
+        # ROTAS DE TURMAS (POST)
+        # ============================================================
+
+        # Criar turma
+        if path == '/api/turma/criar':
+            try:
+                turmas_service = TurmasService()
+                turma_id = turmas_service.criar_turma(
+                    produto_id=int(data.get('produto_id')),
+                    nome=data.get('nome'),
+                    data_inicio=data.get('data_inicio'),
+                    capital_base=float(data.get('capital_base', 1500)),
+                    descricao=data.get('descricao')
+                )
+                self._send_json({'sucesso': True, 'turma_id': turma_id})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
         self._send_json({'erro': 'Rota nao encontrada'}, 404)
 
     def do_GET(self):
@@ -3124,6 +3189,175 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({'produtos': produtos})
             return
 
+        # ============================================================
+        # ROTAS DE TURMAS
+        # ============================================================
+
+        # Lista de turmas
+        if path == '/turmas':
+            turmas_service = TurmasService()
+            rentabilidade_service = RentabilidadeService()
+
+            # OTIMIZAÇÃO: Não chama preencher_historico_faltante() no carregamento
+            # Use /api/cotacoes/atualizar para atualizar preços quando necessário
+
+            turmas = turmas_service.listar_turmas()
+
+            # OTIMIZAÇÃO: Usa batch query otimizada ao invés de N+1 queries
+            resumos_lista = rentabilidade_service.obter_rentabilidade_resumida_todas_turmas()
+            resumos = {r['turma_id']: r for r in resumos_lista}
+
+            self._send_html(get_lista_turmas_html(turmas, resumos))
+            return
+
+        # Formulario nova turma
+        if path == '/turmas/nova':
+            produtos = repo.listar_produtos()
+            self._send_html(get_form_nova_turma_html(produtos))
+            return
+
+        # Comparar turmas
+        if path == '/turmas/comparar':
+            turmas_service = TurmasService()
+            turmas = turmas_service.listar_turmas()
+            self._send_html(get_comparar_turmas_html(turmas, {}))
+            return
+
+        # Rentabilidade histórica de todas as turmas (página HTML)
+        if path == '/turmas/historico':
+            rentabilidade_service = RentabilidadeService()
+
+            # OTIMIZAÇÃO: Não chama preencher_historico_faltante() no carregamento
+            # Use /api/cotacoes/atualizar para atualizar preços quando necessário
+
+            # Obter resumo de todas as turmas (inclui rentabilidade max/min)
+            turmas_resumo = rentabilidade_service.obter_rentabilidade_resumida_todas_turmas()
+            self._send_html(get_rentabilidade_historica_html(turmas_resumo))
+            return
+
+        # Rotas de turma especifica: /turmas/{id} e /turmas/{id}/rentabilidade
+        if path.startswith('/turmas/') and path != '/turmas/nova' and path != '/turmas/comparar' and path != '/turmas/historico':
+            parts = path.split('/')
+            if len(parts) >= 3:
+                try:
+                    turma_id = int(parts[2])
+                    turmas_service = TurmasService()
+                    rentabilidade_service = RentabilidadeService()
+
+                    # OTIMIZAÇÃO: Não chama preencher_historico_faltante() no carregamento
+                    # Use /api/cotacoes/atualizar para atualizar preços quando necessário
+
+                    turma = turmas_service.obter_turma(turma_id)
+                    if not turma:
+                        self._send_html("<h1>Turma nao encontrada</h1>", 404)
+                        return
+
+                    # Grafico de rentabilidade
+                    if len(parts) >= 4 and parts[3] == 'rentabilidade':
+                        serie = rentabilidade_service.calcular_serie_rentabilidade(turma_id)
+                        self._send_html(get_rentabilidade_chart_html(turma, serie))
+                        return
+
+                    # Detalhes da turma (default)
+                    resumo = rentabilidade_service.resumo_turma(turma_id)
+                    carteira = turmas_service.listar_carteira_turma(turma_id)
+                    self._send_html(get_turma_detalhes_html(turma, resumo, carteira))
+                    return
+                except ValueError:
+                    pass
+            self._send_html("<h1>Turma nao encontrada</h1>", 404)
+            return
+
+        # API: Rentabilidade de uma turma (para grafico comparativo)
+        if path.startswith('/api/turma/') and path.endswith('/rentabilidade'):
+            try:
+                turma_id = int(path.split('/')[3])
+                rentabilidade_service = RentabilidadeService()
+                serie = rentabilidade_service.calcular_serie_rentabilidade(turma_id)
+                data = [
+                    {
+                        'dia': p.dia,
+                        'valor_total': p.valor_total,
+                        'rentabilidade_acumulada_pct': p.rentabilidade_acumulada_pct
+                    }
+                    for p in serie
+                ]
+                self._send_json(data)
+            except Exception as e:
+                self._send_json({'erro': str(e)}, 400)
+            return
+
+        # API: Rentabilidade histórica de uma turma
+        if path.startswith('/api/turma/') and path.endswith('/historico'):
+            try:
+                turma_id = int(path.split('/')[3])
+                rentabilidade_service = RentabilidadeService()
+                resultado = rentabilidade_service.obter_rentabilidade_historica(turma_id)
+                if 'erro' in resultado:
+                    self._send_json({'erro': resultado['erro']}, 404)
+                else:
+                    self._send_json(resultado)
+            except Exception as e:
+                self._send_json({'erro': str(e)}, 400)
+            return
+
+        # API: Rentabilidade de todas as turmas
+        if path == '/api/rentabilidade/todas':
+            try:
+                rentabilidade_service = RentabilidadeService()
+                # Parse query params
+                produto_id = None
+                if '?' in self.path:
+                    query = self.path.split('?')[1]
+                    params = dict(p.split('=') for p in query.split('&') if '=' in p)
+                    if 'produto_id' in params:
+                        produto_id = int(params['produto_id'])
+                resultado = rentabilidade_service.obter_rentabilidade_todas_turmas(produto_id=produto_id)
+                self._send_json(resultado)
+            except Exception as e:
+                self._send_json({'erro': str(e)}, 400)
+            return
+
+        # API: Resumo de rentabilidade de todas as turmas
+        if path == '/api/rentabilidade/resumo':
+            try:
+                rentabilidade_service = RentabilidadeService()
+                # Parse query params
+                produto_id = None
+                if '?' in self.path:
+                    query = self.path.split('?')[1]
+                    params = dict(p.split('=') for p in query.split('&') if '=' in p)
+                    if 'produto_id' in params:
+                        produto_id = int(params['produto_id'])
+                resultado = rentabilidade_service.obter_rentabilidade_resumida_todas_turmas(produto_id=produto_id)
+                self._send_json(resultado)
+            except Exception as e:
+                self._send_json({'erro': str(e)}, 400)
+            return
+
+        # API: Atualizar cotações (preencher histórico faltante)
+        if path == '/api/cotacoes/atualizar':
+            try:
+                cotacoes_service = CotacoesService()
+                # Parse query params
+                turma_id = None
+                if '?' in self.path:
+                    query = self.path.split('?')[1]
+                    params = dict(p.split('=') for p in query.split('&') if '=' in p)
+                    if 'turma_id' in params:
+                        turma_id = int(params['turma_id'])
+
+                resultado = cotacoes_service.preencher_historico_faltante(turma_id)
+                self._send_json({
+                    'sucesso': True,
+                    'trades_processados': resultado.get('trades_processados', 0),
+                    'dias_preenchidos': resultado.get('dias_preenchidos', 0),
+                    'erros': resultado.get('erros', 0)
+                })
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 500)
+            return
+
         # API: Atualizar dados
         if path.startswith('/api/atualizar/'):
             try:
@@ -3144,6 +3378,89 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'sucesso': True, 'timestamp': datetime.now().strftime("%d/%m/%Y %H:%M:%S")})
             except Exception as e:
                 self._send_json({'sucesso': False, 'erro': str(e)}, 500)
+            return
+
+        # API: Download Excel com rentabilidade histórica
+        if path == '/api/rentabilidade/excel':
+            try:
+                rentabilidade_service = RentabilidadeService()
+
+                # Parse query params
+                produto_id = None
+                if '?' in self.path:
+                    query = self.path.split('?')[1]
+                    params = dict(p.split('=') for p in query.split('&') if '=' in p)
+                    if 'produto_id' in params:
+                        produto_id = int(params['produto_id'])
+
+                # Buscar todas as turmas
+                turmas_service = TurmasService()
+                turmas = turmas_service.listar_turmas(produto_id)
+
+                if not turmas:
+                    self._send_json({'erro': 'Nenhuma turma encontrada'}, 404)
+                    return
+
+                # Calcular rentabilidade histórica de cada turma
+                all_data = []
+                for turma in turmas:
+                    turma_id = turma['id']
+                    turma_nome = turma['nome']
+
+                    # Obter série de rentabilidade
+                    serie = rentabilidade_service.calcular_serie_rentabilidade(turma_id)
+
+                    for portfolio in serie:
+                        all_data.append({
+                            'Data': portfolio.dia,
+                            'Turma': turma_nome,
+                            'Rentabilidade Acumulada (%)': round(portfolio.rentabilidade_acumulada_pct, 4),
+                            'Valor Total (R$)': round(portfolio.valor_total, 2),
+                            'Capital Alocado (R$)': round(portfolio.capital_alocado, 2),
+                            'Capital em Caixa (R$)': round(portfolio.capital_em_caixa, 2)
+                        })
+
+                # Criar DataFrame
+                df = pd.DataFrame(all_data)
+
+                # Pivotar para ter turmas como colunas (formato mais útil)
+                if not df.empty:
+                    # Criar uma aba com dados detalhados
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        # Aba 1: Dados detalhados (long format)
+                        df.to_excel(writer, sheet_name='Detalhado', index=False)
+
+                        # Aba 2: Rentabilidade pivotada (wide format)
+                        df_pivot = df.pivot_table(
+                            index='Data',
+                            columns='Turma',
+                            values='Rentabilidade Acumulada (%)',
+                            aggfunc='first'
+                        ).reset_index()
+                        df_pivot.to_excel(writer, sheet_name='Rentabilidade por Turma', index=False)
+
+                        # Aba 3: Valor Total pivotado
+                        df_valor = df.pivot_table(
+                            index='Data',
+                            columns='Turma',
+                            values='Valor Total (R$)',
+                            aggfunc='first'
+                        ).reset_index()
+                        df_valor.to_excel(writer, sheet_name='Valor por Turma', index=False)
+
+                    buffer.seek(0)
+
+                    # Enviar arquivo
+                    filename = f"rentabilidade_turmas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                    self._send_excel(buffer, filename)
+                else:
+                    self._send_json({'erro': 'Nenhum dado de rentabilidade encontrado'}, 404)
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send_json({'erro': str(e)}, 500)
             return
 
         # 404
@@ -3168,6 +3485,11 @@ def iniciar_servidor(porta=8080):
     print(f"    /posicao/nova      - Criar posicao")
     print(f"    /produto/ID        - Ver produto")
     print(f"    /produto/ID/viz/X  - Visualizacao salva")
+    print(f"\n  Turmas & Rentabilidade:")
+    print(f"    /turmas            - Lista de turmas")
+    print(f"    /turmas/nova       - Criar turma")
+    print(f"    /turmas/ID         - Detalhes da turma")
+    print(f"    /turmas/comparar   - Comparar rentabilidade")
     print(f"\n  Pressione Ctrl+C para parar.")
     print("=" * 60)
 

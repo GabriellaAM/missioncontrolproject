@@ -186,6 +186,13 @@ class SQLiteRepo:
             """)
 
             # Garantir que colunas mais novas existam mesmo em bancos antigos
+            # Produtos: usa_quantidade (para validação de quantidade)
+            cursor.execute("PRAGMA table_info(produtos)")
+            colunas_produtos = [row[1] for row in cursor.fetchall()]
+            if 'usa_quantidade' not in colunas_produtos:
+                # Default é 0 (não usa quantidade) para produtos de sinais
+                cursor.execute("ALTER TABLE produtos ADD COLUMN usa_quantidade INTEGER DEFAULT 0")
+
             # Posicoes: exchange_symbol
             cursor.execute("PRAGMA table_info(posicoes)")
             colunas_posicoes = [row[1] for row in cursor.fetchall()]
@@ -261,9 +268,12 @@ class SQLiteRepo:
 
             # Habilitar WAL mode para melhor concorrência
             cursor.execute("PRAGMA journal_mode=WAL")
-            
+
             # Garantir tipos essenciais
             self._garantir_tipos_essenciais(conn)
+
+            # Migrar usa_quantidade para produtos existentes
+            self._migrar_usa_quantidade(conn)
     
     def _garantir_tipos_essenciais(self, conn=None):
         """Garante que os tipos essenciais (Perpétuos e Spot) sempre existam"""
@@ -283,7 +293,41 @@ class SQLiteRepo:
                 INSERT OR IGNORE INTO tipos (nome, descricao, data_criacao)
                 VALUES (?, ?, ?)
             """, (nome, descricao, datetime.now().strftime("%Y-%m-%d")))
-    
+
+    def _migrar_usa_quantidade(self, conn=None):
+        """
+        Migra o campo usa_quantidade para produtos existentes.
+
+        Produtos que usam quantidade (usa_quantidade = 1):
+        - Soros Spot, Soros Perpétuos, Memebot Perpétuos
+
+        Produtos que NÃO usam quantidade (usa_quantidade = 0):
+        - HB, EXC, LC, Alphacoins, Crypto Signals (produtos de sinais)
+        """
+        if conn is None:
+            with self._get_connection() as conn:
+                self._migrar_usa_quantidade(conn)
+                return
+
+        cursor = conn.cursor()
+
+        # Produtos que usam quantidade (padrões de nome)
+        # Usando patterns sem caracteres especiais para evitar problemas de encoding
+        produtos_com_quantidade = [
+            '%Soros Spot%',
+            '%Soros Perp%',  # Match "Soros Perpétuos" sem depender de encoding
+            '%Memebot Perp%'  # Match "Memebot Perpétuos" sem depender de encoding
+        ]
+
+        # Atualizar produtos que usam quantidade
+        for pattern in produtos_com_quantidade:
+            cursor.execute("""
+                UPDATE produtos
+                SET usa_quantidade = 1
+                WHERE nome LIKE ?
+                AND (usa_quantidade IS NULL OR usa_quantidade = 0)
+            """, (pattern,))
+
     def _gerar_id(self):
         """Gera um ID único (compatível com formato anterior)"""
         return int(uuid.uuid4().int % (10 ** 10))  # ID numérico de 10 dígitos
@@ -512,7 +556,7 @@ class SQLiteRepo:
         """
         self._validar_produto_existe(produto_id)
 
-        campos_permitidos = ['nome', 'data_inicio', 'tipo', 'capital_inicial']
+        campos_permitidos = ['nome', 'data_inicio', 'tipo', 'capital_inicial', 'usa_quantidade']
 
         updates = []
         valores = []
