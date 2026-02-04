@@ -165,6 +165,27 @@ def get_base_styles():
             color: #1a1a2e;
         }
         .navbar-links { display: flex; gap: 5px; flex-wrap: wrap; }
+        .navbar-links a.active { background: rgba(78, 204, 163, 0.25); }
+        .turmas-subnav {
+            display: flex;
+            gap: 0;
+            padding: 0 30px;
+            background: rgba(0,0,0,0.15);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .turmas-subnav a {
+            color: #888;
+            text-decoration: none;
+            padding: 10px 20px;
+            font-size: 0.9em;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .turmas-subnav a:hover { color: #ccc; }
+        .turmas-subnav a.active {
+            color: #4ecca3;
+            border-bottom-color: #4ecca3;
+        }
         .container { max-width: 1400px; margin: 0 auto; padding: 30px; }
         .card {
             background: linear-gradient(135deg, #16213e 0%, #1f2833 100%);
@@ -361,17 +382,27 @@ def get_base_styles():
 
 
 def get_navbar(current_page=""):
-    """Gera a barra de navegacao"""
+    """Gera a barra de navegacao principal (padronizada para todas as paginas)"""
     return f"""
     <nav class="navbar">
         <a href="/" style="text-decoration: none;"><h1>Products & Positions</h1></a>
         <div class="navbar-links">
             <a href="/" class="{'active' if current_page == 'home' else ''}">Dashboard</a>
             <a href="/menu" class="{'active' if current_page == 'menu' else ''}">Menu</a>
-            <a href="/turmas" class="{'active' if current_page == 'turmas' else ''}">Turmas</a>
-            <a href="/turmas/historico" class="{'active' if current_page == 'historico' else ''}">Rentab. Histórica</a>
+            <a href="/turmas" class="{'active' if current_page in ('turmas', 'historico', 'comparar') else ''}">Turmas</a>
         </div>
     </nav>
+    """
+
+
+def get_turmas_subnav(current_sub=""):
+    """Gera sub-navegacao interna das paginas de turmas"""
+    return f"""
+    <div class="turmas-subnav">
+        <a href="/turmas" class="{'active' if current_sub == 'turmas' else ''}">Turmas</a>
+        <a href="/turmas/historico" class="{'active' if current_sub == 'historico' else ''}">Histórico</a>
+        <a href="/turmas/comparar" class="{'active' if current_sub == 'comparar' else ''}">Comparar</a>
+    </div>
     """
 
 
@@ -2639,6 +2670,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         produto_id=produto_id,
                         quantidade=float(data.get('quantidade'))
                     )
+
+                # Sincronizar com turmas existentes
+                try:
+                    turmas_service = TurmasService()
+                    turmas_service.sync_nova_posicao(
+                        posicao_id=posicao_id,
+                        produto_id=produto_id,
+                        data_entrada=data.get('data_entrada'),
+                        preco_entrada=float(data.get('preco_entrada'))
+                    )
+                except Exception as sync_err:
+                    print(f"Aviso: erro ao sincronizar posição com turmas: {sync_err}")
+
                 self._send_json({'sucesso': True, 'posicao_id': posicao_id})
             except Exception as e:
                 self._send_json({'sucesso': False, 'erro': str(e)}, 400)
@@ -2675,12 +2719,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == '/api/posicao/fechar':
             try:
                 posicao_id = int(data.get('posicao_id'))
+                data_saida = data.get('data_saida')
                 repo.atualizar_posicao(
                     posicao_id=posicao_id,
-                    data_saida=data.get('data_saida'),
+                    data_saida=data_saida,
                     preco_saida=float(data.get('preco_saida')),
                     status='closed'
                 )
+
+                # Sincronizar fechamento com turmas
+                try:
+                    turmas_service = TurmasService()
+                    turmas_service.sync_posicao_fechada(
+                        posicao_id=posicao_id,
+                        data_saida=data_saida
+                    )
+                except Exception as sync_err:
+                    print(f"Aviso: erro ao sincronizar fechamento com turmas: {sync_err}")
+
                 self._send_json({'sucesso': True})
             except Exception as e:
                 self._send_json({'sucesso': False, 'erro': str(e)}, 400)
@@ -2881,20 +2937,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # ROTAS DE TURMAS (POST)
         # ============================================================
 
-        # Criar turma
+        # Criar turma com busca automática de preços
+        # posicoes_config: [{"posicao_id": 1, "data_insercao": "2026-01-15"}, ...]
+        # preco_entrada_turma é OPCIONAL se auto_fetch_prices=true (default)
+        # Use /api/turma/posicoes-elegiveis para listar posições elegíveis
         if path == '/api/turma/criar':
             try:
                 turmas_service = TurmasService()
-                turma_id = turmas_service.criar_turma(
-                    produto_id=int(data.get('produto_id')),
+                produto_id = int(data.get('produto_id'))
+                data_inicio = data.get('data_inicio')
+
+                # Retrocompatibilidade: se posicoes_config ausente ou vazio, preencher com posições elegíveis
+                posicoes_config = data.get('posicoes_config')
+                if not posicoes_config:
+                    posicoes = turmas_service.listar_posicoes_elegiveis(produto_id, data_inicio)
+                    posicoes_config = [
+                        {'posicao_id': p['id'], 'data_insercao': data_inicio}
+                        for p in posicoes
+                    ]
+
+                # auto_fetch_prices: se True (default), busca preços via CoinGecko
+                auto_fetch_prices = data.get('auto_fetch_prices', True)
+
+                resultado = turmas_service.criar_turma(
+                    produto_id=produto_id,
                     nome=data.get('nome'),
-                    data_inicio=data.get('data_inicio'),
+                    data_inicio=data_inicio,
                     capital_base=float(data.get('capital_base', 1500)),
-                    descricao=data.get('descricao')
+                    descricao=data.get('descricao'),
+                    posicoes_config=posicoes_config,
+                    auto_fetch_prices=auto_fetch_prices
                 )
-                self._send_json({'sucesso': True, 'turma_id': turma_id})
-            except Exception as e:
+
+                self._send_json({
+                    'sucesso': True,
+                    'turma_id': resultado['turma_id'],
+                    'precos_resolvidos': resultado['precos_resolvidos'],
+                    'avisos': resultado['avisos']
+                })
+            except ValueError as e:
+                # Validation error (missing posicoes_config, missing fields, etc.)
                 self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 500)
             return
 
         self._send_json({'erro': 'Rota nao encontrada'}, 404)
@@ -3203,7 +3288,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             turmas = turmas_service.listar_turmas()
 
-            # OTIMIZAÇÃO: Usa batch query otimizada ao invés de N+1 queries
+            # Batch otimizado: uma query SQL + uma chamada API para preços em tempo real
             resumos_lista = rentabilidade_service.obter_rentabilidade_resumida_todas_turmas()
             resumos = {r['turma_id']: r for r in resumos_lista}
 
@@ -3235,7 +3320,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_html(get_rentabilidade_historica_html(turmas_resumo))
             return
 
-        # Rotas de turma especifica: /turmas/{id} e /turmas/{id}/rentabilidade
+        # Rotas de turma especifica: /turmas/{id}, /turmas/{id}/abertas, /turmas/{id}/fechadas, /turmas/{id}/historico, /turmas/{id}/rentabilidade
         if path.startswith('/turmas/') and path != '/turmas/nova' and path != '/turmas/comparar' and path != '/turmas/historico':
             parts = path.split('/')
             if len(parts) >= 3:
@@ -3258,10 +3343,82 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         self._send_html(get_rentabilidade_chart_html(turma, serie))
                         return
 
-                    # Detalhes da turma (default)
-                    resumo = rentabilidade_service.resumo_turma(turma_id)
+                    # Determinar aba ativa
+                    tab_ativa = 'abertas'
+                    if len(parts) >= 4 and parts[3] in ('abertas', 'fechadas', 'historico'):
+                        tab_ativa = parts[3]
+
+                    # Detalhes da turma com abas
+                    # Buscar carteira primeiro para popular o cache de preços ANTES de resumo_turma
                     carteira = turmas_service.listar_carteira_turma(turma_id)
-                    self._send_html(get_turma_detalhes_html(turma, resumo, carteira))
+
+                    from datetime import date as date_type
+                    hoje = date_type.today().isoformat()
+
+                    # Batch API: busca preços atuais e popula cache module-level
+                    # resumo_turma() depois usa o cache em vez de fazer N chamadas individuais
+                    coingecko_ids_ativos = list(set(
+                        t['coingecko_id'] for t in carteira
+                        if t.get('ativo_atual') and t.get('coingecko_id')
+                    ))
+                    precos_atuais = {}
+                    if coingecko_ids_ativos:
+                        try:
+                            cotacoes_service = CotacoesService()
+                            precos_atuais = cotacoes_service.obter_precos_batch_coingecko(coingecko_ids_ativos)
+                        except Exception:
+                            pass
+
+                    resumo = rentabilidade_service.resumo_turma(turma_id)
+
+                    for trade in carteira:
+                        # Calcular dias na turma
+                        data_insercao = trade.get('data_insercao', '')
+                        if trade.get('ativo_atual'):
+                            try:
+                                from datetime import datetime as dt
+                                d_ins = dt.strptime(data_insercao, '%Y-%m-%d').date()
+                                trade['dias'] = (date_type.today() - d_ins).days
+                            except Exception:
+                                trade['dias'] = 0
+                        else:
+                            try:
+                                from datetime import datetime as dt
+                                d_ins = dt.strptime(data_insercao, '%Y-%m-%d').date()
+                                d_rem = dt.strptime(trade.get('data_remocao', hoje), '%Y-%m-%d').date()
+                                trade['dias'] = (d_rem - d_ins).days
+                            except Exception:
+                                trade['dias'] = 0
+
+                        preco_entrada = trade.get('preco_entrada_turma', 0) or 0
+                        side = (trade.get('side') or '').upper()
+
+                        if trade.get('ativo_atual'):
+                            # Trade ativo: usar preço atual da API
+                            cg_id = trade.get('coingecko_id')
+                            preco_atual = precos_atuais.get(cg_id) if cg_id else None
+                            trade['preco_atual'] = preco_atual if preco_atual else preco_entrada
+                            # Calcular PnL
+                            if preco_entrada and preco_entrada != 0:
+                                if side == 'SHORT':
+                                    trade['pnl_pct'] = (preco_entrada - trade['preco_atual']) / preco_entrada * 100
+                                else:
+                                    trade['pnl_pct'] = (trade['preco_atual'] - preco_entrada) / preco_entrada * 100
+                            else:
+                                trade['pnl_pct'] = 0.0
+                        else:
+                            # Trade fechado: usar preço de saída
+                            preco_saida = trade.get('preco_saida') or preco_entrada
+                            trade['preco_atual'] = preco_saida
+                            if preco_entrada and preco_entrada != 0:
+                                if side == 'SHORT':
+                                    trade['pnl_pct'] = (preco_entrada - preco_saida) / preco_entrada * 100
+                                else:
+                                    trade['pnl_pct'] = (preco_saida - preco_entrada) / preco_entrada * 100
+                            else:
+                                trade['pnl_pct'] = 0.0
+
+                    self._send_html(get_turma_detalhes_html(turma, resumo, carteira, tab_ativa))
                     return
                 except ValueError:
                     pass
@@ -3297,6 +3454,65 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_json({'erro': resultado['erro']}, 404)
                 else:
                     self._send_json(resultado)
+            except Exception as e:
+                self._send_json({'erro': str(e)}, 400)
+            return
+
+        # API: Listar posições elegíveis para replicação em uma turma
+        # GET /api/turma/posicoes-elegiveis?produto_id=1&data_inicio=2026-01-15
+        if path == '/api/turma/posicoes-elegiveis':
+            try:
+                produto_id = int(query.get('produto_id', [0])[0])
+                data_inicio = query.get('data_inicio', [None])[0]
+
+                if not produto_id or not data_inicio:
+                    self._send_json({'erro': 'produto_id e data_inicio são obrigatórios'}, 400)
+                    return
+
+                turmas_service = TurmasService()
+                posicoes = turmas_service.listar_posicoes_elegiveis(produto_id, data_inicio)
+
+                self._send_json({
+                    'posicoes': posicoes,
+                    'total': len(posicoes),
+                    'produto_id': produto_id,
+                    'data_inicio': data_inicio
+                })
+            except Exception as e:
+                self._send_json({'erro': str(e)}, 400)
+            return
+
+        # API: Obter cotação histórica de um ativo
+        # GET /api/cotacao/historica?coingecko_id=bitcoin&data=2026-01-15
+        # Usa o mesmo método que criar_turma para consistência de preços
+        if path == '/api/cotacao/historica':
+            try:
+                coingecko_id = query.get('coingecko_id', [None])[0]
+                data = query.get('data', [None])[0]
+
+                if not coingecko_id or not data:
+                    self._send_json({'erro': 'coingecko_id e data são obrigatórios'}, 400)
+                    return
+
+                cotacoes_service = CotacoesService()
+                resultado = cotacoes_service.obter_preco_historico_exato(coingecko_id, data)
+
+                if resultado.get('status') in ('ok', 'fallback'):
+                    self._send_json({
+                        'coingecko_id': coingecko_id,
+                        'data_solicitada': data,
+                        'data_encontrada': resultado.get('data_referencia'),
+                        'preco': resultado['preco'],
+                        'fonte': resultado.get('fonte', 'coingecko'),
+                        'status': resultado['status'],
+                        'aviso': resultado.get('aviso')
+                    })
+                else:
+                    self._send_json({
+                        'erro': resultado.get('erro', f'Preço não encontrado para {coingecko_id} na data {data}'),
+                        'coingecko_id': coingecko_id,
+                        'data': data
+                    }, 404)
             except Exception as e:
                 self._send_json({'erro': str(e)}, 400)
             return
@@ -3401,14 +3617,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_json({'erro': 'Nenhuma turma encontrada'}, 404)
                     return
 
+                # Pré-carregar preços de todos os ativos uma única vez
+                turma_ids = [t['id'] for t in turmas]
+                precos_cache = rentabilidade_service.construir_precos_cache(turma_ids)
+
                 # Calcular rentabilidade histórica de cada turma
                 all_data = []
                 for turma in turmas:
                     turma_id = turma['id']
                     turma_nome = turma['nome']
 
-                    # Obter série de rentabilidade
-                    serie = rentabilidade_service.calcular_serie_rentabilidade(turma_id)
+                    # Obter série de rentabilidade (usa cache compartilhado)
+                    serie = rentabilidade_service.calcular_serie_rentabilidade(
+                        turma_id, precos_cache=precos_cache
+                    )
 
                     for portfolio in serie:
                         all_data.append({

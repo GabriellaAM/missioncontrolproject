@@ -189,6 +189,30 @@ class RentabilidadeService:
         except (ValueError, TypeError):
             return False, 0.0
 
+    @staticmethod
+    def _calcular_pnl(side: str, preco_entrada: float, preco_saida: float, quantidade: float) -> float:
+        """
+        Calcula o PnL (Profit and Loss) de um trade.
+
+        Args:
+            side: 'long' ou 'short'
+            preco_entrada: Preço de entrada do trade
+            preco_saida: Preço de saída do trade
+            quantidade: Quantidade negociada
+
+        Returns:
+            PnL calculado (positivo = lucro, negativo = prejuízo)
+
+        Formula:
+            Long:  PnL = (preco_saida × quantidade) - (preco_entrada × quantidade)
+            Short: PnL = (preco_entrada × quantidade) - (preco_saida × quantidade)
+        """
+        custo_inicial = preco_entrada * quantidade
+        if side == 'long':
+            return (preco_saida * quantidade) - custo_inicial
+        else:  # short
+            return custo_inicial - (preco_saida * quantidade)
+
     def _validar_quantidade(self, quantidade: Any, usa_quantidade: bool) -> Tuple[bool, Optional[float], bool]:
         """
         Valida quantidade baseado na configuração do produto.
@@ -541,8 +565,40 @@ class RentabilidadeService:
         conn.close()
         return trades
 
+    def _filtrar_trades_para_dia(self, todos_trades: List[Dict], dia: str) -> List[Dict]:
+        """
+        Filtra trades pré-carregados para um dia específico (equivalente em memória
+        de obter_trades_ativos_no_dia).
+
+        Um trade está ativo no dia se:
+        - data_insercao <= dia
+        - (data_remocao IS NULL OR data_remocao >= dia)
+        """
+        resultado = []
+        for trade in todos_trades:
+            data_insercao = trade.get('data_insercao')
+            data_remocao = trade.get('data_remocao')
+
+            if data_insercao and data_insercao > dia:
+                continue
+            if data_remocao and data_remocao < dia:
+                continue
+
+            trade_copia = dict(trade)
+            if data_remocao and data_remocao == dia:
+                trade_copia['status'] = 'vendido'
+            else:
+                trade_copia['status'] = 'aberto'
+
+            resultado.append(trade_copia)
+        return resultado
+
     def calcular_portfolio_dia(self, turma_id: int, dia: str,
-                                valor_anterior: Optional[float] = None) -> DailyPortfolio:
+                                valor_anterior: Optional[float] = None,
+                                precos_cache: Optional[Dict[str, Dict[str, float]]] = None,
+                                trades_prefetched: Optional[List[Dict]] = None,
+                                capital_base_cache: Optional[float] = None,
+                                pnl_fechado_anterior_override: Optional[float] = None) -> DailyPortfolio:
         """
         Calcula o portfolio de uma turma para um dia específico.
 
@@ -557,6 +613,13 @@ class RentabilidadeService:
             turma_id: ID da turma
             dia: Data no formato YYYY-MM-DD
             valor_anterior: Valor total do portfolio no dia anterior
+            precos_cache: Dict[coingecko_id, Dict[data, preco]] pré-carregado.
+                         Se fornecido, usa em vez de queries individuais ao banco/API.
+            trades_prefetched: Lista de todos os trades da turma (pré-carregados).
+                              Se fornecido, filtra em memória em vez de query SQL por dia.
+            capital_base_cache: Capital base já obtido (evita query extra).
+            pnl_fechado_anterior_override: PnL fechado acumulado até o dia anterior
+                                           já calculado pelo chamador. Evita query SQL.
 
         Returns:
             DailyPortfolio com métricas, avisos e erros
@@ -596,27 +659,35 @@ class RentabilidadeService:
         # =================================================================
         # VALIDAÇÃO 1: Capital Base
         # =================================================================
-        capital_base, erro_capital = self.obter_capital_base(turma_id)
-        if erro_capital:
-            erros.append(erro_capital)
-            # Retorna portfolio zerado com erro
-            return DailyPortfolio(
-                turma_id=turma_id,
-                dia=dia,
-                capital_alocado=0.0,
-                custo_ativos=0.0,
-                pnl_fechado_acumulado=0.0,
-                capital_em_caixa=0.0,
-                valor_total=0.0,
-                rentabilidade_diaria_pct=0.0,
-                rentabilidade_acumulada_pct=0.0,
-                avisos=avisos,
-                erros=erros,
-                trades_calculados=0,
-                trades_com_erro=0
-            )
+        if capital_base_cache is not None:
+            capital_base = capital_base_cache
+        else:
+            capital_base, erro_capital = self.obter_capital_base(turma_id)
+            if erro_capital:
+                erros.append(erro_capital)
+                return DailyPortfolio(
+                    turma_id=turma_id,
+                    dia=dia,
+                    capital_alocado=0.0,
+                    custo_ativos=0.0,
+                    pnl_fechado_acumulado=0.0,
+                    capital_em_caixa=0.0,
+                    valor_total=0.0,
+                    rentabilidade_diaria_pct=0.0,
+                    rentabilidade_acumulada_pct=0.0,
+                    avisos=avisos,
+                    erros=erros,
+                    trades_calculados=0,
+                    trades_com_erro=0
+                )
 
-        trades = self.obter_trades_ativos_no_dia(turma_id, dia)
+        # =================================================================
+        # OBTER TRADES: prefetched (filtro em memória) ou query SQL
+        # =================================================================
+        if trades_prefetched is not None:
+            trades = self._filtrar_trades_para_dia(trades_prefetched, dia)
+        else:
+            trades = self.obter_trades_ativos_no_dia(turma_id, dia)
 
         # =================================================================
         # VALIDAÇÃO: Detectar trades duplicados
@@ -702,28 +773,41 @@ class RentabilidadeService:
                 continue  # Pula este trade
 
             # =============================================================
-            # OBTER PREÇO DE COTAÇÃO (com sinalização de fallback e timeout)
+            # OBTER PREÇO DE COTAÇÃO (cache > API > banco > fallback)
             # =============================================================
-            preco_cotacao, status_cotacao = self.obter_preco_cotacao(
-                trade_id,
-                dia,
-                ativo=ativo,
-                exchange_symbol=trade.get('exchange_symbol'),
-                coingecko_id=trade.get('coingecko_id')
-            )
-
-            # Reportar timeout de API (aviso)
-            if status_cotacao == 'timeout':
-                avisos.append(Aviso(
-                    tipo=TipoAviso.API_TIMEOUT,
-                    trade_id=trade_id,
-                    ativo=ativo,
-                    mensagem=f"Timeout na API CoinGecko para {ativo} - usando preço do banco"
-                ))
-
+            coingecko_id = trade.get('coingecko_id')
+            preco_cotacao = None
+            status_cotacao = 'ok'
             usou_fallback_preco = False
+
+            if precos_cache is not None and coingecko_id:
+                # Buscar no cache pré-carregado
+                precos_ativo = precos_cache.get(coingecko_id, {})
+                preco_cotacao = precos_ativo.get(dia)
+                # Se não tem preço exato para o dia, buscar o mais recente anterior
+                if preco_cotacao is None and precos_ativo:
+                    datas_anteriores = [d for d in precos_ativo if d <= dia]
+                    if datas_anteriores:
+                        preco_cotacao = precos_ativo[max(datas_anteriores)]
+            else:
+                # Caminho original: query individual
+                preco_cotacao, status_cotacao = self.obter_preco_cotacao(
+                    trade_id,
+                    dia,
+                    ativo=ativo,
+                    exchange_symbol=trade.get('exchange_symbol'),
+                    coingecko_id=coingecko_id
+                )
+
+                if status_cotacao == 'timeout':
+                    avisos.append(Aviso(
+                        tipo=TipoAviso.API_TIMEOUT,
+                        trade_id=trade_id,
+                        ativo=ativo,
+                        mensagem=f"Timeout na API CoinGecko para {ativo} - usando preço do banco"
+                    ))
+
             if preco_cotacao is None:
-                # Usar preco_entrada como fallback
                 preco_cotacao = preco_entrada
                 usou_fallback_preco = True
                 avisos.append(Aviso(
@@ -782,16 +866,15 @@ class RentabilidadeService:
                     ))
 
                 # Calcular PnL baseado no side
-                if side_normalizado == 'long':
-                    pnl = (preco_saida * quantidade) - custo_inicial
-                else:  # short
-                    pnl = custo_inicial - (preco_saida * quantidade)
-
+                pnl = self._calcular_pnl(side_normalizado, preco_entrada, preco_saida, quantidade)
                 pnl_fechado_dia += pnl
                 trades_calculados += 1
 
         # Obter PnL fechado acumulado até o dia anterior
-        pnl_fechado_anterior = self._obter_pnl_fechado_acumulado(turma_id, dia)
+        if pnl_fechado_anterior_override is not None:
+            pnl_fechado_anterior = pnl_fechado_anterior_override
+        else:
+            pnl_fechado_anterior = self._obter_pnl_fechado_acumulado(turma_id, dia)
         pnl_fechado_acumulado = pnl_fechado_anterior + pnl_fechado_dia
 
         # Capital em caixa
@@ -903,13 +986,7 @@ class RentabilidadeService:
             if preco_entrada is None or preco_entrada <= 0:
                 continue
 
-            custo_inicial = preco_entrada * quantidade
-
-            if side_normalizado == 'long':
-                pnl = (preco_saida * quantidade) - custo_inicial
-            else:  # short
-                pnl = custo_inicial - (preco_saida * quantidade)
-
+            pnl = self._calcular_pnl(side_normalizado, preco_entrada, preco_saida, quantidade)
             pnl_total += pnl
 
         conn.close()
@@ -917,14 +994,21 @@ class RentabilidadeService:
 
     def calcular_serie_rentabilidade(self, turma_id: int,
                                       data_inicio: Optional[str] = None,
-                                      data_fim: Optional[str] = None) -> List[DailyPortfolio]:
+                                      data_fim: Optional[str] = None,
+                                      precos_cache: Optional[Dict[str, Dict[str, float]]] = None) -> List[DailyPortfolio]:
         """
         Calcula a série histórica de rentabilidade de uma turma.
+
+        Otimizado: pré-carrega todos os trades e preços históricos antes do loop,
+        evitando queries SQL e chamadas API repetidas por dia.
 
         Args:
             turma_id: ID da turma
             data_inicio: Data inicial (se None, usa data_inicio da turma)
             data_fim: Data final (se None, usa hoje)
+            precos_cache: Dict[coingecko_id, Dict[data, preco]] pré-carregado.
+                         Se fornecido, pula as chamadas à API CoinGecko.
+                         Útil para processar múltiplas turmas sem chamadas redundantes.
 
         Returns:
             Lista de DailyPortfolio ordenada por data
@@ -932,37 +1016,168 @@ class RentabilidadeService:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Obter data_inicio da turma se não especificada
-        if data_inicio is None:
-            cursor.execute("SELECT data_inicio FROM turmas WHERE id = ?", (turma_id,))
-            row = cursor.fetchone()
-            if row:
-                data_inicio = row['data_inicio']
-            else:
-                conn.close()
-                return []
+        # Obter data_inicio e capital_base da turma
+        cursor.execute("SELECT data_inicio, capital_base FROM turmas WHERE id = ?", (turma_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return []
 
-        # Usar hoje como data_fim se não especificada
+        if data_inicio is None:
+            data_inicio = row['data_inicio']
+        capital_base = float(row['capital_base']) if row['capital_base'] else 1500.0
+
         if data_fim is None:
             data_fim = datetime.now().strftime("%Y-%m-%d")
 
         conn.close()
 
-        # Gerar série de datas
+        # =====================================================================
+        # PRÉ-CARREGAR: todos os trades da turma (uma única query)
+        # =====================================================================
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                ct.trade_id,
+                ct.turma_id,
+                tt.posicao_id,
+                p.ativo,
+                p.side,
+                p.exchange_symbol,
+                p.coingecko_id,
+                ct.origem,
+                ct.data_insercao,
+                ct.data_remocao,
+                ct.preco_entrada_turma,
+                pap.quantidade,
+                p.preco_saida,
+                p.status as status_posicao,
+                COALESCE(prod.usa_quantidade, 0) as usa_quantidade
+            FROM carteira_turma ct
+            JOIN trades_turma tt ON ct.trade_id = tt.id
+            JOIN posicoes p ON tt.posicao_id = p.id
+            JOIN turmas t ON ct.turma_id = t.id
+            JOIN produtos prod ON t.produto_id = prod.id
+            LEFT JOIN posicao_atributos_produto pap ON p.id = pap.posicao_id
+            WHERE ct.turma_id = ?
+            AND date(ct.data_insercao) <= date(?)
+        """, (turma_id, data_fim))
+        todos_trades = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+
+        # =====================================================================
+        # PRÉ-CARREGAR: preços históricos via API (pula se cache externo)
+        # =====================================================================
+        if precos_cache is None:
+            coingecko_ids = list(set(
+                t['coingecko_id'] for t in todos_trades
+                if t.get('coingecko_id')
+            ))
+
+            dias_necessarios = (datetime.strptime(data_fim, "%Y-%m-%d") -
+                               datetime.strptime(data_inicio, "%Y-%m-%d")).days + 5
+            dias_api = min(dias_necessarios, 365)
+
+            precos_cache = self.cotacoes_service.obter_historicos_batch(
+                coingecko_ids, dias=dias_api
+            )
+
+            hoje = datetime.now().strftime("%Y-%m-%d")
+            precos_hoje = self.cotacoes_service.obter_precos_batch_coingecko(coingecko_ids)
+            for cg_id, preco in precos_hoje.items():
+                if cg_id not in precos_cache:
+                    precos_cache[cg_id] = {}
+                precos_cache[cg_id][hoje] = preco
+
+        # =====================================================================
+        # LOOP DIA-A-DIA: tudo em memória, sem queries
+        # =====================================================================
         current = datetime.strptime(data_inicio, "%Y-%m-%d")
         end = datetime.strptime(data_fim, "%Y-%m-%d")
 
         serie = []
         valor_anterior = None
+        pnl_fechado_acumulado = 0.0
 
         while current <= end:
             dia = current.strftime("%Y-%m-%d")
-            portfolio = self.calcular_portfolio_dia(turma_id, dia, valor_anterior)
+
+            portfolio = self.calcular_portfolio_dia(
+                turma_id, dia,
+                valor_anterior=valor_anterior,
+                precos_cache=precos_cache,
+                trades_prefetched=todos_trades,
+                capital_base_cache=capital_base,
+                pnl_fechado_anterior_override=pnl_fechado_acumulado
+            )
+
+            # Acumular PnL fechado para o próximo dia
+            pnl_fechado_acumulado = portfolio.pnl_fechado_acumulado
+
             serie.append(portfolio)
             valor_anterior = portfolio.valor_total
             current += timedelta(days=1)
 
         return serie
+
+    def construir_precos_cache(self, turma_ids: Optional[List[int]] = None,
+                               dias: int = 365) -> Dict[str, Dict[str, float]]:
+        """
+        Constrói cache de preços para múltiplas turmas em poucas chamadas API.
+
+        Coleta todos os coingecko_ids únicos de todas as turmas, busca histórico
+        e preço atual, e retorna um cache compartilhável.
+
+        Args:
+            turma_ids: Lista de IDs de turmas. Se None, usa todas as turmas.
+            dias: Dias de histórico a buscar (max 365).
+
+        Returns:
+            Dict[coingecko_id, Dict[data, preco]]
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        if turma_ids:
+            placeholders = ','.join('?' * len(turma_ids))
+            cursor.execute(f"""
+                SELECT DISTINCT p.coingecko_id
+                FROM carteira_turma ct
+                JOIN trades_turma tt ON ct.trade_id = tt.id
+                JOIN posicoes p ON tt.posicao_id = p.id
+                WHERE ct.turma_id IN ({placeholders})
+                AND p.coingecko_id IS NOT NULL
+            """, turma_ids)
+        else:
+            cursor.execute("""
+                SELECT DISTINCT p.coingecko_id
+                FROM carteira_turma ct
+                JOIN trades_turma tt ON ct.trade_id = tt.id
+                JOIN posicoes p ON tt.posicao_id = p.id
+                WHERE p.coingecko_id IS NOT NULL
+            """)
+
+        coingecko_ids = [row['coingecko_id'] for row in cursor.fetchall()]
+        conn.close()
+
+        if not coingecko_ids:
+            return {}
+
+        # Histórico (1 chamada por ativo)
+        precos_cache = self.cotacoes_service.obter_historicos_batch(
+            coingecko_ids, dias=min(dias, 365)
+        )
+
+        # Preço de hoje (1 chamada batch para todos)
+        hoje = datetime.now().strftime("%Y-%m-%d")
+        precos_hoje = self.cotacoes_service.obter_precos_batch_coingecko(coingecko_ids)
+        for cg_id, preco in precos_hoje.items():
+            if cg_id not in precos_cache:
+                precos_cache[cg_id] = {}
+            precos_cache[cg_id][hoje] = preco
+
+        return precos_cache
 
     def comparar_turmas(self, turma_ids: List[int],
                         data_inicio: Optional[str] = None,
@@ -973,10 +1188,13 @@ class RentabilidadeService:
         Returns:
             Dict mapeando turma_id -> lista de DailyPortfolio
         """
+        # Pré-carregar preços de todos os ativos de todas as turmas
+        precos_cache = self.construir_precos_cache(turma_ids)
+
         resultado = {}
         for turma_id in turma_ids:
             resultado[turma_id] = self.calcular_serie_rentabilidade(
-                turma_id, data_inicio, data_fim
+                turma_id, data_inicio, data_fim, precos_cache=precos_cache
             )
         return resultado
 
@@ -1156,8 +1374,8 @@ class RentabilidadeService:
         """
         Obtém resumo da rentabilidade de todas as turmas (sem histórico completo).
 
-        Versão otimizada que usa preços do banco e faz batch queries.
-        Para listagens e dashboards onde não precisa de precisão em tempo real.
+        Usa batch queries SQL + uma única chamada batch à API CoinGecko para
+        preços em tempo real. Mesma lógica de cálculo que calcular_portfolio_dia/resumo_turma.
 
         Args:
             produto_id: Filtrar por produto específico (opcional)
@@ -1210,7 +1428,7 @@ class RentabilidadeService:
 
         turma_ids = [t['turma_id'] for t in turmas]
 
-        # Buscar todos os trades ativos de todas as turmas de uma vez
+        # Buscar todos os trades de todas as turmas de uma vez (inclui coingecko_id)
         placeholders = ','.join('?' * len(turma_ids))
         cursor.execute(f"""
             SELECT
@@ -1221,10 +1439,11 @@ class RentabilidadeService:
                 ct.data_remocao,
                 p.side,
                 p.preco_saida,
+                p.coingecko_id,
                 pap.quantidade,
                 (SELECT preco FROM trade_valores_diarios
                  WHERE trade_id = ct.trade_id
-                 ORDER BY data DESC LIMIT 1) as ultimo_preco
+                 ORDER BY data DESC LIMIT 1) as ultimo_preco_db
             FROM carteira_turma ct
             JOIN trades_turma tt ON ct.trade_id = tt.id
             JOIN posicoes p ON tt.posicao_id = p.id
@@ -1234,13 +1453,28 @@ class RentabilidadeService:
         """, (*turma_ids, hoje))
 
         trades_por_turma = {}
+        coingecko_ids_necessarios = set()
         for row in cursor.fetchall():
             turma_id = row['turma_id']
             if turma_id not in trades_por_turma:
                 trades_por_turma[turma_id] = []
-            trades_por_turma[turma_id].append(dict(row))
+            trade = dict(row)
+            trades_por_turma[turma_id].append(trade)
+
+            # Coletar coingecko_ids de trades que precisam de preço em tempo real
+            data_remocao = trade.get('data_remocao')
+            precisa_preco_atual = (data_remocao is None or data_remocao >= hoje)
+            if precisa_preco_atual and trade.get('coingecko_id'):
+                coingecko_ids_necessarios.add(trade['coingecko_id'])
 
         conn.close()
+
+        # Buscar preços em tempo real via batch (uma única chamada API)
+        precos_realtime = {}
+        if coingecko_ids_necessarios:
+            precos_realtime = self.cotacoes_service.obter_precos_batch_coingecko(
+                list(coingecko_ids_necessarios)
+            )
 
         resultado = []
         for turma in turmas:
@@ -1255,7 +1489,6 @@ class RentabilidadeService:
             pnl_fechado = 0.0
 
             for trade in trades:
-                # Pular se produto não usa quantidade
                 if not usa_quantidade:
                     continue
 
@@ -1274,17 +1507,21 @@ class RentabilidadeService:
                 data_remocao = trade.get('data_remocao')
                 custo_inicial = preco_entrada * quantidade
 
-                # Trade ainda ativo ou fechado hoje
-                if data_remocao is None or data_remocao >= hoje:
-                    preco_atual = trade.get('ultimo_preco') or preco_entrada
+                # Resolver preço atual: API real-time > DB > preco_entrada
+                cg_id = trade.get('coingecko_id')
+                preco_atual = (
+                    precos_realtime.get(cg_id)
+                    or trade.get('ultimo_preco_db')
+                    or preco_entrada
+                )
 
+                if data_remocao is None or data_remocao >= hoje:
                     if data_remocao == hoje:
-                        # Fechado hoje - calcular PnL
-                        preco_saida = trade.get('preco_saida') or preco_atual
-                        if side == 'long':
-                            pnl_fechado += (preco_saida * quantidade) - custo_inicial
-                        else:
-                            pnl_fechado += custo_inicial - (preco_saida * quantidade)
+                        # Fechado hoje - usar preco_saida, fallback para cotação atual
+                        preco_saida = trade.get('preco_saida')
+                        if preco_saida is None or preco_saida <= 0:
+                            preco_saida = preco_atual
+                        pnl_fechado += self._calcular_pnl(side, preco_entrada, preco_saida, quantidade)
                     else:
                         # Ainda aberto
                         if side == 'long':
@@ -1295,24 +1532,24 @@ class RentabilidadeService:
                         capital_alocado += valor_mercado
                         custo_ativos += custo_inicial
                 else:
-                    # Trade fechado antes de hoje - calcular PnL
-                    preco_saida = trade.get('preco_saida') or preco_entrada
-                    if side == 'long':
-                        pnl_fechado += (preco_saida * quantidade) - custo_inicial
-                    else:
-                        pnl_fechado += custo_inicial - (preco_saida * quantidade)
+                    # Trade fechado antes de hoje
+                    preco_saida = trade.get('preco_saida')
+                    if preco_saida is None or preco_saida <= 0:
+                        preco_saida = preco_atual
+                    pnl_fechado += self._calcular_pnl(side, preco_entrada, preco_saida, quantidade)
 
             capital_em_caixa = capital_base - custo_ativos + pnl_fechado
             valor_total = capital_em_caixa + capital_alocado
             rentabilidade = ((valor_total / capital_base) - 1) * 100 if capital_base > 0 else 0
 
-            # Calcular rentab max/min (simplificado - usa valor atual)
             resultado.append({
                 'turma_id': turma_id,
                 'nome': turma['nome'],
                 'produto': turma['produto_nome'],
                 'data_inicio': turma['data_inicio'],
                 'capital_base': capital_base,
+                'trades_ativos': turma['trades_ativos'],
+                'trades_fechados': turma['trades_fechados'],
                 'rentabilidade_atual_pct': round(rentabilidade, 4),
                 'rentabilidade_acumulada_pct': round(rentabilidade, 4),
                 'rentabilidade_max_pct': round(rentabilidade, 4),  # Simplificado

@@ -249,6 +249,67 @@ class SQLiteRepo:
             if 'colunas_labels' not in colunas_viz:
                 cursor.execute("ALTER TABLE visualizacoes_config ADD COLUMN colunas_labels TEXT")
 
+            # ================================================================
+            # TABELAS DE TURMAS E RENTABILIDADE
+            # ================================================================
+
+            # Tabela de turmas (cohorts)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS turmas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    produto_id INTEGER NOT NULL,
+                    nome TEXT NOT NULL,
+                    data_inicio TEXT NOT NULL,
+                    capital_base REAL DEFAULT 1500.0,
+                    descricao TEXT,
+                    data_criacao TEXT,
+                    FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Tabela de trades por turma (junction table)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS trades_turma (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    turma_id INTEGER NOT NULL,
+                    posicao_id INTEGER NOT NULL,
+                    FOREIGN KEY (turma_id) REFERENCES turmas(id) ON DELETE CASCADE,
+                    FOREIGN KEY (posicao_id) REFERENCES posicoes(id) ON DELETE CASCADE,
+                    UNIQUE(turma_id, posicao_id)
+                )
+            """)
+
+            # Tabela de carteira por turma (estado de cada trade na turma)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS carteira_turma (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    turma_id INTEGER NOT NULL,
+                    trade_id INTEGER NOT NULL,
+                    origem TEXT NOT NULL CHECK(origem IN ('nativo', 'replicado')),
+                    data_insercao TEXT NOT NULL,
+                    data_remocao TEXT,
+                    preco_entrada_turma REAL,
+                    preco_fonte TEXT DEFAULT 'manual',
+                    preco_data_referencia TEXT,
+                    preco_moeda TEXT DEFAULT 'USD',
+                    ativo_atual INTEGER DEFAULT 1,
+                    FOREIGN KEY (turma_id) REFERENCES turmas(id) ON DELETE CASCADE,
+                    FOREIGN KEY (trade_id) REFERENCES trades_turma(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Tabela de valores diários por trade (histórico de preços)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS trade_valores_diarios (
+                    trade_id INTEGER NOT NULL,
+                    data TEXT NOT NULL,
+                    preco REAL NOT NULL,
+                    fonte TEXT,
+                    PRIMARY KEY (trade_id, data),
+                    FOREIGN KEY (trade_id) REFERENCES trades_turma(id) ON DELETE CASCADE
+                )
+            """)
+
             # Criar índices para performance
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto ON posicoes(produto_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_status ON posicoes(status)")
@@ -266,6 +327,16 @@ class SQLiteRepo:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_config_produto ON produto_atributos_config(produto_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_visualizacoes_produto ON visualizacoes_config(produto_id)")
 
+            # Índices para tabelas de turmas
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_turmas_produto ON turmas(produto_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_turmas_data_inicio ON turmas(data_inicio)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_turma_turma ON trades_turma(turma_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_turma_posicao ON trades_turma(posicao_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_carteira_turma_turma ON carteira_turma(turma_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_carteira_turma_turma_ativo ON carteira_turma(turma_id, ativo_atual)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_carteira_turma_trade ON carteira_turma(trade_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_valores_trade_data ON trade_valores_diarios(trade_id, data DESC)")
+
             # Habilitar WAL mode para melhor concorrência
             cursor.execute("PRAGMA journal_mode=WAL")
 
@@ -274,6 +345,31 @@ class SQLiteRepo:
 
             # Migrar usa_quantidade para produtos existentes
             self._migrar_usa_quantidade(conn)
+
+            # Migrar turmas: garantir coluna data_criacao (bases antigas podem não tê-la)
+            cursor.execute("PRAGMA table_info(turmas)")
+            colunas_turmas = [row[1] for row in cursor.fetchall()]
+            if 'data_criacao' not in colunas_turmas:
+                cursor.execute("ALTER TABLE turmas ADD COLUMN data_criacao TEXT")
+
+            # Migrar colunas de metadados de preço em carteira_turma
+            cursor.execute("PRAGMA table_info(carteira_turma)")
+            colunas_carteira = [row[1] for row in cursor.fetchall()]
+            if 'preco_fonte' not in colunas_carteira:
+                cursor.execute("ALTER TABLE carteira_turma ADD COLUMN preco_fonte TEXT DEFAULT 'manual'")
+            if 'preco_data_referencia' not in colunas_carteira:
+                cursor.execute("ALTER TABLE carteira_turma ADD COLUMN preco_data_referencia TEXT")
+            if 'preco_moeda' not in colunas_carteira:
+                cursor.execute("ALTER TABLE carteira_turma ADD COLUMN preco_moeda TEXT DEFAULT 'USD'")
+
+            # Corrigir metadados para rows pré-existentes (criados antes das novas colunas)
+            cursor.execute("""
+                UPDATE carteira_turma
+                SET preco_fonte = 'original',
+                    preco_data_referencia = data_insercao,
+                    preco_moeda = 'USD'
+                WHERE preco_data_referencia IS NULL
+            """)
     
     def _garantir_tipos_essenciais(self, conn=None):
         """Garante que os tipos essenciais (Perpétuos e Spot) sempre existam"""
