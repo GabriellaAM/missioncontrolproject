@@ -6,10 +6,15 @@ Replicates TradingView's ATR Trailing Stop indicator logic.
 """
 import pandas as pd
 import numpy as np
+import os
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Optional, Tuple
+from dotenv import load_dotenv
 
+# Load environment variables for API key (from project root)
+_project_root = Path(__file__).parent.parent.parent
+load_dotenv(_project_root / '.env')
 
 # Defaults matching TradingView indicator
 DEFAULT_ATR_PERIOD = 14
@@ -53,6 +58,231 @@ def ler_ohlc_parquet(coingecko_id: str) -> Optional[pd.DataFrame]:
     df = df.sort_values('timestamp').reset_index(drop=True)
 
     return df[required_cols]
+
+
+def buscar_ohlc_api(coingecko_id: str, days: int = 30) -> Optional[pd.DataFrame]:
+    """
+    Fetches OHLC data from CoinGecko API for recent days.
+
+    Args:
+        coingecko_id: CoinGecko asset identifier
+        days: Number of days to fetch (default: 30)
+              Note: CoinGecko API only accepts specific values: 1, 7, 14, 30, 90, 180, 365
+
+    Returns:
+        DataFrame with columns: timestamp, open, high, low, close
+        Returns None if API call fails
+    """
+    api_key = os.getenv('GECKO_API_KEY')
+    if not api_key:
+        return None
+
+    try:
+        from pycoingecko import CoinGeckoAPI
+        cg = CoinGeckoAPI(api_key=api_key)
+
+        # CoinGecko API only accepts specific day values
+        # Map requested days to nearest valid value
+        valid_days = [1, 7, 14, 30, 90, 180, 365]
+        api_days = min([d for d in valid_days if d >= days], default=30)
+
+        # Fetch OHLC data for the last N days
+        data = cg.get_coin_ohlc_by_id(
+            id=coingecko_id,
+            vs_currency='usd',
+            days=api_days
+        )
+
+        if not data:
+            return None
+
+        # Convert to DataFrame
+        # API returns: [[timestamp_ms, open, high, low, close], ...]
+        df = pd.DataFrame(data, columns=['timestamp_ms', 'open', 'high', 'low', 'close'])
+
+        # Convert timestamp from milliseconds to datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp_ms'], unit='ms')
+
+        # Keep only daily data (remove intraday duplicates by taking last of each day)
+        df['date'] = df['timestamp'].dt.date
+        df = df.groupby('date').last().reset_index()
+        df['timestamp'] = pd.to_datetime(df['date'])
+
+        # Select required columns
+        df = df[['timestamp', 'open', 'high', 'low', 'close']]
+        df = df.sort_values('timestamp').reset_index(drop=True)
+
+        return df
+
+    except Exception:
+        return None
+
+
+def buscar_ohlc_bitget(exchange_symbol: str, days: int = 90, product_type: str = "perpetuos") -> Optional[pd.DataFrame]:
+    """
+    Fetches OHLC data from Bitget API for perpetual futures or spot.
+    This provides the same data source as TradingView when using Bitget charts.
+
+    Uses the history-candles endpoint for more historical data (up to 200 candles per request).
+
+    Args:
+        exchange_symbol: Bitget symbol (e.g., 'SCRTUSDT', 'BTCUSDT')
+        days: Number of days to fetch (default: 90)
+        product_type: 'perpetuos' for futures, 'spot' for spot market
+
+    Returns:
+        DataFrame with columns: timestamp, open, high, low, close
+        Returns None if API call fails
+    """
+    import requests
+    import time as time_module
+
+    try:
+        # Select endpoint based on product type
+        if product_type == "spot":
+            url = "https://api.bitget.com/api/v2/spot/market/history-candles"
+        else:
+            url = "https://api.bitget.com/api/v2/mix/market/history-candles"
+
+        all_data = []
+
+        # For spot, we need to use endTime and work backwards
+        # For perpetuos, we use startTime/endTime range
+        end_time = datetime.now()
+        target_start = datetime.now() - timedelta(days=days)
+
+        while end_time > target_start:
+            if product_type == "spot":
+                # Spot API uses endTime and limit (no startTime)
+                params = {
+                    "symbol": exchange_symbol,
+                    "granularity": "1Dutc",  # UTC midnight candles
+                    "endTime": str(int(end_time.timestamp() * 1000)),
+                    "limit": "200"
+                }
+            else:
+                # Perpetuos API uses startTime/endTime range
+                start_time = end_time - timedelta(days=89)
+                if start_time < target_start:
+                    start_time = target_start
+
+                params = {
+                    "symbol": exchange_symbol,
+                    "productType": "USDT-FUTURES",
+                    "granularity": "1Dutc",  # UTC midnight candles (same as TradingView)
+                    "startTime": str(int(start_time.timestamp() * 1000)),
+                    "endTime": str(int(end_time.timestamp() * 1000)),
+                    "limit": "200"
+                }
+
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("code") != "00000":
+                break
+
+            data = result.get("data", [])
+            if not data:
+                break
+
+            all_data.extend(data)
+
+            if product_type == "spot":
+                # For spot, get the oldest timestamp and use it as next endTime
+                oldest_ts = min(int(d[0]) for d in data)
+                end_time = datetime.fromtimestamp(oldest_ts / 1000) - timedelta(days=1)
+            else:
+                # For perpetuos, move the window back
+                end_time = start_time - timedelta(days=1)
+
+            time_module.sleep(0.1)  # Rate limit
+
+        if not all_data:
+            return None
+
+        # Bitget returns: [timestamp, open, high, low, close, volume, quoteVolume, ...]
+        # Spot has 8 columns, Perpetuos has 7 - handle both
+        if len(all_data[0]) >= 7:
+            df = pd.DataFrame(all_data)
+            df.columns = ['timestamp_ms', 'open', 'high', 'low', 'close', 'volume', 'quote_volume'] + \
+                         [f'col{i}' for i in range(7, len(df.columns))]
+
+        # Convert types
+        df['timestamp'] = pd.to_datetime(df['timestamp_ms'].astype(int), unit='ms')
+        df['open'] = df['open'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df['close'] = df['close'].astype(float)
+
+        # Remove duplicates and sort
+        df = df.drop_duplicates(subset=['timestamp'])
+        df = df[['timestamp', 'open', 'high', 'low', 'close']]
+        df = df.sort_values('timestamp').reset_index(drop=True)
+
+        return df
+
+    except Exception:
+        return None
+
+
+def ler_ohlc_com_fallback(coingecko_id: str, data_entrada: str) -> Optional[pd.DataFrame]:
+    """
+    Reads OHLC data from Parquet, complementing with API if data is outdated.
+
+    This is the main function to get OHLC data - it combines:
+    1. Historical data from Parquet files
+    2. Recent data from CoinGecko API (when Parquet is outdated)
+
+    Args:
+        coingecko_id: CoinGecko asset identifier
+        data_entrada: Entry date (YYYY-MM-DD) - used to check if we need recent data
+
+    Returns:
+        DataFrame with columns: timestamp, open, high, low, close
+        Returns None if no data available
+    """
+    data_entrada_dt = pd.to_datetime(data_entrada)
+    ontem = datetime.now() - timedelta(days=1)
+
+    # Try to load from Parquet first
+    df_parquet = ler_ohlc_parquet(coingecko_id)
+
+    if df_parquet is None or df_parquet.empty:
+        # No Parquet data, try API only
+        df_api = buscar_ohlc_api(coingecko_id, days=60)
+        return df_api
+
+    # Check if Parquet has data up to at least yesterday
+    ultima_data_parquet = df_parquet['timestamp'].max()
+
+    # If Parquet is up to date (has data >= data_entrada), use it directly
+    if ultima_data_parquet >= data_entrada_dt:
+        return df_parquet
+
+    # Parquet is outdated, need to fetch recent data from API
+    dias_faltantes = (datetime.now() - ultima_data_parquet).days + 5  # +5 for safety margin
+    dias_faltantes = min(dias_faltantes, 90)  # Cap at 90 days
+
+    df_api = buscar_ohlc_api(coingecko_id, days=dias_faltantes)
+
+    if df_api is None or df_api.empty:
+        # API failed, return Parquet data anyway (better than nothing)
+        return df_parquet
+
+    # Merge Parquet + API data
+    # Keep Parquet data for historical, API for recent
+    df_combined = pd.concat([df_parquet, df_api], ignore_index=True)
+
+    # Remove duplicates (prefer API data for overlapping dates as it's more recent)
+    df_combined['date'] = df_combined['timestamp'].dt.date
+    df_combined = df_combined.drop_duplicates(subset=['date'], keep='last')
+    df_combined = df_combined.drop(columns=['date'])
+
+    # Sort and reset index
+    df_combined = df_combined.sort_values('timestamp').reset_index(drop=True)
+
+    return df_combined
 
 
 def calcular_rma(series: pd.Series, period: int) -> pd.Series:
@@ -208,17 +438,21 @@ def calcular_stop_para_posicao(
     side: str,
     data_entrada: str,
     atr_period: Optional[int] = None,
-    atr_multiplier: Optional[float] = None
+    atr_multiplier: Optional[float] = None,
+    exchange_symbol: Optional[str] = None,
+    product_type: str = "perpetuos"
 ) -> Tuple[Optional[float], bool, Optional[str]]:
     """
     High-level function to calculate stop for a position.
 
     Args:
-        coingecko_id: Asset identifier
+        coingecko_id: Asset identifier (used as fallback if exchange_symbol not provided)
         side: 'long' or 'short'
         data_entrada: Entry date (YYYY-MM-DD)
         atr_period: ATR lookback period (default: 14)
         atr_multiplier: ATR multiplier (default: 3.0)
+        exchange_symbol: Bitget exchange symbol (e.g., 'SCRTUSDT') - if provided, uses Bitget data
+        product_type: 'perpetuos' or 'spot' - determines which Bitget API to use
 
     Returns:
         Tuple of (stop_value, breached, error_message)
@@ -227,9 +461,16 @@ def calcular_stop_para_posicao(
     period = int(atr_period) if atr_period is not None else DEFAULT_ATR_PERIOD
     mult = float(atr_multiplier) if atr_multiplier is not None else DEFAULT_ATR_MULTIPLIER
 
-    # Load OHLC data
-    df = ler_ohlc_parquet(coingecko_id)
-    if df is None:
+    # Load OHLC data - prefer Bitget if exchange_symbol is provided
+    df = None
+    if exchange_symbol:
+        df = buscar_ohlc_bitget(exchange_symbol, days=180, product_type=product_type)
+
+    # Fallback to CoinGecko if Bitget fails or not configured
+    if df is None or df.empty:
+        df = ler_ohlc_com_fallback(coingecko_id, data_entrada)
+
+    if df is None or df.empty:
         return None, False, f"Dados não encontrados para {coingecko_id}"
 
     # Calculate stop
@@ -308,13 +549,31 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
         # Usar atr_data_inicio se disponível, senão data_entrada
         data_calculo = atr_data_inicio if (atr_data_inicio and not pd.isna(atr_data_inicio)) else data_entrada
 
+        # Get exchange_symbol for Bitget data
+        exchange_symbol = pos.get('exchange_symbol')
+        if exchange_symbol and pd.isna(exchange_symbol):
+            exchange_symbol = None
+
+        # Detect product type from produto_tipo field
+        produto_tipo = pos.get('produto_tipo', '')
+        if produto_tipo and not pd.isna(produto_tipo):
+            produto_tipo_lower = str(produto_tipo).lower()
+            if 'spot' in produto_tipo_lower:
+                product_type = 'spot'
+            else:
+                product_type = 'perpetuos'
+        else:
+            product_type = 'perpetuos'  # Default
+
         # Calculate new stop
         stop, breached, erro = calcular_stop_para_posicao(
             coingecko_id=coingecko_id,
             side=side,
             data_entrada=data_calculo,
             atr_period=atr_period,
-            atr_multiplier=atr_multiplier
+            atr_multiplier=atr_multiplier,
+            exchange_symbol=exchange_symbol,
+            product_type=product_type
         )
 
         if erro:
@@ -346,7 +605,7 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
                 resultado['updated'] += 1
                 if verbose:
                     if ultimo_stop is not None:
-                        print(f"  [{ativo}] Stop atualizado: {ultimo_stop:.4f} → {stop:.4f}")
+                        print(f"  [{ativo}] Stop atualizado: {ultimo_stop:.4f} -> {stop:.4f}")
                     else:
                         print(f"  [{ativo}] Stop criado: {stop:.4f}")
 

@@ -277,6 +277,20 @@ def posicoes_abertas(produto_id=None):
             price_map = _batch_load_prices(df['coingecko_id'].tolist())
         df['preco_atual'] = df['coingecko_id'].map(price_map)
 
+        # Sobrescrever preco_atual com dados da Bitget quando disponíveis
+        # Para perpétuos: preco_atual = entry + (pnl / qty) para LONG, entry - (pnl / qty) para SHORT
+        if 'pnl_exchange' in df.columns and 'preco_entrada_exchange' in df.columns:
+            for idx, row in df.iterrows():
+                pnl = row.get('pnl_exchange')
+                entry = row.get('preco_entrada_exchange')
+                qty = row.get('quantidade')
+                if pd.notna(pnl) and pd.notna(entry) and pd.notna(qty) and qty != 0:
+                    side = str(row.get('side', 'long')).lower()
+                    if side == 'short':
+                        df.at[idx, 'preco_atual'] = entry - (pnl / qty)
+                    else:
+                        df.at[idx, 'preco_atual'] = entry + (pnl / qty)
+
         # Para produtos Spot, calcular preco_atual_total (quantidade * preco_atual)
         if tipo_spot:
             precos_atuais_totais = []
