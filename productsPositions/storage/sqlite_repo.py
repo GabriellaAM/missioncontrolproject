@@ -208,6 +208,12 @@ class SQLiteRepo:
                 cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN quantidade REAL")
             if 'preco_entrada_total' not in colunas_atributos:
                 cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN preco_entrada_total REAL")
+            if 'preco_entrada_exchange' not in colunas_atributos:
+                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN preco_entrada_exchange REAL")
+            if 'pnl_exchange' not in colunas_atributos:
+                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN pnl_exchange REAL")
+            if 'leverage' not in colunas_atributos:
+                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN leverage INTEGER")
             # preco_saida_total foi removido - agora é calculado dinamicamente como quantidade * preco_saida
             # Nota: Colunas adicionais (como atr_period, atr_multiplier) são gerenciadas
             # dinamicamente através do sistema de atributos (produto_atributos_config)
@@ -1317,23 +1323,27 @@ class SQLiteRepo:
         return posicao_id
     
     def carregar_posicoes_abertas(self, produto_id=None):
-        """Carrega posições abertas com atributos do produto"""
+        """Carrega posições abertas com atributos do produto e tipo do produto"""
         conn = sqlite3.connect(self.db_path)
         try:
             if produto_id:
                 df = pd.read_sql_query("""
-                    SELECT p.*, 
-                           a.motivo, a.perfil, a.alvo1, a.alvo2
+                    SELECT p.*,
+                           a.motivo, a.perfil, a.alvo1, a.alvo2,
+                           pr.tipo as produto_tipo
                     FROM posicoes p
                     LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                    LEFT JOIN produtos pr ON p.produto_id = pr.id
                     WHERE p.status = 'open' AND p.produto_id = ?
                 """, conn, params=(produto_id,))
             else:
                 df = pd.read_sql_query("""
-                    SELECT p.*, 
-                           a.motivo, a.perfil, a.alvo1, a.alvo2
+                    SELECT p.*,
+                           a.motivo, a.perfil, a.alvo1, a.alvo2,
+                           pr.tipo as produto_tipo
                     FROM posicoes p
                     LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
+                    LEFT JOIN produtos pr ON p.produto_id = pr.id
                     WHERE p.status = 'open'
                 """, conn)
             return df

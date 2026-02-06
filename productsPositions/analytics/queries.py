@@ -277,6 +277,20 @@ def posicoes_abertas(produto_id=None):
             price_map = _batch_load_prices(df['coingecko_id'].tolist())
         df['preco_atual'] = df['coingecko_id'].map(price_map)
 
+        # Sobrescrever preco_atual com dados da Bitget quando disponíveis
+        # Para perpétuos: preco_atual = entry + (pnl / qty) para LONG, entry - (pnl / qty) para SHORT
+        if 'pnl_exchange' in df.columns and 'preco_entrada_exchange' in df.columns:
+            for idx, row in df.iterrows():
+                pnl = row.get('pnl_exchange')
+                entry = row.get('preco_entrada_exchange')
+                qty = row.get('quantidade')
+                if pd.notna(pnl) and pd.notna(entry) and pd.notna(qty) and qty != 0:
+                    side = str(row.get('side', 'long')).lower()
+                    if side == 'short':
+                        df.at[idx, 'preco_atual'] = entry - (pnl / qty)
+                    else:
+                        df.at[idx, 'preco_atual'] = entry + (pnl / qty)
+
         # Para produtos Spot, calcular preco_atual_total (quantidade * preco_atual)
         if tipo_spot:
             precos_atuais_totais = []
@@ -398,37 +412,45 @@ def posicoes_abertas(produto_id=None):
                 if ativo == 'USDT':
                     pnls_perpetuos.append(None)
                     continue
-                
+
                 quantidade = row.get('quantidade')
                 preco_entrada = row.get('preco_entrada')
+                preco_atual = row.get('preco_atual')
                 preco_saida_total = row.get('preco_saida_total')
                 side = str(row.get('side', 'long')).lower()
 
-                if pd.isna(quantidade) or pd.isna(preco_entrada) or pd.isna(preco_saida_total):
+                # Verificar se temos preco_entrada válido
+                if pd.isna(preco_entrada) or preco_entrada == 0:
                     pnls_perpetuos.append(None)
                     continue
 
-                # a = quantidade * preco_entrada
-                if quantidade is None or quantidade == 0:
+                # Se quantidade existe, usar fórmula com notional
+                if pd.notna(quantidade) and quantidade != 0 and pd.notna(preco_saida_total):
+                    a = quantidade * preco_entrada
+                    b = preco_saida_total
+
+                    if a == 0 or b == 0:
+                        pnls_perpetuos.append(None)
+                        continue
+
+                    try:
+                        pnl = ((b / a) - 1.0) * 100.0
+                        if side == 'short':
+                            pnl = -pnl
+                    except ZeroDivisionError:
+                        pnl = None
+                    pnls_perpetuos.append(pnl)
+                # Se não tem quantidade, calcular PnL simples com preço
+                elif pd.notna(preco_atual):
+                    try:
+                        pnl = ((preco_atual / preco_entrada) - 1.0) * 100.0
+                        if side == 'short':
+                            pnl = -pnl
+                    except ZeroDivisionError:
+                        pnl = None
+                    pnls_perpetuos.append(pnl)
+                else:
                     pnls_perpetuos.append(None)
-                    continue
-
-                a = quantidade * preco_entrada
-                b = preco_saida_total
-
-                if a == 0 or b == 0:
-                    pnls_perpetuos.append(None)
-                    continue
-
-                try:
-                    # Calcular como long (rendimento normal)
-                    pnl = ((b / a) - 1.0) * 100.0
-                    # Para short, inverter o sinal
-                    if side == 'short':
-                        pnl = -pnl
-                except ZeroDivisionError:
-                    pnl = None
-                pnls_perpetuos.append(pnl)
 
             df['pnl'] = pnls_perpetuos
         
@@ -591,19 +613,26 @@ def posicoes_fechadas(produto_id=None):
                 quantidade = row.get('quantidade')
                 preco_saida = row.get('preco_saida')
                 side = str(row.get('side', 'long')).lower()
+                # Se tem quantidade, usar fórmula com notional
                 if pd.notna(preco_entrada) and pd.notna(preco_saida) and pd.notna(quantidade) and quantidade != 0:
                     a = quantidade * preco_entrada
-                    b = quantidade * preco_saida  # preco_saida_total = quantidade * preco_saida
+                    b = quantidade * preco_saida
                     if a != 0 and b != 0:
                         try:
-                            # Calcular como long (rendimento normal)
                             pnl = ((b / a) - 1.0) * 100.0
-                            # Para short, inverter o sinal
                             if side == 'short':
                                 pnl = -pnl
                         except ZeroDivisionError:
                             pnl = None
                     else:
+                        pnl = None
+                # Se não tem quantidade, calcular PnL simples com preço
+                elif pd.notna(preco_entrada) and pd.notna(preco_saida) and preco_entrada != 0:
+                    try:
+                        pnl = ((preco_saida / preco_entrada) - 1.0) * 100.0
+                        if side == 'short':
+                            pnl = -pnl
+                    except ZeroDivisionError:
                         pnl = None
                 else:
                     pnl = None

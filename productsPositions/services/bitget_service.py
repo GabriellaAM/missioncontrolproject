@@ -352,21 +352,31 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
                 print(f"  [{ativo}] Não encontrado na exchange ({exchange_symbol} {side})")
             continue
 
-        # Update quantity in database
+        # Build update dict with all available exchange data
         new_qty = exchange_pos["quantity"]
-        current_qty = qty_map.get(posicao_id)
+        updates = {"quantidade": new_qty}
 
-        if current_qty != new_qty:
-            repo.atualizar_atributos_posicao(posicao_id, quantidade=new_qty)
-            resultado["synced"] += 1
-            if verbose:
-                if current_qty:
-                    print(f"  [{ativo}] Quantidade: {current_qty} -> {new_qty}")
-                else:
-                    print(f"  [{ativo}] Quantidade: {new_qty}")
-        else:
-            if verbose:
-                print(f"  [{ativo}] Quantidade inalterada: {new_qty}")
+        entry_price = exchange_pos.get("entry_price")
+        if entry_price:
+            updates["preco_entrada_exchange"] = entry_price
+
+        unrealized_pnl = exchange_pos.get("unrealized_pnl")
+        if unrealized_pnl is not None:
+            updates["pnl_exchange"] = unrealized_pnl
+
+        leverage = exchange_pos.get("leverage")
+        if leverage and leverage != 1:
+            updates["leverage"] = leverage
+
+        # Always update: pnl_exchange changes even if quantity is the same
+        current_qty = qty_map.get(posicao_id)
+        repo.atualizar_atributos_posicao(posicao_id, **updates)
+        resultado["synced"] += 1
+        if verbose:
+            if current_qty and current_qty != new_qty:
+                print(f"  [{ativo}] Quantidade: {current_qty} -> {new_qty}")
+            else:
+                print(f"  [{ativo}] Sincronizado (qty={new_qty})")
 
     return resultado
 

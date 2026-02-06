@@ -11,6 +11,7 @@ import json
 import urllib.parse
 from datetime import datetime, date
 import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 
 from storage.sqlite_repo import SQLiteRepo
@@ -37,6 +38,47 @@ from turmas_dashboard import (
     get_comparar_turmas_html,
     get_rentabilidade_historica_html
 )
+
+
+def atualizar_dados_produto(repo, produto_id: int) -> dict:
+    """
+    Atualiza dados do produto em paralelo (Bitget sync + ATR stops).
+    Executado automaticamente ao carregar a pagina do produto.
+
+    Returns:
+        dict com resultados: {bitget: {...}, atr: {...}}
+    """
+    resultado = {'bitget': None, 'atr': None}
+
+    def sync_bitget():
+        try:
+            return sync_positions_with_exchange(repo, produto_id, verbose=False)
+        except Exception as e:
+            print(f"[BITGET] Erro ao sincronizar produto {produto_id}: {e}")
+            return {'synced': 0, 'errors': [str(e)]}
+
+    def update_atr():
+        try:
+            return atualizar_stops_posicoes_abertas(repo=repo, produto_id=produto_id, verbose=False)
+        except Exception as e:
+            print(f"[ATR] Erro ao atualizar stops produto {produto_id}: {e}")
+            return {'updated': 0, 'errors': [str(e)]}
+
+    # Executa Bitget sync e ATR update em paralelo
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_bitget = executor.submit(sync_bitget)
+        future_atr = executor.submit(update_atr)
+
+        resultado['bitget'] = future_bitget.result()
+        resultado['atr'] = future_atr.result()
+
+    # Log resumido
+    if resultado['bitget'] and resultado['bitget'].get('synced', 0) > 0:
+        print(f"[BITGET] Produto {produto_id}: {resultado['bitget']['synced']} posicoes sincronizadas")
+    if resultado['atr'] and resultado['atr'].get('updated', 0) > 0:
+        print(f"[ATR] Produto {produto_id}: {resultado['atr']['updated']} stops atualizados")
+
+    return resultado
 
 
 # ============================================================
@@ -645,18 +687,11 @@ def get_produto_html(produto, visualizacoes, repo):
                     </div>
                 </div>
                 <div class="actions">
-                    <button class="btn btn-primary" onclick="atualizarDados()">Atualizar Dados</button>
                     <a href="/produto/{produto_id}/editar" class="btn btn-secondary">Editar Produto</a>
                     <a href="/produto/{produto_id}/visualizacoes" class="btn btn-secondary">Gerenciar Visualizacoes</a>
                     <a href="/produto/{produto_id}/atributos" class="btn btn-secondary">Gerenciar Atributos</a>
                 </div>
             </div>
-
-            <div id="loading" class="loading">
-                <div class="loading-spinner"></div>
-                <p>Atualizando dados...</p>
-            </div>
-            <div id="alert" class="alert"></div>
 
             <div class="tabs">{tabs_html}</div>
 
@@ -677,31 +712,6 @@ def get_produto_html(produto, visualizacoes, repo):
             </div>
         </div>
 
-        <script>
-            const produtoId = {produto_id};
-            async function atualizarDados() {{
-                const loading = document.getElementById('loading');
-                const alert = document.getElementById('alert');
-                loading.classList.add('show');
-                alert.classList.remove('show');
-                try {{
-                    const response = await fetch('/api/atualizar/' + produtoId);
-                    const data = await response.json();
-                    if (data.sucesso) {{
-                        alert.className = 'alert alert-success show';
-                        alert.textContent = 'Dados atualizados!';
-                        setTimeout(() => location.reload(), 1000);
-                    }} else {{
-                        throw new Error(data.erro);
-                    }}
-                }} catch (error) {{
-                    alert.className = 'alert alert-error show';
-                    alert.textContent = 'Erro: ' + error.message;
-                }} finally {{
-                    loading.classList.remove('show');
-                }}
-            }}
-        </script>
     </body>
     </html>
     """
@@ -759,18 +769,11 @@ def get_visualizacao_html(produto, visualizacao, df_viz):
                     </div>
                 </div>
                 <div class="actions">
-                    <button class="btn btn-primary" onclick="atualizarDados()">Atualizar Dados</button>
                     <a href="/produto/{produto_id}/editar" class="btn btn-secondary">Editar Produto</a>
                     <a href="/produto/{produto_id}/visualizacoes" class="btn btn-secondary">Gerenciar Visualizacoes</a>
                     <a href="/produto/{produto_id}/atributos" class="btn btn-secondary">Gerenciar Atributos</a>
                 </div>
             </div>
-
-            <div id="loading" class="loading">
-                <div class="loading-spinner"></div>
-                <p>Atualizando dados...</p>
-            </div>
-            <div id="alert" class="alert"></div>
 
             <div class="tabs">{tabs_html}</div>
 
@@ -791,31 +794,6 @@ def get_visualizacao_html(produto, visualizacao, df_viz):
             </div>
         </div>
 
-        <script>
-            const produtoId = {produto_id};
-            async function atualizarDados() {{
-                const loading = document.getElementById('loading');
-                const alert = document.getElementById('alert');
-                loading.classList.add('show');
-                alert.classList.remove('show');
-                try {{
-                    const response = await fetch('/api/atualizar/' + produtoId);
-                    const data = await response.json();
-                    if (data.sucesso) {{
-                        alert.className = 'alert alert-success show';
-                        alert.textContent = 'Dados atualizados!';
-                        setTimeout(() => location.reload(), 1000);
-                    }} else {{
-                        throw new Error(data.erro);
-                    }}
-                }} catch (error) {{
-                    alert.className = 'alert alert-error show';
-                    alert.textContent = 'Erro: ' + error.message;
-                }} finally {{
-                    loading.classList.remove('show');
-                }}
-            }}
-        </script>
     </body>
     </html>
     """
@@ -2793,12 +2771,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if posicao and posicao.get('coingecko_id'):
                         # Usar atr_data_inicio se disponível, senão data_entrada
                         data_calculo = atr_data_inicio or posicao['data_entrada']
+
+                        # Obter exchange_symbol para usar dados da Bitget (CoinGecko pode não ter OHLC)
+                        exchange_symbol = posicao.get('exchange_symbol')
+                        if exchange_symbol and str(exchange_symbol).lower() in ('none', 'nan', ''):
+                            exchange_symbol = None
+
+                        # Detectar tipo de produto (spot vs perpetuos)
+                        product_type = 'perpetuos'  # Default
+                        produto_info = repo.carregar_produto(posicao.get('produto_id'))
+                        if produto_info and produto_info.get('tipo'):
+                            tipo_str = str(produto_info['tipo']).lower()
+                            if 'spot' in tipo_str:
+                                product_type = 'spot'
+
                         stop, breached, erro = calcular_stop_para_posicao(
                             coingecko_id=posicao['coingecko_id'],
                             side=posicao['side'],
                             data_entrada=data_calculo,
                             atr_period=atr_period,
-                            atr_multiplier=atr_multiplier
+                            atr_multiplier=atr_multiplier,
+                            exchange_symbol=exchange_symbol,
+                            product_type=product_type
                         )
                         if breached:
                             # Salvar um valor especial para indicar que foi breached
@@ -3239,6 +3233,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                 return
 
                             # Ver visualizacao
+                            # Atualizar dados automaticamente em paralelo
+                            atualizar_dados_produto(repo, produto_id)
+
                             df = obter_dados_para_visualizacao(produto_id, viz)
                             df_viz = aplicar_visualizacao(df, viz)
                             self._send_html(get_visualizacao_html(produto, viz, df_viz))
@@ -3251,6 +3248,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # Posicoes abertas/fechadas (fallback sem visualizacoes)
                 if len(parts) >= 4 and parts[3] in ['abertas', 'fechadas']:
                     tipo = parts[3]
+
+                    # Atualizar dados automaticamente em paralelo (apenas para abertas)
+                    if tipo == 'abertas':
+                        atualizar_dados_produto(repo, produto_id)
+
                     visualizacoes = repo.listar_visualizacoes(produto_id)
 
                     if tipo == 'abertas':
@@ -3264,6 +3266,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
 
                 # Pagina do produto (default)
+                # Atualizar dados automaticamente (Bitget sync + ATR stops) em paralelo
+                atualizar_dados_produto(repo, produto_id)
+
                 visualizacoes = repo.listar_visualizacoes(produto_id)
                 self._send_html(get_produto_html(produto, visualizacoes, repo))
                 return
@@ -3574,23 +3579,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'sucesso': False, 'erro': str(e)}, 500)
             return
 
-        # API: Atualizar dados
+        # API: Atualizar dados (mantido para compatibilidade, usa funcao centralizada)
         if path.startswith('/api/atualizar/'):
             try:
                 produto_id = int(path.split('/')[-1])
-
-                # 1. Sync positions with Bitget (if configured)
-                try:
-                    bitget_result = sync_positions_with_exchange(repo, produto_id, verbose=False)
-                    if bitget_result["synced"] > 0:
-                        print(f"[BITGET] Produto {produto_id}: {bitget_result['synced']} posições sincronizadas")
-                except Exception as e:
-                    print(f"[BITGET] Erro ao sincronizar: {e}")
-
-                # 2. Update ATR trailing stops
-                resultado = atualizar_stops_posicoes_abertas(repo=repo, produto_id=produto_id, verbose=False)
-                print(f"[ATR] Produto {produto_id}: {resultado['updated']} stops atualizados")
-
+                atualizar_dados_produto(repo, produto_id)
                 self._send_json({'sucesso': True, 'timestamp': datetime.now().strftime("%d/%m/%Y %H:%M:%S")})
             except Exception as e:
                 self._send_json({'sucesso': False, 'erro': str(e)}, 500)
