@@ -2670,12 +2670,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if posicao and posicao.get('coingecko_id'):
                         # Usar atr_data_inicio se disponível, senão data_entrada
                         data_calculo = atr_data_inicio or posicao['data_entrada']
+
+                        # Obter exchange_symbol para usar dados da Bitget (CoinGecko pode não ter OHLC)
+                        exchange_symbol = posicao.get('exchange_symbol')
+                        if exchange_symbol and str(exchange_symbol).lower() in ('none', 'nan', ''):
+                            exchange_symbol = None
+
+                        # Detectar tipo de produto (spot vs perpetuos)
+                        product_type = 'perpetuos'  # Default
+                        produto_info = repo.carregar_produto(posicao.get('produto_id'))
+                        if produto_info and produto_info.get('tipo'):
+                            tipo_str = str(produto_info['tipo']).lower()
+                            if 'spot' in tipo_str:
+                                product_type = 'spot'
+
                         stop, breached, erro = calcular_stop_para_posicao(
                             coingecko_id=posicao['coingecko_id'],
                             side=posicao['side'],
                             data_entrada=data_calculo,
                             atr_period=atr_period,
-                            atr_multiplier=atr_multiplier
+                            atr_multiplier=atr_multiplier,
+                            exchange_symbol=exchange_symbol,
+                            product_type=product_type
                         )
                         if breached:
                             # Salvar um valor especial para indicar que foi breached

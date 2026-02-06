@@ -123,7 +123,8 @@ def buscar_ohlc_bitget(exchange_symbol: str, days: int = 90, product_type: str =
     Fetches OHLC data from Bitget API for perpetual futures or spot.
     This provides the same data source as TradingView when using Bitget charts.
 
-    Uses the history-candles endpoint for more historical data (up to 200 candles per request).
+    Uses the history-candles endpoint for historical data, plus the candles endpoint
+    for the current (incomplete) candle, matching TradingView's real-time behavior.
 
     Args:
         exchange_symbol: Bitget symbol (e.g., 'SCRTUSDT', 'BTCUSDT')
@@ -140,9 +141,11 @@ def buscar_ohlc_bitget(exchange_symbol: str, days: int = 90, product_type: str =
     try:
         # Select endpoint based on product type
         if product_type == "spot":
-            url = "https://api.bitget.com/api/v2/spot/market/history-candles"
+            history_url = "https://api.bitget.com/api/v2/spot/market/history-candles"
+            live_url = "https://api.bitget.com/api/v2/spot/market/candles"
         else:
-            url = "https://api.bitget.com/api/v2/mix/market/history-candles"
+            history_url = "https://api.bitget.com/api/v2/mix/market/history-candles"
+            live_url = "https://api.bitget.com/api/v2/mix/market/candles"
 
         all_data = []
 
@@ -175,7 +178,7 @@ def buscar_ohlc_bitget(exchange_symbol: str, days: int = 90, product_type: str =
                     "limit": "200"
                 }
 
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(history_url, params=params, timeout=10)
             response.raise_for_status()
             result = response.json()
 
@@ -219,6 +222,44 @@ def buscar_ohlc_bitget(exchange_symbol: str, days: int = 90, product_type: str =
         df = df.drop_duplicates(subset=['timestamp'])
         df = df[['timestamp', 'open', 'high', 'low', 'close']]
         df = df.sort_values('timestamp').reset_index(drop=True)
+
+        # Fetch current (incomplete) candle using the live candles endpoint
+        # This matches TradingView's real-time behavior
+        try:
+            if product_type == "spot":
+                live_params = {
+                    "symbol": exchange_symbol,
+                    "granularity": "1Dutc",
+                    "limit": "1"
+                }
+            else:
+                live_params = {
+                    "symbol": exchange_symbol,
+                    "productType": "USDT-FUTURES",
+                    "granularity": "1Dutc",
+                    "limit": "1"
+                }
+
+            live_response = requests.get(live_url, params=live_params, timeout=10)
+            live_response.raise_for_status()
+            live_result = live_response.json()
+
+            if live_result.get("code") == "00000" and live_result.get("data"):
+                live_candle = live_result["data"][0]
+                live_ts = pd.to_datetime(int(live_candle[0]), unit='ms')
+
+                # Only append if this candle is newer than the last history candle
+                if live_ts > df['timestamp'].max():
+                    live_row = pd.DataFrame({
+                        'timestamp': [live_ts],
+                        'open': [float(live_candle[1])],
+                        'high': [float(live_candle[2])],
+                        'low': [float(live_candle[3])],
+                        'close': [float(live_candle[4])]
+                    })
+                    df = pd.concat([df, live_row], ignore_index=True)
+        except Exception:
+            pass  # If live candle fetch fails, continue with history data only
 
         return df
 
