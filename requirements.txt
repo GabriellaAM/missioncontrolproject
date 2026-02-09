@@ -1,7 +1,6 @@
-# Dependencias do projeto (Render / Cloud)
+# Dependencias do projeto (Cloud - Vercel / Render)
 psycopg2-binary>=2.9.0
-pandas>=2.0.0
-numpy>=1.24.0
+pandas>=2.0.0,<3.0.0
+numpy>=1.24.0,<2.0.0
 requests>=2.28.0
 python-dotenv>=1.0.0
-pyarrow>=12.0.0

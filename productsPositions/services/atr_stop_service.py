@@ -44,7 +44,11 @@ def ler_ohlc_parquet(coingecko_id: str) -> Optional[pd.DataFrame]:
     if not parquet_path.exists():
         return None
 
-    df = pd.read_parquet(parquet_path)
+    try:
+        df = pd.read_parquet(parquet_path)
+    except ImportError:
+        # pyarrow nao disponivel na nuvem - usar API como fallback
+        return None
 
     # Ensure we have required columns
     required_cols = ['timestamp', 'open', 'high', 'low', 'close']
