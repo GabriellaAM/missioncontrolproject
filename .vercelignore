@@ -4,15 +4,16 @@ venv/
 __pycache__/
 
 # Dados e experimentos (nao necessarios na nuvem)
-data/
-data_parquet/
-mlruns/
-experiments/
-analysis/
-soros_features/
-soros_system/
-scripts/
-.claude/
+# NOTA: usar paths especificos para nao excluir productsPositions/scripts/
+/data/
+/data_parquet/
+/mlruns/
+/experiments/
+/analysis/
+/soros_features/
+/soros_system/
+/scripts/
+/.claude/
 
 # Arquivos de banco local
 *.db
