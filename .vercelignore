@@ -1,0 +1,43 @@
+# Ambiente virtual local
+venv/
+.venv/
+__pycache__/
+
+# Dados e experimentos (nao necessarios na nuvem)
+data/
+data_parquet/
+mlruns/
+experiments/
+analysis/
+soros_features/
+soros_system/
+scripts/
+.claude/
+
+# Arquivos de banco local
+*.db
+*.sqlite
+*.sqlite3
+
+# Arquivos parquet
+*.parquet
+
+# Git
+.git/
+
+# IDE
+.vscode/
+.cursor/
+.idea/
+
+# Docs e configs locais
+*.md
+bitbucket-pipelines.yml
+render.yaml
+LICENSE
+
+# Arquivos grandes desnecessarios
+*.pkl
+*.h5
+*.model
+*.joblib
