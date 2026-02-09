@@ -1,12 +1,30 @@
 {
-  "rewrites": [
+  "builds": [
     {
-      "source": "/api/check_stops",
-      "destination": "/api/check_stops"
+      "src": "api/index.py",
+      "use": "@vercel/python"
     },
     {
-      "source": "/(.*)",
-      "destination": "/api/index"
+      "src": "api/check_stops.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "api/test.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/test",
+      "dest": "/api/test"
+    },
+    {
+      "src": "/api/check_stops",
+      "dest": "/api/check_stops"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/index"
     }
   ],
   "crons": [
