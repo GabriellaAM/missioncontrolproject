@@ -31,7 +31,8 @@ def _listar_posicoes_do_produto(repo: SQLiteRepo, produto_id: int):
     import psycopg2
     import pandas as pd
 
-    conn = psycopg2.connect(repo.db_url)
+    from storage.sqlite_repo import connect_pg
+    conn = connect_pg(repo.db_url)
     try:
         df = pd.read_sql_query(
             """

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 from services.cotacoes_service import CotacoesService
+from storage.sqlite_repo import connect_pg
 
 
 @dataclass
@@ -56,7 +57,7 @@ class TurmasService:
         self.db_url = os.getenv('SUPABASE_DB_URL')
 
     def _get_connection(self):
-        conn = psycopg2.connect(self.db_url)
+        conn = connect_pg(self.db_url)
         return conn
 
     # ================================================================

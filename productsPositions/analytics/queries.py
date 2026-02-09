@@ -2,7 +2,7 @@ import pandas as pd
 import psycopg2
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from storage.sqlite_repo import SQLiteRepo
+from storage.sqlite_repo import SQLiteRepo, connect_pg
 from services.valor_diario_service import ValorDiarioService
 from services.atr_stop_service import atualizar_stops_posicoes_abertas
 from services.bitget_service import sync_positions_with_exchange, get_bitget_credentials
@@ -31,7 +31,7 @@ def _batch_load_stops(repo, posicao_ids: list) -> dict:
         )
     """
 
-    conn = psycopg2.connect(repo.db_url)
+    conn = connect_pg(repo.db_url)
     try:
         cursor = conn.cursor()
         cursor.execute(query, posicao_ids)
@@ -100,7 +100,7 @@ def _batch_load_allocations(repo, produto_id: int, ativos: list) -> dict:
         WHERE rn = 1 AND ativo IN ({placeholders})
     """
 
-    conn = psycopg2.connect(repo.db_url)
+    conn = connect_pg(repo.db_url)
     try:
         cursor = conn.cursor()
         cursor.execute(query, [produto_id] + ativos_upper)
@@ -177,7 +177,7 @@ def posicoes_abertas(produto_id=None):
     # Detectar tipo de produto (com cache)
     tipo_spot, tipo_perpetuos = _get_product_type(repo, produto_id)
 
-    conn = psycopg2.connect(repo.db_url)
+    conn = connect_pg(repo.db_url)
     try:
         if produto_id:
             if produto_id == 4970919917:
@@ -251,7 +251,7 @@ def posicoes_abertas(produto_id=None):
 
     # Reload positions after Bitget sync to get updated quantities
     if bitget_ran:
-        conn = psycopg2.connect(repo.db_url)
+        conn = connect_pg(repo.db_url)
         try:
             query = """
                 SELECT
@@ -480,7 +480,7 @@ def posicoes_fechadas(produto_id=None):
     # Detectar tipo de produto (com cache)
     tipo_spot, tipo_perpetuos = _get_product_type(repo, produto_id)
 
-    conn = psycopg2.connect(repo.db_url)
+    conn = connect_pg(repo.db_url)
     try:
         if produto_id:
             if produto_id == 4970919917:
@@ -696,7 +696,7 @@ def manutencoes_signals(produto_id=4970919917):
 
     repo = SQLiteRepo()
     import psycopg2
-    conn = psycopg2.connect(repo.db_url)
+    conn = connect_pg(repo.db_url)
 
     try:
         # Selecionar todas as posições abertas do produto e seus stops (exceto o primeiro stop)
@@ -846,7 +846,7 @@ def alocacoes_da_posicao(posicao_id):
     """Retorna alocações de uma posição específica"""
     repo = SQLiteRepo()
     import psycopg2
-    conn = psycopg2.connect(repo.db_url)
+    conn = connect_pg(repo.db_url)
     try:
         df = pd.read_sql_query("""
             SELECT * FROM alocacoes 

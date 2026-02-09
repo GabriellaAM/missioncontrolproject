@@ -99,7 +99,8 @@ def listar_posicoes_por_produto(status='open'):
 
     load_dotenv(Path(__file__).parent.parent.parent / '.env')
     db_url = os.getenv('SUPABASE_DB_URL')
-    conn = psycopg2.connect(db_url)
+    from storage.sqlite_repo import connect_pg
+    conn = connect_pg(db_url)
 
     status_filter = ""
     if status == 'open':

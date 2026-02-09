@@ -1,0 +1,43 @@
+# =============================================================
+# Bitbucket Pipelines - Verificação automática de stops
+# =============================================================
+# Schedule: configurar no Bitbucket como "Hourly" apontando para
+# o pipeline custom "verificar-stops" na branch desejada.
+#
+# O script só executa efetivamente a cada 4h (00,04,08,12,16,20 UTC).
+# Nas outras horas, faz exit imediato (~5s).
+#
+# Pré-requisito: criar Repository Variable "ENV_FILE" (Secured)
+# com o conteúdo do arquivo .env local.
+# =============================================================
+
+pipelines:
+  custom:
+    verificar-stops:
+      - step:
+          name: Verificar Stops ATR
+          image: python:3.12
+          script:
+            # 1. Escrever .env a partir do secret
+            - echo "$ENV_FILE" > .env
+
+            # 2. Instalar dependências
+            - pip install -q -r productsPositions/requirements.txt requests python-dotenv
+
+            # 3. Rodar verificação de stops
+            - cd productsPositions/scripts
+            - python verificar_stops_nuvem.py
+
+            # 4. Se houve mudança no DB (stop atingido), fazer commit + push
+            - cd ../..
+            - |
+              if git diff --quiet productsPositions/data/products_positions.db; then
+                echo "Nenhuma alteração no DB."
+              else
+                echo "DB alterado - fazendo commit..."
+                git config user.email "pipeline@missioncontrol.auto"
+                git config user.name "MissionControl Pipeline"
+                git add productsPositions/data/products_positions.db
+                git commit -m "auto: stop atingido - atualização do DB via pipeline"
+                git push origin HEAD
+              fi

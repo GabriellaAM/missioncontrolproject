@@ -30,6 +30,7 @@ from enum import Enum
 from dotenv import load_dotenv
 
 from .cotacoes_service import CotacoesService
+from storage.sqlite_repo import connect_pg
 
 _project_root = Path(__file__).parent.parent.parent
 load_dotenv(_project_root / '.env')
@@ -370,7 +371,7 @@ class RentabilidadeService:
         Raises:
             psycopg2.Error: Se não conseguir conectar
         """
-        return psycopg2.connect(self.db_url)
+        return connect_pg(self.db_url)
 
     def _get_connection_safe(self) -> Tuple[Optional[Any], Optional[Erro]]:
         """
@@ -380,7 +381,7 @@ class RentabilidadeService:
             Tuple (conexão ou None, erro ou None)
         """
         try:
-            conn = psycopg2.connect(self.db_url)
+            conn = connect_pg(self.db_url)
             return conn, None
         except psycopg2.Error as e:
             return None, Erro(

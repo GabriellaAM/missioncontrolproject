@@ -49,8 +49,8 @@ def main():
     print(f"  Capital inicial: ${capital:,.2f}")
 
     # Contar dados associados
-    import psycopg2
-    conn = psycopg2.connect(repo.db_url)
+    from storage.sqlite_repo import connect_pg
+    conn = connect_pg(repo.db_url)
     cursor = conn.cursor()
 
     cursor.execute("SELECT COUNT(*) FROM posicoes WHERE produto_id = %s", (produto_id,))

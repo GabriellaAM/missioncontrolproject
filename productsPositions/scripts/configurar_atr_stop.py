@@ -26,7 +26,8 @@ def main():
 
     imprimir_secao("POSICOES ABERTAS (por produto)")
 
-    conn = psycopg2.connect(repo.db_url)
+    from storage.sqlite_repo import connect_pg
+    conn = connect_pg(repo.db_url)
     df_posicoes = pd.read_sql_query('''
         SELECT p.id, p.ativo, p.side, p.data_entrada, p.preco_entrada,
                p.coingecko_id, p.atr_period, p.atr_multiplier,

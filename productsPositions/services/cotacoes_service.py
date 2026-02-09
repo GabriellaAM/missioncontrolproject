@@ -12,6 +12,7 @@ E atualiza a tabela trade_valores_diarios.
 import psycopg2
 import psycopg2.extras
 import requests
+from storage.sqlite_repo import connect_pg
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -63,7 +64,7 @@ class CotacoesService:
         cls._precos_atuais_cache_ts = time.time()
 
     def _get_connection(self):
-        return psycopg2.connect(self.db_url)
+        return connect_pg(self.db_url)
 
     # ================================================================
     # BINANCE

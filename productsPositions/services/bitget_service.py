@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 from dotenv import load_dotenv
+from storage.sqlite_repo import connect_pg
 
 
 # Load .env from MissionControl root
@@ -236,7 +237,6 @@ def fetch_spot_positions(credentials: Dict[str, str]) -> List[Dict]:
 
 def _batch_load_quantities(repo, posicao_ids: List[int]) -> Dict[int, float]:
     """Batch load quantities for multiple positions in a single query."""
-    import psycopg2
     if not posicao_ids:
         return {}
 
@@ -247,7 +247,7 @@ def _batch_load_quantities(repo, posicao_ids: List[int]) -> Dict[int, float]:
         WHERE posicao_id IN ({placeholders})
     """
 
-    conn = psycopg2.connect(repo.db_url)
+    conn = connect_pg(repo.db_url)
     try:
         cursor = conn.cursor()
         cursor.execute(query, posicao_ids)

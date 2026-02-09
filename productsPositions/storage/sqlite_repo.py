@@ -4,17 +4,41 @@ import pandas as pd
 import uuid
 import os
 import socket
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
 from contextlib import contextmanager
 from dotenv import load_dotenv
 
-# Forcar IPv4 para conexoes PostgreSQL (Render free nao suporta IPv6)
-_original_getaddrinfo = socket.getaddrinfo
-def _getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
-    return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-socket.getaddrinfo = _getaddrinfo_ipv4
+
+def _resolver_ipv4_do_host(db_url: str) -> str:
+    """
+    Resolve o hostname da URL do PostgreSQL para IPv4 e retorna o IP.
+    psycopg2 usa libpq (C), que ignora monkey-patches do Python no socket.
+    Por isso resolvemos manualmente e passamos o IP via hostaddr.
+    """
+    match = re.search(r'@([^:/@]+)', db_url)
+    if match:
+        hostname = match.group(1)
+        try:
+            resultado = socket.getaddrinfo(hostname, None, socket.AF_INET)
+            if resultado:
+                return resultado[0][4][0]  # endereco IPv4
+        except Exception:
+            pass
+    return None
+
+
+def connect_pg(db_url, **kwargs):
+    """
+    Wrapper para psycopg2.connect que forca IPv4.
+    Usar em vez de psycopg2.connect(db_url) em todo o projeto.
+    """
+    hostaddr = _resolver_ipv4_do_host(db_url)
+    if hostaddr:
+        return psycopg2.connect(db_url, hostaddr=hostaddr, **kwargs)
+    return psycopg2.connect(db_url, **kwargs)
 
 # Carregar .env do root do projeto
 _project_root = Path(__file__).parent.parent.parent
@@ -44,7 +68,7 @@ class SQLiteRepo:
     @contextmanager
     def _get_connection(self):
         """Context manager para conexoes PostgreSQL com commit automatico"""
-        conn = psycopg2.connect(self.db_url)
+        conn = connect_pg(self.db_url)
         try:
             yield conn
             conn.commit()
