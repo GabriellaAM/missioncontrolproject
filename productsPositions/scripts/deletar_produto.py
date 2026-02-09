@@ -49,33 +49,33 @@ def main():
     print(f"  Capital inicial: ${capital:,.2f}")
 
     # Contar dados associados
-    import sqlite3
-    conn = sqlite3.connect(repo.db_path)
+    import psycopg2
+    conn = psycopg2.connect(repo.db_url)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*) FROM posicoes WHERE produto_id = ?", (produto_id,))
+    cursor.execute("SELECT COUNT(*) FROM posicoes WHERE produto_id = %s", (produto_id,))
     count_posicoes = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM alocacoes WHERE produto_id = ?", (produto_id,))
+    cursor.execute("SELECT COUNT(*) FROM alocacoes WHERE produto_id = %s", (produto_id,))
     count_alocacoes = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM carteiras WHERE produto_id = ?", (produto_id,))
+    cursor.execute("SELECT COUNT(*) FROM carteiras WHERE produto_id = %s", (produto_id,))
     count_carteiras = cursor.fetchone()[0]
 
     cursor.execute("""
         SELECT COUNT(*) FROM stops s
         JOIN posicoes p ON s.posicao_id = p.id
-        WHERE p.produto_id = ?
+        WHERE p.produto_id = %s
     """, (produto_id,))
     count_stops = cursor.fetchone()[0]
 
     cursor.execute("""
         SELECT COUNT(*) FROM posicao_atributos_produto
-        WHERE produto_id = ?
+        WHERE produto_id = %s
     """, (produto_id,))
     count_atributos = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM visualizacoes_config WHERE produto_id = ?", (produto_id,))
+    cursor.execute("SELECT COUNT(*) FROM visualizacoes_config WHERE produto_id = %s", (produto_id,))
     count_visualizacoes = cursor.fetchone()[0]
 
     conn.close()

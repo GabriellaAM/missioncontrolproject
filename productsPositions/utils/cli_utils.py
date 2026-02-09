@@ -92,11 +92,14 @@ def listar_posicoes_por_produto(status='open'):
     Returns:
         list: Lista de IDs de todas as posições listadas
     """
-    import sqlite3
+    import psycopg2
+    import os
     from pathlib import Path
+    from dotenv import load_dotenv
 
-    db_path = Path(__file__).parent.parent / "data" / "products_positions.db"
-    conn = sqlite3.connect(db_path)
+    load_dotenv(Path(__file__).parent.parent.parent / '.env')
+    db_url = os.getenv('SUPABASE_DB_URL')
+    conn = psycopg2.connect(db_url)
 
     status_filter = ""
     if status == 'open':

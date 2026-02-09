@@ -15,7 +15,7 @@ from services.atr_stop_service import (
     DEFAULT_ATR_MULTIPLIER,
     calcular_stop_para_posicao
 )
-import sqlite3
+import psycopg2
 import pandas as pd
 
 
@@ -24,10 +24,9 @@ def main():
 
     repo = SQLiteRepo()
 
-    # Listar posições abertas agrupadas por produto
-    imprimir_secao("POSIÇÕES ABERTAS (por produto)")
+    imprimir_secao("POSICOES ABERTAS (por produto)")
 
-    conn = sqlite3.connect(repo.db_path)
+    conn = psycopg2.connect(repo.db_url)
     df_posicoes = pd.read_sql_query('''
         SELECT p.id, p.ativo, p.side, p.data_entrada, p.preco_entrada,
                p.coingecko_id, p.atr_period, p.atr_multiplier,

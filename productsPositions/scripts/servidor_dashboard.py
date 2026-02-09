@@ -27,6 +27,7 @@ from analytics.notebook_utils import (
 )
 from services.atr_stop_service import atualizar_stops_posicoes_abertas, calcular_stop_para_posicao
 from services.bitget_service import sync_positions_with_exchange
+from services.notificacao_service import notificar_stop_atingido
 from services.turmas_service import TurmasService
 from services.rentabilidade_service import RentabilidadeService
 from services.cotacoes_service import CotacoesService
@@ -2799,6 +2800,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             hoje = dt_date.today().strftime('%Y-%m-%d')
                             repo.adicionar_stop_posicao(posicao_id, hoje, -1)  # -1 indica breached
                             mensagem = 'ATR configurado - STOP ATINGIDO!'
+                            # Enviar notificação por e-mail
+                            try:
+                                nome_produto = produto_info['nome'] if produto_info else "Desconhecido"
+                                notificar_stop_atingido(
+                                    ativo=posicao['ativo'],
+                                    side=posicao['side'],
+                                    preco_entrada=posicao.get('preco_entrada'),
+                                    produto_nome=nome_produto,
+                                    data_entrada=posicao.get('data_entrada')
+                                )
+                            except Exception as e:
+                                print(f"[Dashboard] Erro ao enviar e-mail de stop: {e}")
                         elif stop is not None:
                             hoje = dt_date.today().strftime('%Y-%m-%d')
                             repo.adicionar_stop_posicao(posicao_id, hoje, stop)

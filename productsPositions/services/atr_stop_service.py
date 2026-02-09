@@ -11,6 +11,7 @@ from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import Optional, Tuple
 from dotenv import load_dotenv
+from services.notificacao_service import notificar_stop_atingido
 
 # Load environment variables for API key (from project root)
 _project_root = Path(__file__).parent.parent.parent
@@ -629,6 +630,21 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
             repo.adicionar_stop_posicao(posicao_id, hoje, -1)
             if verbose:
                 print(f"  [{ativo}] STOP ATINGIDO!")
+            # Enviar notificação por e-mail
+            try:
+                produto_id_pos = pos.get('produto_id')
+                produto_info = repo.carregar_produto(produto_id_pos) if produto_id_pos else None
+                nome_produto = produto_info['nome'] if produto_info else "Desconhecido"
+                notificar_stop_atingido(
+                    ativo=ativo,
+                    side=side,
+                    preco_entrada=pos.get('preco_entrada'),
+                    produto_nome=nome_produto,
+                    data_entrada=data_entrada
+                )
+            except Exception as e:
+                if verbose:
+                    print(f"  [{ativo}] Erro ao enviar e-mail: {e}")
             continue
 
         if stop is not None:

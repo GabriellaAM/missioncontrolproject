@@ -1,5 +1,5 @@
 import pandas as pd
-import sqlite3
+import psycopg2
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from storage.sqlite_repo import SQLiteRepo
@@ -7,7 +7,7 @@ from services.valor_diario_service import ValorDiarioService
 from services.atr_stop_service import atualizar_stops_posicoes_abertas
 from services.bitget_service import sync_positions_with_exchange, get_bitget_credentials
 
-# Queries usando SQLite
+# Queries usando PostgreSQL (psycopg2)
 
 # ============================================================
 # HELPER FUNCTIONS FOR BATCH LOADING (Performance Optimization)
@@ -21,7 +21,7 @@ def _batch_load_stops(repo, posicao_ids: list) -> dict:
     if not posicao_ids:
         return {}
 
-    placeholders = ','.join(['?' for _ in posicao_ids])
+    placeholders = ','.join(['%s' for _ in posicao_ids])
     query = f"""
         SELECT posicao_id, valor
         FROM stops s1
@@ -31,7 +31,7 @@ def _batch_load_stops(repo, posicao_ids: list) -> dict:
         )
     """
 
-    conn = sqlite3.connect(repo.db_path)
+    conn = psycopg2.connect(repo.db_url)
     try:
         cursor = conn.cursor()
         cursor.execute(query, posicao_ids)
@@ -78,7 +78,7 @@ def _batch_load_allocations(repo, produto_id: int, ativos: list) -> dict:
     if not ativos_upper:
         return {}
 
-    placeholders = ','.join(['?' for _ in ativos_upper])
+    placeholders = ','.join(['%s' for _ in ativos_upper])
 
     # Use CTE with ROW_NUMBER to get latest allocation per ativo efficiently
     # This avoids the O(n²) correlated subquery
@@ -93,14 +93,14 @@ def _batch_load_allocations(repo, produto_id: int, ativos: list) -> dict:
                 ) as rn
             FROM alocacoes a
             JOIN posicoes p ON a.posicao_id = p.id
-            WHERE p.produto_id = ?
+            WHERE p.produto_id = %s
         )
         SELECT ativo, percentual
         FROM ranked_allocations
         WHERE rn = 1 AND ativo IN ({placeholders})
     """
 
-    conn = sqlite3.connect(repo.db_path)
+    conn = psycopg2.connect(repo.db_url)
     try:
         cursor = conn.cursor()
         cursor.execute(query, [produto_id] + ativos_upper)
@@ -177,7 +177,7 @@ def posicoes_abertas(produto_id=None):
     # Detectar tipo de produto (com cache)
     tipo_spot, tipo_perpetuos = _get_product_type(repo, produto_id)
 
-    conn = sqlite3.connect(repo.db_path)
+    conn = psycopg2.connect(repo.db_url)
     try:
         if produto_id:
             if produto_id == 4970919917:
@@ -187,7 +187,7 @@ def posicoes_abertas(produto_id=None):
                            a.motivo, a.perfil, a.alvo1, a.alvo2
                     FROM posicoes p
                     LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
-                    WHERE p.status = 'open' AND p.produto_id = ?
+                    WHERE p.status = 'open' AND p.produto_id = %s
                 """
                 df = pd.read_sql_query(query, conn, params=(produto_id,))
             else:
@@ -203,7 +203,7 @@ def posicoes_abertas(produto_id=None):
                         a.alvo2
                     FROM posicoes p
                     LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
-                    WHERE p.status = 'open' AND p.produto_id = ?
+                    WHERE p.status = 'open' AND p.produto_id = %s
                 """
                 df = pd.read_sql_query(query, conn, params=(produto_id,))
         else:
@@ -251,7 +251,7 @@ def posicoes_abertas(produto_id=None):
 
     # Reload positions after Bitget sync to get updated quantities
     if bitget_ran:
-        conn = sqlite3.connect(repo.db_path)
+        conn = psycopg2.connect(repo.db_url)
         try:
             query = """
                 SELECT
@@ -264,7 +264,7 @@ def posicoes_abertas(produto_id=None):
                     a.alvo2
                 FROM posicoes p
                 LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
-                WHERE p.status = 'open' AND p.produto_id = ?
+                WHERE p.status = 'open' AND p.produto_id = %s
             """
             df = pd.read_sql_query(query, conn, params=(produto_id,))
         finally:
@@ -480,7 +480,7 @@ def posicoes_fechadas(produto_id=None):
     # Detectar tipo de produto (com cache)
     tipo_spot, tipo_perpetuos = _get_product_type(repo, produto_id)
 
-    conn = sqlite3.connect(repo.db_path)
+    conn = psycopg2.connect(repo.db_url)
     try:
         if produto_id:
             if produto_id == 4970919917:
@@ -490,7 +490,7 @@ def posicoes_fechadas(produto_id=None):
                            a.motivo, a.perfil, a.alvo1, a.alvo2
                     FROM posicoes p
                     LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
-                    WHERE p.status = 'closed' AND p.produto_id = ?
+                    WHERE p.status = 'closed' AND p.produto_id = %s
                 """
                 df = pd.read_sql_query(query, conn, params=(produto_id,))
             else:
@@ -507,7 +507,7 @@ def posicoes_fechadas(produto_id=None):
                         a.alvo2
                     FROM posicoes p
                     LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
-                    WHERE p.status = 'closed' AND p.produto_id = ?
+                    WHERE p.status = 'closed' AND p.produto_id = %s
                 """
                 df = pd.read_sql_query(query, conn, params=(produto_id,))
         else:
@@ -695,8 +695,8 @@ def manutencoes_signals(produto_id=4970919917):
         ])
 
     repo = SQLiteRepo()
-    import sqlite3
-    conn = sqlite3.connect(repo.db_path)
+    import psycopg2
+    conn = psycopg2.connect(repo.db_url)
 
     try:
         # Selecionar todas as posições abertas do produto e seus stops (exceto o primeiro stop)
@@ -718,7 +718,7 @@ def manutencoes_signals(produto_id=4970919917):
             LEFT JOIN posicao_atributos_produto a 
                 ON a.posicao_id = p.id
             WHERE 
-                p.produto_id = ?
+                p.produto_id = %s
                 AND p.status = 'open'
                 -- Apenas manutenções (ignora o primeiro stop da posição)
                 AND s.data > (
@@ -845,12 +845,12 @@ def alocacoes_do_produto(produto_id):
 def alocacoes_da_posicao(posicao_id):
     """Retorna alocações de uma posição específica"""
     repo = SQLiteRepo()
-    import sqlite3
-    conn = sqlite3.connect(repo.db_path)
+    import psycopg2
+    conn = psycopg2.connect(repo.db_url)
     try:
         df = pd.read_sql_query("""
             SELECT * FROM alocacoes 
-            WHERE posicao_id = ? AND status = 'active'
+            WHERE posicao_id = %s AND status = 'active'
         """, conn, params=(posicao_id,))
         return df
     finally:
@@ -866,7 +866,7 @@ def resumo_alocacoes(produto_id):
             SELECT a.*, p.ativo, p.side
             FROM alocacoes a
             INNER JOIN posicoes p ON a.posicao_id = p.id
-            WHERE a.produto_id = ? AND a.status = 'active'
+            WHERE a.produto_id = %s AND a.status = 'active'
             ORDER BY a.percentual DESC
         """, conn, params=(produto_id,))
     

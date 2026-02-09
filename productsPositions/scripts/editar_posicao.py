@@ -28,10 +28,10 @@ def _listar_produtos(repo: SQLiteRepo):
 
 
 def _listar_posicoes_do_produto(repo: SQLiteRepo, produto_id: int):
-    import sqlite3
+    import psycopg2
     import pandas as pd
 
-    conn = sqlite3.connect(repo.db_path)
+    conn = psycopg2.connect(repo.db_url)
     try:
         df = pd.read_sql_query(
             """
@@ -45,7 +45,7 @@ def _listar_posicoes_do_produto(repo: SQLiteRepo, produto_id: int):
                 p.preco_saida,
                 p.status
             FROM posicoes p
-            WHERE p.produto_id = ?
+            WHERE p.produto_id = %s
             ORDER BY p.data_entrada
             """,
             conn,

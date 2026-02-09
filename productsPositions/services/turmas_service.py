@@ -7,11 +7,13 @@ Este módulo implementa a lógica de negócio para:
 - Calcular rentabilidade por turma
 """
 
-import sqlite3
+import psycopg2
+import os
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
+from dotenv import load_dotenv
 
 from services.cotacoes_service import CotacoesService
 
@@ -50,16 +52,11 @@ class TurmasService:
     """Serviço para gerenciar turmas e rentabilidade."""
 
     def __init__(self, db_path: Optional[Path] = None):
-        if db_path is None:
-            script_dir = Path(__file__).parent
-            products_positions_dir = script_dir.parent
-            db_path = products_positions_dir / "data" / "products_positions.db"
-        self.db_path = db_path
+        load_dotenv(Path(__file__).parent.parent.parent / '.env')
+        self.db_url = os.getenv('SUPABASE_DB_URL')
 
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
+    def _get_connection(self):
+        conn = psycopg2.connect(self.db_url)
         return conn
 
     # ================================================================
@@ -133,7 +130,7 @@ class TurmasService:
         precos_resolvidos = []
 
         # Resolver preços para cada posição
-        cotacoes_service = CotacoesService(db_path=self.db_path)
+        cotacoes_service = CotacoesService()
 
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -173,10 +170,11 @@ class TurmasService:
             # Inserir turma
             cursor.execute("""
                 INSERT INTO turmas (produto_id, nome, data_inicio, capital_base, descricao, data_criacao)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
             """, (produto_id, nome, data_inicio, capital_base, descricao, datetime.now().strftime("%Y-%m-%d")))
 
-            turma_id = cursor.lastrowid
+            turma_id = cursor.fetchone()[0]
 
             # Adicionar cada posição com sua configuração resolvida
             for config in posicoes_config:
@@ -218,7 +216,7 @@ class TurmasService:
         """
         # Buscar dados da posição
         cursor.execute("""
-            SELECT coingecko_id, preco_entrada, ativo FROM posicoes WHERE id = ?
+            SELECT coingecko_id, preco_entrada, ativo FROM posicoes WHERE id = %s
         """, (posicao_id,))
         posicao = cursor.fetchone()
 
@@ -229,9 +227,9 @@ class TurmasService:
                 'erro': f'Posição {posicao_id} não encontrada'
             }
 
-        coingecko_id = posicao['coingecko_id']
-        preco_original = posicao['preco_entrada']
-        ativo = posicao['ativo']
+        coingecko_id = posicao[0]
+        preco_original = posicao[1]
+        ativo = posicao[2]
 
         # Tentar buscar via CoinGecko
         if coingecko_id:
@@ -282,12 +280,15 @@ class TurmasService:
                     pap.quantidade
                 FROM posicoes p
                 LEFT JOIN posicao_atributos_produto pap ON p.id = pap.posicao_id
-                WHERE p.produto_id = ?
+                WHERE p.produto_id = %s
                 AND p.status = 'open'
-                AND date(p.data_entrada) < date(?)
+                AND date(p.data_entrada) < date(%s)
                 ORDER BY p.data_entrada DESC
             """, (produto_id, data_inicio))
-            return [dict(row) for row in cursor.fetchall()]
+            columns = [desc[0] for desc in cursor.description]
+            result = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            conn.commit()
+            return result
         finally:
             conn.close()
 
@@ -301,7 +302,7 @@ class TurmasService:
                 SELECT t.*, p.nome as produto_nome
                 FROM turmas t
                 JOIN produtos p ON t.produto_id = p.id
-                WHERE t.produto_id = ?
+                WHERE t.produto_id = %s
                 ORDER BY t.data_inicio DESC
             """, (produto_id,))
         else:
@@ -312,7 +313,9 @@ class TurmasService:
                 ORDER BY t.data_inicio DESC
             """)
 
-        result = [dict(row) for row in cursor.fetchall()]
+        columns = [desc[0] for desc in cursor.description]
+        result = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        conn.commit()
         conn.close()
         return result
 
@@ -325,12 +328,19 @@ class TurmasService:
             SELECT t.*, p.nome as produto_nome
             FROM turmas t
             JOIN produtos p ON t.produto_id = p.id
-            WHERE t.id = ?
+            WHERE t.id = %s
         """, (turma_id,))
 
         row = cursor.fetchone()
-        conn.close()
-        return dict(row) if row else None
+        if row:
+            columns = [desc[0] for desc in cursor.description]
+            conn.commit()
+            conn.close()
+            return dict(zip(columns, row))
+        else:
+            conn.commit()
+            conn.close()
+            return None
 
     # ================================================================
     # TRADES E CARTEIRA
@@ -361,21 +371,24 @@ class TurmasService:
         """
         # Criar link em trades_turma
         cursor.execute("""
-            INSERT OR IGNORE INTO trades_turma (turma_id, posicao_id)
-            VALUES (?, ?)
+            INSERT INTO trades_turma (turma_id, posicao_id)
+            VALUES (%s, %s)
+            ON CONFLICT (turma_id, posicao_id) DO NOTHING
         """, (turma_id, posicao_id))
 
         # Obter ID do trade_turma
         cursor.execute("""
             SELECT id FROM trades_turma
-            WHERE turma_id = ? AND posicao_id = ?
+            WHERE turma_id = %s AND posicao_id = %s
         """, (turma_id, posicao_id))
-        trade_id = cursor.fetchone()['id']
+        trade_row = cursor.fetchone()
+        trade_id = trade_row[0] if trade_row else None
 
         # Se preço não informado, buscar da posição (para nativos)
         if preco_entrada_turma is None:
-            cursor.execute("SELECT preco_entrada FROM posicoes WHERE id = ?", (posicao_id,))
-            preco_entrada_turma = cursor.fetchone()['preco_entrada']
+            cursor.execute("SELECT preco_entrada FROM posicoes WHERE id = %s", (posicao_id,))
+            preco_row = cursor.fetchone()
+            preco_entrada_turma = preco_row[0] if preco_row else None
             preco_fonte = 'original'
 
         # Se data_referencia não informada, usar data_insercao
@@ -387,7 +400,7 @@ class TurmasService:
             INSERT INTO carteira_turma
             (turma_id, trade_id, origem, data_insercao, preco_entrada_turma,
              preco_fonte, preco_data_referencia, preco_moeda, ativo_atual)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
         """, (turma_id, trade_id, origem, data_insercao, preco_entrada_turma,
               preco_fonte, preco_data_referencia, preco_moeda))
 
@@ -408,24 +421,24 @@ class TurmasService:
 
         try:
             # Obter dados da turma e posição
-            cursor.execute("SELECT data_inicio FROM turmas WHERE id = ?", (turma_id,))
+            cursor.execute("SELECT data_inicio FROM turmas WHERE id = %s", (turma_id,))
             turma = cursor.fetchone()
             if not turma:
                 raise ValueError(f"Turma {turma_id} não encontrada")
 
-            cursor.execute("SELECT data_entrada, preco_entrada FROM posicoes WHERE id = ?", (posicao_id,))
+            cursor.execute("SELECT data_entrada, preco_entrada FROM posicoes WHERE id = %s", (posicao_id,))
             posicao = cursor.fetchone()
             if not posicao:
                 raise ValueError(f"Posição {posicao_id} não encontrada")
 
             # Determinar origem e data_insercao
-            data_inicio_turma = turma['data_inicio']
-            data_entrada_posicao = posicao['data_entrada']
+            data_inicio_turma = turma[0]
+            data_entrada_posicao = posicao[0]
 
             if data_entrada_posicao >= data_inicio_turma:
                 origem = 'nativo'
                 data_insercao = data_insercao or data_entrada_posicao
-                preco_entrada_turma = preco_entrada_turma or posicao['preco_entrada']
+                preco_entrada_turma = preco_entrada_turma or posicao[1]
                 preco_fonte = 'original'
             else:
                 origem = 'replicado'
@@ -472,7 +485,7 @@ class TurmasService:
             cursor.execute("""
                 SELECT tt.id
                 FROM trades_turma tt
-                WHERE tt.turma_id = ? AND tt.posicao_id = ?
+                WHERE tt.turma_id = %s AND tt.posicao_id = %s
             """, (turma_id, posicao_id))
 
             trade = cursor.fetchone()
@@ -482,9 +495,9 @@ class TurmasService:
             # Atualizar carteira_turma
             cursor.execute("""
                 UPDATE carteira_turma
-                SET data_remocao = ?, ativo_atual = 0
-                WHERE turma_id = ? AND trade_id = ? AND ativo_atual = 1
-            """, (data_remocao, turma_id, trade['id']))
+                SET data_remocao = %s, ativo_atual = 0
+                WHERE turma_id = %s AND trade_id = %s AND ativo_atual = 1
+            """, (data_remocao, turma_id, trade[0]))
 
             conn.commit()
             return cursor.rowcount > 0
@@ -523,7 +536,7 @@ class TurmasService:
             JOIN trades_turma tt ON ct.trade_id = tt.id
             JOIN posicoes p ON tt.posicao_id = p.id
             LEFT JOIN posicao_atributos_produto pap ON p.id = pap.posicao_id
-            WHERE ct.turma_id = ?
+            WHERE ct.turma_id = %s
         """
 
         if apenas_ativos:
@@ -532,7 +545,9 @@ class TurmasService:
         query += " ORDER BY ct.data_insercao DESC"
 
         cursor.execute(query, (turma_id,))
-        result = [dict(row) for row in cursor.fetchall()]
+        columns = [desc[0] for desc in cursor.description]
+        result = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        conn.commit()
         conn.close()
         return result
 
@@ -554,17 +569,17 @@ class TurmasService:
             cursor.execute("""
                 SELECT id, data_inicio
                 FROM turmas
-                WHERE produto_id = ?
+                WHERE produto_id = %s
             """, (produto_id,))
 
             turmas = cursor.fetchall()
 
             for turma in turmas:
                 # Determinar se é nativo (posição criada após turma)
-                if data_entrada >= turma['data_inicio']:
+                if data_entrada >= turma[1]:
                     self._adicionar_trade_turma(
                         cursor=cursor,
-                        turma_id=turma['id'],
+                        turma_id=turma[0],
                         posicao_id=posicao_id,
                         origem='nativo',
                         data_insercao=data_entrada,
@@ -596,7 +611,7 @@ class TurmasService:
                 SELECT tt.id, ct.turma_id
                 FROM trades_turma tt
                 JOIN carteira_turma ct ON tt.id = ct.trade_id
-                WHERE tt.posicao_id = ? AND ct.ativo_atual = 1
+                WHERE tt.posicao_id = %s AND ct.ativo_atual = 1
             """, (posicao_id,))
 
             trades = cursor.fetchall()
@@ -604,9 +619,9 @@ class TurmasService:
             for trade in trades:
                 cursor.execute("""
                     UPDATE carteira_turma
-                    SET data_remocao = ?, ativo_atual = 0
-                    WHERE trade_id = ? AND ativo_atual = 1
-                """, (data_saida, trade['id']))
+                    SET data_remocao = %s, ativo_atual = 0
+                    WHERE trade_id = %s AND ativo_atual = 1
+                """, (data_saida, trade[0]))
 
             conn.commit()
 
@@ -628,8 +643,9 @@ class TurmasService:
 
         try:
             cursor.execute("""
-                INSERT OR REPLACE INTO trade_valores_diarios (trade_id, data, preco, fonte)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO trade_valores_diarios (trade_id, data, preco, fonte)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (trade_id, data) DO UPDATE SET preco = EXCLUDED.preco, fonte = EXCLUDED.fonte
             """, (trade_id, data, preco, fonte))
             conn.commit()
         finally:
@@ -642,14 +658,15 @@ class TurmasService:
 
         cursor.execute("""
             SELECT preco FROM trade_valores_diarios
-            WHERE trade_id = ? AND data <= ?
+            WHERE trade_id = %s AND data <= %s
             ORDER BY data DESC
             LIMIT 1
         """, (trade_id, data))
 
         row = cursor.fetchone()
+        conn.commit()
         conn.close()
-        return row['preco'] if row else None
+        return row[0] if row else None
 
     def listar_valores_diarios(self, trade_id: int,
                                 data_inicio: Optional[str] = None,
@@ -658,21 +675,23 @@ class TurmasService:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        query = "SELECT * FROM trade_valores_diarios WHERE trade_id = ?"
+        query = "SELECT * FROM trade_valores_diarios WHERE trade_id = %s"
         params = [trade_id]
 
         if data_inicio:
-            query += " AND data >= ?"
+            query += " AND data >= %s"
             params.append(data_inicio)
 
         if data_fim:
-            query += " AND data <= ?"
+            query += " AND data <= %s"
             params.append(data_fim)
 
         query += " ORDER BY data DESC"
 
         cursor.execute(query, params)
-        result = [dict(row) for row in cursor.fetchall()]
+        columns = [desc[0] for desc in cursor.description]
+        result = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        conn.commit()
         conn.close()
         return result
 
@@ -690,7 +709,7 @@ if __name__ == "__main__":
     # Teste básico
     service = criar_turmas_service()
     print("TurmasService criado com sucesso")
-    print(f"Database: {service.db_path}")
+    print(f"Database URL: {service.db_url[:50]}..." if service.db_url else "Database URL: None")
 
     # Listar turmas existentes
     turmas = service.listar_turmas()

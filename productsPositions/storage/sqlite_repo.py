@@ -1,384 +1,83 @@
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import pandas as pd
 import uuid
+import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
 from contextlib import contextmanager
+from dotenv import load_dotenv
+
+# Carregar .env do root do projeto
+_project_root = Path(__file__).parent.parent.parent
+load_dotenv(_project_root / '.env')
 
 class SQLiteRepo:
     """
-    Repositório usando SQLite para armazenar todos os dados.
+    Repositorio usando PostgreSQL (Supabase) para armazenar todos os dados.
+    
+    NOTA: O nome da classe permanece SQLiteRepo para compatibilidade com imports
+    existentes em todo o projeto. A implementacao agora usa PostgreSQL/Supabase.
+    
     Estrutura:
-    - data/products_positions.db (banco SQLite único)
-    - (valores diários continuam sendo lidos de data_parquet/crypto_data/coingecko/{coingecko_id}/data.parquet)
+    - Banco PostgreSQL no Supabase (conexao via SUPABASE_DB_URL no .env)
+    - (valores diarios continuam sendo lidos de data_parquet/crypto_data/coingecko/{coingecko_id}/data.parquet)
     """
     
     def __init__(self, db_path=None):
-        if db_path is None:
-            # Assumir que estamos em productsPositions/storage/
-            script_dir = Path(__file__).parent
-            # productsPositions/ é o diretório pai de storage/
-            products_positions_dir = script_dir.parent
-            db_path = products_positions_dir / "data" / "products_positions.db"
+        # db_path ignorado - usamos SUPABASE_DB_URL do .env
+        self.db_url = os.getenv('SUPABASE_DB_URL')
+        if not self.db_url:
+            raise RuntimeError("SUPABASE_DB_URL nao configurado no .env")
         
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Inicializar banco de dados
+        # Inicializar banco de dados (garantir schema e dados essenciais)
         self._inicializar_banco()
     
     @contextmanager
     def _get_connection(self):
-        """Context manager para conexões SQLite com commit automático"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Retorna dict-like rows
-        # Habilitar foreign keys
-        conn.execute("PRAGMA foreign_keys = ON")
+        """Context manager para conexoes PostgreSQL com commit automatico"""
+        conn = psycopg2.connect(self.db_url)
         try:
             yield conn
-            # Tentar fazer commit apenas se necessário
-            # DDL statements (CREATE TABLE) não precisam de commit explícito
-            try:
-                # Verificar se está em transação e se não há statements em progresso
-                if conn.in_transaction:
-                    # Tentar fazer commit, mas ignorar erro se houver statements em progresso
-                    try:
-                        conn.commit()
-                    except sqlite3.OperationalError as e:
-                        if "SQL statements in progress" not in str(e):
-                            raise
-            except (sqlite3.ProgrammingError, sqlite3.OperationalError):
-                # Ignorar erros de commit (pode ser DDL ou conexão já fechada)
-                pass
+            conn.commit()
         except Exception:
-            try:
-                if conn.in_transaction:
-                    conn.rollback()
-            except (sqlite3.OperationalError, sqlite3.ProgrammingError):
-                pass
+            conn.rollback()
             raise
         finally:
-            try:
-                conn.close()
-            except (sqlite3.OperationalError, sqlite3.ProgrammingError):
-                pass
+            conn.close()
     
+    def _get_pg_columns(self, conn, table_name):
+        """Retorna lista de colunas de uma tabela no PostgreSQL."""
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = %s AND table_schema = 'public'
+                ORDER BY ordinal_position
+            """, (table_name,))
+            return [row[0] for row in cur.fetchall()]
+
+    def _ensure_column(self, conn, table_name, col_name, col_type='TEXT', default=None):
+        """Adiciona coluna se nao existir."""
+        colunas = self._get_pg_columns(conn, table_name)
+        if col_name not in colunas:
+            default_clause = f" DEFAULT {default}" if default is not None else ""
+            with conn.cursor() as cur:
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}{default_clause}")
+
     def _inicializar_banco(self):
-        """Cria todas as tabelas se não existirem"""
+        """Garante que o schema existe e dados essenciais estao presentes."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Tabela de tipos
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS tipos (
-                    nome TEXT PRIMARY KEY,
-                    descricao TEXT,
-                    data_criacao TEXT NOT NULL
-                )
-            """)
-            
-            # Tabela de ativos
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ativos (
-                    nome TEXT PRIMARY KEY,
-                    coingecko_id TEXT
-                )
-            """)
-            
-            # Tabela de produtos
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS produtos (
-                    id INTEGER PRIMARY KEY,
-                    nome TEXT NOT NULL,
-                    data_inicio TEXT NOT NULL,
-                    tipo TEXT NOT NULL,
-                    capital_inicial REAL DEFAULT 0.0,
-                    FOREIGN KEY (tipo) REFERENCES tipos(nome)
-                )
-            """)
-            
-            # Tabela de posições
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS posicoes (
-                    id INTEGER PRIMARY KEY,
-                    produto_id INTEGER NOT NULL,
-                    ativo TEXT NOT NULL,
-                    coingecko_id TEXT,
-                    exchange_symbol TEXT,
-                    side TEXT NOT NULL CHECK(side IN ('long', 'short')),
-                    data_entrada TEXT NOT NULL,
-                    preco_entrada REAL NOT NULL,
-                    data_saida TEXT,
-                    preco_saida REAL,
-                    status TEXT NOT NULL CHECK(status IN ('open', 'closed')),
-                    FOREIGN KEY (produto_id) REFERENCES produtos(id),
-                    FOREIGN KEY (ativo) REFERENCES ativos(nome)
-                )
-            """)
-            
-            # Tabela de stops (normalizada)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS stops (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    posicao_id INTEGER NOT NULL,
-                    data TEXT NOT NULL,
-                    valor REAL NOT NULL,
-                    FOREIGN KEY (posicao_id) REFERENCES posicoes(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Tabela de alocações
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS alocacoes (
-                    id INTEGER PRIMARY KEY,
-                    produto_id INTEGER NOT NULL,
-                    posicao_id INTEGER NOT NULL,
-                    percentual REAL NOT NULL CHECK(percentual >= 0 AND percentual <= 100),
-                    valor_usd REAL,
-                    data TEXT,
-                    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
-                    FOREIGN KEY (produto_id) REFERENCES produtos(id),
-                    FOREIGN KEY (posicao_id) REFERENCES posicoes(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Tabela de carteiras
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS carteiras (
-                    produto_id INTEGER PRIMARY KEY,
-                    valor_disponivel REAL NOT NULL DEFAULT 0.0,
-                    valor_investido REAL NOT NULL DEFAULT 0.0,
-                    pnl_nao_realizado REAL NOT NULL DEFAULT 0.0,
-                    valor_total REAL NOT NULL,
-                    data_atualizacao TEXT NOT NULL,
-                    FOREIGN KEY (produto_id) REFERENCES produtos(id)
-                )
-            """)
-            
-            # Tabela de ativos rastreados
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ativos_rastreados (
-                    ativo TEXT PRIMARY KEY,
-                    coingecko_id TEXT NOT NULL,
-                    data_primeira_insercao TEXT NOT NULL,
-                    data_ultima_atualizacao TEXT NOT NULL,
-                    data_historico_inicial TEXT,
-                    FOREIGN KEY (ativo) REFERENCES ativos(nome)
-                )
-            """)
-            
-            # Tabela de atributos específicos por produto
-            # Nota: RR é calculado dinamicamente, não é armazenado
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS posicao_atributos_produto (
-                    posicao_id INTEGER PRIMARY KEY,
-                    produto_id INTEGER NOT NULL,
-                    motivo TEXT,
-                    perfil TEXT,
-                    alvo1 REAL,
-                    alvo2 REAL,
-                    quantidade REAL,
-                    preco_entrada_total REAL,
-                    FOREIGN KEY (posicao_id) REFERENCES posicoes(id) ON DELETE CASCADE,
-                    FOREIGN KEY (produto_id) REFERENCES produtos(id)
-                )
-            """)
-
-            # Garantir que colunas mais novas existam mesmo em bancos antigos
-            # Produtos: usa_quantidade (para validação de quantidade)
-            cursor.execute("PRAGMA table_info(produtos)")
-            colunas_produtos = [row[1] for row in cursor.fetchall()]
-            if 'usa_quantidade' not in colunas_produtos:
-                # Default é 0 (não usa quantidade) para produtos de sinais
-                cursor.execute("ALTER TABLE produtos ADD COLUMN usa_quantidade INTEGER DEFAULT 0")
-
-            # Posicoes: exchange_symbol
-            cursor.execute("PRAGMA table_info(posicoes)")
-            colunas_posicoes = [row[1] for row in cursor.fetchall()]
-            if 'exchange_symbol' not in colunas_posicoes:
-                cursor.execute("ALTER TABLE posicoes ADD COLUMN exchange_symbol TEXT")
-            if 'atr_data_inicio' not in colunas_posicoes:
-                cursor.execute("ALTER TABLE posicoes ADD COLUMN atr_data_inicio TEXT")
-
-            # Atributos: quantidade e preco_entrada_total
-            cursor.execute("PRAGMA table_info(posicao_atributos_produto)")
-            colunas_atributos = [row[1] for row in cursor.fetchall()]
-            if 'quantidade' not in colunas_atributos:
-                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN quantidade REAL")
-            if 'preco_entrada_total' not in colunas_atributos:
-                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN preco_entrada_total REAL")
-            if 'preco_entrada_exchange' not in colunas_atributos:
-                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN preco_entrada_exchange REAL")
-            if 'pnl_exchange' not in colunas_atributos:
-                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN pnl_exchange REAL")
-            if 'leverage' not in colunas_atributos:
-                cursor.execute("ALTER TABLE posicao_atributos_produto ADD COLUMN leverage INTEGER")
-            # preco_saida_total foi removido - agora é calculado dinamicamente como quantidade * preco_saida
-            # Nota: Colunas adicionais (como atr_period, atr_multiplier) são gerenciadas
-            # dinamicamente através do sistema de atributos (produto_atributos_config)
-            
-            # Tabela de configuração de atributos por produto
-            # Define quais atributos cada produto usa (formulários dinâmicos)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS produto_atributos_config (
-                    produto_id INTEGER NOT NULL,
-                    atributo_nome TEXT NOT NULL,
-                    atributo_tipo TEXT NOT NULL DEFAULT 'text',
-                    atributo_label TEXT,
-                    obrigatorio INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (produto_id, atributo_nome),
-                    FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Tabela de visualizações customizadas por produto
-            # colunas_labels: JSON com mapeamento nome_coluna -> label customizado
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS visualizacoes_config (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    produto_id INTEGER NOT NULL,
-                    nome TEXT NOT NULL,
-                    colunas TEXT NOT NULL,
-                    colunas_labels TEXT,
-                    ordenacao TEXT,
-                    filtros TEXT,
-                    data_criacao TEXT NOT NULL,
-                    FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE,
-                    UNIQUE(produto_id, nome)
-                )
-            """)
-
-            # Garantir que colunas_labels existe em bancos antigos
-            cursor.execute("PRAGMA table_info(visualizacoes_config)")
-            colunas_viz = [row[1] for row in cursor.fetchall()]
-            if 'colunas_labels' not in colunas_viz:
-                cursor.execute("ALTER TABLE visualizacoes_config ADD COLUMN colunas_labels TEXT")
-
-            # ================================================================
-            # TABELAS DE TURMAS E RENTABILIDADE
-            # ================================================================
-
-            # Tabela de turmas (cohorts)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS turmas (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    produto_id INTEGER NOT NULL,
-                    nome TEXT NOT NULL,
-                    data_inicio TEXT NOT NULL,
-                    capital_base REAL DEFAULT 1500.0,
-                    descricao TEXT,
-                    data_criacao TEXT,
-                    FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Tabela de trades por turma (junction table)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS trades_turma (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    turma_id INTEGER NOT NULL,
-                    posicao_id INTEGER NOT NULL,
-                    FOREIGN KEY (turma_id) REFERENCES turmas(id) ON DELETE CASCADE,
-                    FOREIGN KEY (posicao_id) REFERENCES posicoes(id) ON DELETE CASCADE,
-                    UNIQUE(turma_id, posicao_id)
-                )
-            """)
-
-            # Tabela de carteira por turma (estado de cada trade na turma)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS carteira_turma (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    turma_id INTEGER NOT NULL,
-                    trade_id INTEGER NOT NULL,
-                    origem TEXT NOT NULL CHECK(origem IN ('nativo', 'replicado')),
-                    data_insercao TEXT NOT NULL,
-                    data_remocao TEXT,
-                    preco_entrada_turma REAL,
-                    preco_fonte TEXT DEFAULT 'manual',
-                    preco_data_referencia TEXT,
-                    preco_moeda TEXT DEFAULT 'USD',
-                    ativo_atual INTEGER DEFAULT 1,
-                    FOREIGN KEY (turma_id) REFERENCES turmas(id) ON DELETE CASCADE,
-                    FOREIGN KEY (trade_id) REFERENCES trades_turma(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Tabela de valores diários por trade (histórico de preços)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS trade_valores_diarios (
-                    trade_id INTEGER NOT NULL,
-                    data TEXT NOT NULL,
-                    preco REAL NOT NULL,
-                    fonte TEXT,
-                    PRIMARY KEY (trade_id, data),
-                    FOREIGN KEY (trade_id) REFERENCES trades_turma(id) ON DELETE CASCADE
-                )
-            """)
-
-            # Criar índices para performance
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto ON posicoes(produto_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_status ON posicoes(status)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_posicoes_produto_status ON posicoes(produto_id, status)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_stops_posicao ON stops(posicao_id)")
-            # Covering index for stop lookups (posicao_id + data DESC for ORDER BY)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_stops_posicao_data ON stops(posicao_id, data DESC)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_produto ON alocacoes(produto_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_posicao ON alocacoes(posicao_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_status ON alocacoes(status)")
-            # Covering index for allocation lookups by ativo
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_alocacoes_data ON alocacoes(data DESC)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_produto ON posicao_atributos_produto(produto_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_posicao ON posicao_atributos_produto(posicao_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_atributos_config_produto ON produto_atributos_config(produto_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_visualizacoes_produto ON visualizacoes_config(produto_id)")
-
-            # Índices para tabelas de turmas
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_turmas_produto ON turmas(produto_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_turmas_data_inicio ON turmas(data_inicio)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_turma_turma ON trades_turma(turma_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_turma_posicao ON trades_turma(posicao_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_carteira_turma_turma ON carteira_turma(turma_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_carteira_turma_turma_ativo ON carteira_turma(turma_id, ativo_atual)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_carteira_turma_trade ON carteira_turma(trade_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trade_valores_trade_data ON trade_valores_diarios(trade_id, data DESC)")
-
-            # Habilitar WAL mode para melhor concorrência
-            cursor.execute("PRAGMA journal_mode=WAL")
 
             # Garantir tipos essenciais
             self._garantir_tipos_essenciais(conn)
 
             # Migrar usa_quantidade para produtos existentes
             self._migrar_usa_quantidade(conn)
-
-            # Migrar turmas: garantir coluna data_criacao (bases antigas podem não tê-la)
-            cursor.execute("PRAGMA table_info(turmas)")
-            colunas_turmas = [row[1] for row in cursor.fetchall()]
-            if 'data_criacao' not in colunas_turmas:
-                cursor.execute("ALTER TABLE turmas ADD COLUMN data_criacao TEXT")
-
-            # Migrar colunas de metadados de preço em carteira_turma
-            cursor.execute("PRAGMA table_info(carteira_turma)")
-            colunas_carteira = [row[1] for row in cursor.fetchall()]
-            if 'preco_fonte' not in colunas_carteira:
-                cursor.execute("ALTER TABLE carteira_turma ADD COLUMN preco_fonte TEXT DEFAULT 'manual'")
-            if 'preco_data_referencia' not in colunas_carteira:
-                cursor.execute("ALTER TABLE carteira_turma ADD COLUMN preco_data_referencia TEXT")
-            if 'preco_moeda' not in colunas_carteira:
-                cursor.execute("ALTER TABLE carteira_turma ADD COLUMN preco_moeda TEXT DEFAULT 'USD'")
-
-            # Corrigir metadados para rows pré-existentes (criados antes das novas colunas)
-            cursor.execute("""
-                UPDATE carteira_turma
-                SET preco_fonte = 'original',
-                    preco_data_referencia = data_insercao,
-                    preco_moeda = 'USD'
-                WHERE preco_data_referencia IS NULL
-            """)
     
     def _garantir_tipos_essenciais(self, conn=None):
-        """Garante que os tipos essenciais (Perpétuos e Spot) sempre existam"""
+        """Garante que os tipos essenciais (Perpetuos e Spot) sempre existam"""
         if conn is None:
             with self._get_connection() as conn:
                 self._garantir_tipos_essenciais(conn)
@@ -392,8 +91,9 @@ class SQLiteRepo:
         
         for nome, descricao in tipos_essenciais:
             cursor.execute("""
-                INSERT OR IGNORE INTO tipos (nome, descricao, data_criacao)
-                VALUES (?, ?, ?)
+                INSERT INTO tipos (nome, descricao, data_criacao)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (nome) DO NOTHING
             """, (nome, descricao, datetime.now().strftime("%Y-%m-%d")))
 
     def _migrar_usa_quantidade(self, conn=None):
@@ -401,9 +101,9 @@ class SQLiteRepo:
         Migra o campo usa_quantidade para produtos existentes.
 
         Produtos que usam quantidade (usa_quantidade = 1):
-        - Soros Spot, Soros Perpétuos, Memebot Perpétuos
+        - Soros Spot, Soros Perpetuos, Memebot Perpetuos
 
-        Produtos que NÃO usam quantidade (usa_quantidade = 0):
+        Produtos que NAO usam quantidade (usa_quantidade = 0):
         - HB, EXC, LC, Alphacoins, Crypto Signals (produtos de sinais)
         """
         if conn is None:
@@ -413,12 +113,11 @@ class SQLiteRepo:
 
         cursor = conn.cursor()
 
-        # Produtos que usam quantidade (padrões de nome)
-        # Usando patterns sem caracteres especiais para evitar problemas de encoding
+        # Produtos que usam quantidade (padroes de nome)
         produtos_com_quantidade = [
             '%Soros Spot%',
-            '%Soros Perp%',  # Match "Soros Perpétuos" sem depender de encoding
-            '%Memebot Perp%'  # Match "Memebot Perpétuos" sem depender de encoding
+            '%Soros Perp%',
+            '%Memebot Perp%'
         ]
 
         # Atualizar produtos que usam quantidade
@@ -426,7 +125,7 @@ class SQLiteRepo:
             cursor.execute("""
                 UPDATE produtos
                 SET usa_quantidade = 1
-                WHERE nome LIKE ?
+                WHERE nome LIKE %s
                 AND (usa_quantidade IS NULL OR usa_quantidade = 0)
             """, (pattern,))
 
@@ -442,26 +141,25 @@ class SQLiteRepo:
         return True
     
     def _validar_posicao_existe(self, posicao_id):
-        """Valida se uma posição existe"""
+        """Valida se uma posicao existe"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM posicoes WHERE id = ?", (posicao_id,))
+            cursor.execute("SELECT id FROM posicoes WHERE id = %s", (posicao_id,))
             if cursor.fetchone() is None:
-                raise ValueError(f"Posição com ID {posicao_id} não existe")
+                raise ValueError(f"Posicao com ID {posicao_id} nao existe")
         return True
     
     def _validar_tipo_existe(self, nome_tipo):
         """Valida se um tipo existe"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT nome FROM tipos WHERE nome = ?", (nome_tipo,))
+            cursor.execute("SELECT nome FROM tipos WHERE nome = %s", (nome_tipo,))
             if cursor.fetchone() is None:
-                # Listar tipos disponíveis
                 cursor.execute("SELECT nome FROM tipos")
                 tipos = [row[0] for row in cursor.fetchall()]
                 raise ValueError(
-                    f"Tipo '{nome_tipo}' não existe. "
-                    f"Tipos disponíveis: {', '.join(tipos) if tipos else 'nenhum'}"
+                    f"Tipo '{nome_tipo}' nao existe. "
+                    f"Tipos disponiveis: {', '.join(tipos) if tipos else 'nenhum'}"
                 )
         return True
     
@@ -469,26 +167,26 @@ class SQLiteRepo:
         """Valida se um ativo existe"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT nome FROM ativos WHERE nome = ?", (nome_ativo,))
+            cursor.execute("SELECT nome FROM ativos WHERE nome = %s", (nome_ativo,))
             if cursor.fetchone() is None:
-                # Listar ativos disponíveis
                 cursor.execute("SELECT nome FROM ativos")
                 ativos = [row[0] for row in cursor.fetchall()]
                 raise ValueError(
-                    f"Ativo '{nome_ativo}' não existe. "
-                    f"Ativos disponíveis: {', '.join(ativos) if ativos else 'nenhum'}"
+                    f"Ativo '{nome_ativo}' nao existe. "
+                    f"Ativos disponiveis: {', '.join(ativos) if ativos else 'nenhum'}"
                 )
         return True
     
     # ========== TIPOS ==========
     
     def registrar_tipo(self, nome, descricao=None):
-        """Registra um novo tipo (se não existir)"""
+        """Registra um novo tipo (se nao existir)"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT OR IGNORE INTO tipos (nome, descricao, data_criacao)
-                VALUES (?, ?, ?)
+                INSERT INTO tipos (nome, descricao, data_criacao)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (nome) DO NOTHING
             """, (nome, descricao or '', datetime.now().strftime("%Y-%m-%d")))
         return nome
     
@@ -502,32 +200,29 @@ class SQLiteRepo:
     # ========== ATIVOS ==========
     
     def registrar_ativo(self, nome, coingecko_id):
-        """Registra um novo ativo (se não existir)"""
+        """Registra um novo ativo (se nao existir)"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            # Verificar se já existe
-            cursor.execute("SELECT coingecko_id FROM ativos WHERE nome = ?", (nome,))
+            cursor.execute("SELECT coingecko_id FROM ativos WHERE nome = %s", (nome,))
             existing = cursor.fetchone()
             
             if existing:
-                # Atualizar coingecko_id se fornecido e diferente
                 if coingecko_id and existing[0] != coingecko_id:
                     cursor.execute("""
-                        UPDATE ativos SET coingecko_id = ? WHERE nome = ?
+                        UPDATE ativos SET coingecko_id = %s WHERE nome = %s
                     """, (coingecko_id, nome))
             else:
-                # Inserir novo ativo
                 cursor.execute("""
                     INSERT INTO ativos (nome, coingecko_id)
-                    VALUES (?, ?)
+                    VALUES (%s, %s)
                 """, (nome, coingecko_id))
         return nome
     
     def obter_ativo(self, nome):
-        """Obtém informações de um ativo"""
+        """Obtem informacoes de um ativo"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT nome, coingecko_id FROM ativos WHERE nome = ?", (nome,))
+            cursor.execute("SELECT nome, coingecko_id FROM ativos WHERE nome = %s", (nome,))
             row = cursor.fetchone()
             if row:
                 return {
@@ -537,19 +232,15 @@ class SQLiteRepo:
         return None
     
     def listar_ativos(self):
-        """Lista todos os ativos disponíveis"""
-        conn = sqlite3.connect(self.db_path)
-        try:
+        """Lista todos os ativos disponiveis"""
+        with self._get_connection() as conn:
             df = pd.read_sql_query("SELECT * FROM ativos", conn)
             return df.to_dict('records') if not df.empty else []
-        finally:
-            conn.close()
     
     # ========== PRODUTOS ==========
     
     def salvar_produto(self, produto):
-        """Salva um produto (com validação de tipo)"""
-        # Validar que o tipo existe
+        """Salva um produto (com validacao de tipo)"""
         self._validar_tipo_existe(produto.tipo.nome)
         
         produto_id = self._gerar_id()
@@ -558,7 +249,7 @@ class SQLiteRepo:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO produtos (id, nome, data_inicio, tipo, capital_inicial)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
             """, (
                 produto_id,
                 produto.nome,
@@ -571,18 +262,15 @@ class SQLiteRepo:
     
     def carregar_produto(self, produto_id):
         """Carrega um produto por ID (retorna dict)"""
-        conn = sqlite3.connect(self.db_path)
-        try:
+        with self._get_connection() as conn:
             df = pd.read_sql_query(
-                "SELECT * FROM produtos WHERE id = ?",
+                "SELECT * FROM produtos WHERE id = %s",
                 conn,
                 params=(produto_id,)
             )
             if not df.empty:
                 return df.iloc[0].to_dict()
             return None
-        finally:
-            conn.close()
     
     def carregar_produto_objeto(self, produto_id):
         """Carrega um produto por ID e retorna objeto Produto"""
@@ -608,17 +296,13 @@ class SQLiteRepo:
     
     def listar_produtos(self):
         """Lista todos os produtos"""
-        conn = sqlite3.connect(self.db_path)
-        try:
+        with self._get_connection() as conn:
             df = pd.read_sql_query("SELECT * FROM produtos", conn)
             return df.to_dict('records') if not df.empty else []
-        finally:
-            conn.close()
 
     def contar_posicoes_abertas_por_produto(self):
-        """Conta posições abertas de todos os produtos em uma única query"""
-        conn = sqlite3.connect(self.db_path)
-        try:
+        """Conta posicoes abertas de todos os produtos em uma unica query"""
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT produto_id, COUNT(*) as count
@@ -627,23 +311,18 @@ class SQLiteRepo:
                 GROUP BY produto_id
             """)
             return {row[0]: row[1] for row in cursor.fetchall()}
-        finally:
-            conn.close()
     
     def obter_produto_por_nome(self, nome):
-        """Obtém um produto por nome"""
-        conn = sqlite3.connect(self.db_path)
-        try:
+        """Obtem um produto por nome"""
+        with self._get_connection() as conn:
             df = pd.read_sql_query(
-                "SELECT * FROM produtos WHERE nome = ?",
+                "SELECT * FROM produtos WHERE nome = %s",
                 conn,
                 params=(nome,)
             )
             if not df.empty:
                 return df.iloc[0].to_dict()
             return None
-        finally:
-            conn.close()
 
     def atualizar_produto(self, produto_id, **kwargs):
         """
@@ -664,13 +343,12 @@ class SQLiteRepo:
         valores = []
         for campo, valor in kwargs.items():
             if campo in campos_permitidos:
-                # Validar tipo se estiver sendo atualizado
                 if campo == 'tipo':
                     self._validar_tipo_existe(valor)
-                updates.append(f"{campo} = ?")
+                updates.append(f"{campo} = %s")
                 valores.append(valor)
             else:
-                raise ValueError(f"Campo '{campo}' não é permitido para atualização")
+                raise ValueError(f"Campo '{campo}' nao e permitido para atualizacao")
 
         if not updates:
             return produto_id
@@ -680,7 +358,7 @@ class SQLiteRepo:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f"""
-                UPDATE produtos SET {', '.join(updates)} WHERE id = ?
+                UPDATE produtos SET {', '.join(updates)} WHERE id = %s
             """, valores)
 
         return produto_id
@@ -707,33 +385,29 @@ class SQLiteRepo:
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
-            # Contar dados associados
-            cursor.execute("SELECT COUNT(*) FROM posicoes WHERE produto_id = ?", (produto_id,))
+            cursor.execute("SELECT COUNT(*) FROM posicoes WHERE produto_id = %s", (produto_id,))
             count_posicoes = cursor.fetchone()[0]
 
-            cursor.execute("SELECT COUNT(*) FROM alocacoes WHERE produto_id = ?", (produto_id,))
+            cursor.execute("SELECT COUNT(*) FROM alocacoes WHERE produto_id = %s", (produto_id,))
             count_alocacoes = cursor.fetchone()[0]
 
-            cursor.execute("SELECT COUNT(*) FROM carteiras WHERE produto_id = ?", (produto_id,))
+            cursor.execute("SELECT COUNT(*) FROM carteiras WHERE produto_id = %s", (produto_id,))
             count_carteiras = cursor.fetchone()[0]
 
-            # Contar stops das posições
             cursor.execute("""
                 SELECT COUNT(*) FROM stops s
                 JOIN posicoes p ON s.posicao_id = p.id
-                WHERE p.produto_id = ?
+                WHERE p.produto_id = %s
             """, (produto_id,))
             count_stops = cursor.fetchone()[0]
 
-            # Contar atributos das posições
             cursor.execute("""
                 SELECT COUNT(*) FROM posicao_atributos_produto
-                WHERE produto_id = ?
+                WHERE produto_id = %s
             """, (produto_id,))
             count_atributos = cursor.fetchone()[0]
 
-            # Contar visualizações
-            cursor.execute("SELECT COUNT(*) FROM visualizacoes_config WHERE produto_id = ?", (produto_id,))
+            cursor.execute("SELECT COUNT(*) FROM visualizacoes_config WHERE produto_id = %s", (produto_id,))
             count_visualizacoes = cursor.fetchone()[0]
 
             resumo = {
@@ -748,35 +422,22 @@ class SQLiteRepo:
             if not forcar and (count_posicoes > 0 or count_alocacoes > 0):
                 raise ValueError(
                     f"Produto {produto_id} possui dados associados: "
-                    f"{count_posicoes} posição(ões), {count_alocacoes} alocação(ões). "
+                    f"{count_posicoes} posicao(oes), {count_alocacoes} alocacao(oes). "
                     f"Use forcar=True para deletar mesmo assim."
                 )
 
-            # Deletar em ordem (respeitando foreign keys)
-            # 1. Stops das posições do produto
             cursor.execute("""
                 DELETE FROM stops WHERE posicao_id IN (
-                    SELECT id FROM posicoes WHERE produto_id = ?
+                    SELECT id FROM posicoes WHERE produto_id = %s
                 )
             """, (produto_id,))
 
-            # 2. Atributos das posições
-            cursor.execute("DELETE FROM posicao_atributos_produto WHERE produto_id = ?", (produto_id,))
-
-            # 3. Alocações
-            cursor.execute("DELETE FROM alocacoes WHERE produto_id = ?", (produto_id,))
-
-            # 4. Posições
-            cursor.execute("DELETE FROM posicoes WHERE produto_id = ?", (produto_id,))
-
-            # 5. Carteira
-            cursor.execute("DELETE FROM carteiras WHERE produto_id = ?", (produto_id,))
-
-            # 6. Visualizações
-            cursor.execute("DELETE FROM visualizacoes_config WHERE produto_id = ?", (produto_id,))
-
-            # 7. Produto (produto_atributos_config é deletado via CASCADE)
-            cursor.execute("DELETE FROM produtos WHERE id = ?", (produto_id,))
+            cursor.execute("DELETE FROM posicao_atributos_produto WHERE produto_id = %s", (produto_id,))
+            cursor.execute("DELETE FROM alocacoes WHERE produto_id = %s", (produto_id,))
+            cursor.execute("DELETE FROM posicoes WHERE produto_id = %s", (produto_id,))
+            cursor.execute("DELETE FROM carteiras WHERE produto_id = %s", (produto_id,))
+            cursor.execute("DELETE FROM visualizacoes_config WHERE produto_id = %s", (produto_id,))
+            cursor.execute("DELETE FROM produtos WHERE id = %s", (produto_id,))
 
         # 7. Limpar colunas órfãs (fora da transação principal)
         colunas_removidas = self.limpar_colunas_orfas()
@@ -789,25 +450,22 @@ class SQLiteRepo:
 
     def carregar_atributos_config(self, produto_id):
         """
-        Carrega configuração de atributos de um produto.
+        Carrega configuracao de atributos de um produto.
 
         Args:
             produto_id: ID do produto
 
         Returns:
-            list: Lista de dicionários com configuração de cada atributo
+            list: Lista de dicionarios com configuracao de cada atributo
         """
-        conn = sqlite3.connect(self.db_path)
-        try:
+        with self._get_connection() as conn:
             df = pd.read_sql_query("""
                 SELECT atributo_nome, atributo_tipo, atributo_label, obrigatorio
                 FROM produto_atributos_config
-                WHERE produto_id = ?
+                WHERE produto_id = %s
                 ORDER BY atributo_nome
             """, conn, params=(produto_id,))
             return df.to_dict('records') if not df.empty else []
-        finally:
-            conn.close()
 
     def adicionar_atributo_config(self, produto_id, atributo_nome, atributo_tipo='text',
                                    atributo_label=None, obrigatorio=False):
@@ -827,13 +485,13 @@ class SQLiteRepo:
         """
         self._validar_produto_existe(produto_id)
 
-        # Normalizar nome do atributo (lowercase, sem espaços)
+        # Normalizar nome do atributo (lowercase, sem espacos)
         atributo_nome = atributo_nome.lower().strip().replace(' ', '_')
 
-        # Mapear tipo para SQLite
-        tipo_sqlite = {
+        # Mapear tipo para PostgreSQL
+        tipo_pg = {
             'text': 'TEXT',
-            'float': 'REAL',
+            'float': 'DOUBLE PRECISION',
             'int': 'INTEGER',
             'date': 'TEXT'
         }.get(atributo_tipo.lower(), 'TEXT')
@@ -841,22 +499,24 @@ class SQLiteRepo:
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
-            # Verificar se coluna existe na tabela posicao_atributos_produto
-            cursor.execute("PRAGMA table_info(posicao_atributos_produto)")
-            colunas_existentes = [row[1] for row in cursor.fetchall()]
+            # Verificar se coluna existe
+            colunas_existentes = self._get_pg_columns(conn, 'posicao_atributos_produto')
 
             if atributo_nome not in colunas_existentes:
-                # Criar coluna
                 cursor.execute(f"""
                     ALTER TABLE posicao_atributos_produto
-                    ADD COLUMN {atributo_nome} {tipo_sqlite}
+                    ADD COLUMN {atributo_nome} {tipo_pg}
                 """)
 
-            # Adicionar config
+            # Adicionar config (upsert)
             cursor.execute("""
-                INSERT OR REPLACE INTO produto_atributos_config
+                INSERT INTO produto_atributos_config
                 (produto_id, atributo_nome, atributo_tipo, atributo_label, obrigatorio)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (produto_id, atributo_nome) DO UPDATE SET
+                    atributo_tipo = EXCLUDED.atributo_tipo,
+                    atributo_label = EXCLUDED.atributo_label,
+                    obrigatorio = EXCLUDED.obrigatorio
             """, (
                 produto_id,
                 atributo_nome,
@@ -869,36 +529,26 @@ class SQLiteRepo:
 
     def remover_atributo_config(self, produto_id, atributo_nome):
         """
-        Remove configuração de atributo de um produto.
-        Não remove a coluna da tabela (pode ser usada por outros produtos).
-
-        Args:
-            produto_id: ID do produto
-            atributo_nome: Nome do atributo
-
-        Returns:
-            bool: True se removido com sucesso
+        Remove configuracao de atributo de um produto.
+        Nao remove a coluna da tabela (pode ser usada por outros produtos).
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 DELETE FROM produto_atributos_config
-                WHERE produto_id = ? AND atributo_nome = ?
+                WHERE produto_id = %s AND atributo_nome = %s
             """, (produto_id, atributo_nome.lower().strip()))
             return cursor.rowcount > 0
 
     def listar_colunas_atributos(self):
         """
-        Lista todas as colunas disponíveis na tabela posicao_atributos_produto.
+        Lista todas as colunas disponiveis na tabela posicao_atributos_produto.
 
         Returns:
             list: Lista de nomes de colunas (exceto posicao_id e produto_id)
         """
         with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(posicao_atributos_produto)")
-            colunas = [row[1] for row in cursor.fetchall()]
-            # Excluir colunas de sistema
+            colunas = self._get_pg_columns(conn, 'posicao_atributos_produto')
             excluir = ['posicao_id', 'produto_id']
             return [c for c in colunas if c not in excluir]
 
@@ -921,15 +571,15 @@ class SQLiteRepo:
         valores = []
 
         if novo_label is not None:
-            updates.append("atributo_label = ?")
+            updates.append("atributo_label = %s")
             valores.append(novo_label)
 
         if novo_tipo is not None:
-            updates.append("atributo_tipo = ?")
+            updates.append("atributo_tipo = %s")
             valores.append(novo_tipo)
 
         if novo_obrigatorio is not None:
-            updates.append("obrigatorio = ?")
+            updates.append("obrigatorio = %s")
             valores.append(1 if novo_obrigatorio else 0)
 
         if not updates:
@@ -942,61 +592,39 @@ class SQLiteRepo:
             cursor.execute(f"""
                 UPDATE produto_atributos_config
                 SET {', '.join(updates)}
-                WHERE produto_id = ? AND atributo_nome = ?
+                WHERE produto_id = %s AND atributo_nome = %s
             """, valores)
             return cursor.rowcount > 0
 
     def deletar_coluna_atributo(self, nome_coluna):
         """
         Deleta uma coluna de atributo da tabela posicao_atributos_produto.
-        Só permite deletar se nenhum produto usa esse atributo.
-
-        Args:
-            nome_coluna: Nome da coluna a deletar
-
-        Returns:
-            bool: True se deletada com sucesso
-
-        Raises:
-            ValueError: Se a coluna ainda é usada por algum produto
+        So permite deletar se nenhum produto usa esse atributo.
         """
         nome_coluna = nome_coluna.lower().strip()
 
-        # Verificar se coluna existe
         colunas = self.listar_colunas_atributos()
         if nome_coluna not in colunas:
-            raise ValueError(f"Coluna '{nome_coluna}' não existe")
+            raise ValueError(f"Coluna '{nome_coluna}' nao existe")
 
-        # Verificar se algum produto ainda usa essa coluna
-        conn = sqlite3.connect(self.db_path)
-        try:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT p.id, p.nome
                 FROM produto_atributos_config pac
                 JOIN produtos p ON pac.produto_id = p.id
-                WHERE pac.atributo_nome = ?
+                WHERE pac.atributo_nome = %s
             """, (nome_coluna,))
             produtos_usando = cursor.fetchall()
 
             if produtos_usando:
                 nomes = [f"{p[1]} (ID: {p[0]})" for p in produtos_usando]
                 raise ValueError(
-                    f"Coluna '{nome_coluna}' ainda é usada por: {', '.join(nomes)}"
+                    f"Coluna '{nome_coluna}' ainda e usada por: {', '.join(nomes)}"
                 )
-        finally:
-            conn.close()
 
-        # Deletar a coluna usando autocommit mode (SQLite 3.35.0+)
-        conn = sqlite3.connect(self.db_path, isolation_level=None)
-        try:
-            cursor = conn.cursor()
             cursor.execute(f"ALTER TABLE posicao_atributos_produto DROP COLUMN {nome_coluna}")
             return True
-        except Exception as e:
-            raise ValueError(f"Erro ao deletar coluna: {e}")
-        finally:
-            conn.close()
 
     def listar_colunas_orfas(self):
         """
@@ -1117,7 +745,8 @@ class SQLiteRepo:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO visualizacoes_config (produto_id, nome, colunas, colunas_labels, ordenacao, filtros, data_criacao)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
             """, (
                 produto_id,
                 nome,
@@ -1127,17 +756,11 @@ class SQLiteRepo:
                 json.dumps(filtros) if filtros else None,
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ))
-            return cursor.lastrowid
+            return cursor.fetchone()[0]
 
     def listar_visualizacoes(self, produto_id):
         """
-        Lista todas as visualizações de um produto.
-
-        Args:
-            produto_id: ID do produto
-
-        Returns:
-            list: Lista de visualizações
+        Lista todas as visualizacoes de um produto.
         """
         import json
 
@@ -1146,7 +769,7 @@ class SQLiteRepo:
             cursor.execute("""
                 SELECT id, nome, colunas, colunas_labels, ordenacao, filtros, data_criacao
                 FROM visualizacoes_config
-                WHERE produto_id = ?
+                WHERE produto_id = %s
                 ORDER BY nome
             """, (produto_id,))
 
@@ -1180,7 +803,7 @@ class SQLiteRepo:
             cursor.execute("""
                 SELECT id, produto_id, nome, colunas, colunas_labels, ordenacao, filtros, data_criacao
                 FROM visualizacoes_config
-                WHERE id = ?
+                WHERE id = %s
             """, (visualizacao_id,))
 
             row = cursor.fetchone()
@@ -1218,23 +841,23 @@ class SQLiteRepo:
         valores = []
 
         if nome is not None:
-            updates.append("nome = ?")
+            updates.append("nome = %s")
             valores.append(nome)
 
         if colunas is not None:
-            updates.append("colunas = ?")
+            updates.append("colunas = %s")
             valores.append(json.dumps(colunas))
 
         if colunas_labels is not None:
-            updates.append("colunas_labels = ?")
+            updates.append("colunas_labels = %s")
             valores.append(json.dumps(colunas_labels) if colunas_labels else None)
 
         if ordenacao is not None:
-            updates.append("ordenacao = ?")
+            updates.append("ordenacao = %s")
             valores.append(json.dumps(ordenacao) if ordenacao else None)
 
         if filtros is not None:
-            updates.append("filtros = ?")
+            updates.append("filtros = %s")
             valores.append(json.dumps(filtros) if filtros else None)
 
         if not updates:
@@ -1247,44 +870,31 @@ class SQLiteRepo:
             cursor.execute(f"""
                 UPDATE visualizacoes_config
                 SET {', '.join(updates)}
-                WHERE id = ?
+                WHERE id = %s
             """, valores)
             return cursor.rowcount > 0
 
     def deletar_visualizacao(self, visualizacao_id):
-        """
-        Deleta uma visualização.
-
-        Args:
-            visualizacao_id: ID da visualização
-
-        Returns:
-            bool: True se deletado com sucesso
-        """
+        """Deleta uma visualizacao."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM visualizacoes_config WHERE id = ?", (visualizacao_id,))
+            cursor.execute("DELETE FROM visualizacoes_config WHERE id = %s", (visualizacao_id,))
             return cursor.rowcount > 0
 
     # ========== POSIÇÕES ==========
     
     def salvar_posicao(self, produto_id, posicao):
-        """Salva uma posição (com validação de integridade referencial)"""
-        # Validar que o produto existe
+        """Salva uma posicao (com validacao de integridade referencial)"""
         self._validar_produto_existe(produto_id)
         
-        # Registrar ativo se não existir (mesmo sem coingecko_id)
         ativo_existente = self.obter_ativo(posicao.ativo)
         if posicao.coingecko_id:
             if ativo_existente and ativo_existente.get('coingecko_id'):
-                # Se já existe com coingecko_id diferente, atualizar
                 if ativo_existente['coingecko_id'] != posicao.coingecko_id:
                     self.registrar_ativo(posicao.ativo, posicao.coingecko_id)
             else:
-                # Registrar novo ativo com coingecko_id
                 self.registrar_ativo(posicao.ativo, posicao.coingecko_id)
         else:
-            # Sem coingecko_id: garantir que o ativo exista ao menos com nome
             if not ativo_existente:
                 self.registrar_ativo(posicao.ativo, None)
         
@@ -1297,7 +907,7 @@ class SQLiteRepo:
                     id, produto_id, ativo, coingecko_id, exchange_symbol, side, data_entrada,
                     preco_entrada, data_saida, preco_saida, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 posicao_id,
                 produto_id,
@@ -1312,20 +922,18 @@ class SQLiteRepo:
                 posicao.status
             ))
             
-            # Salvar stops na tabela separada
             if posicao.stops:
                 for stop in posicao.stops:
                     cursor.execute("""
                         INSERT INTO stops (posicao_id, data, valor)
-                        VALUES (?, ?, ?)
+                        VALUES (%s, %s, %s)
                     """, (posicao_id, stop['data'], stop['valor']))
         
         return posicao_id
     
     def carregar_posicoes_abertas(self, produto_id=None):
-        """Carrega posições abertas com atributos do produto e tipo do produto"""
-        conn = sqlite3.connect(self.db_path)
-        try:
+        """Carrega posicoes abertas com atributos do produto e tipo do produto"""
+        with self._get_connection() as conn:
             if produto_id:
                 df = pd.read_sql_query("""
                     SELECT p.*,
@@ -1334,7 +942,7 @@ class SQLiteRepo:
                     FROM posicoes p
                     LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
                     LEFT JOIN produtos pr ON p.produto_id = pr.id
-                    WHERE p.status = 'open' AND p.produto_id = ?
+                    WHERE p.status = 'open' AND p.produto_id = %s
                 """, conn, params=(produto_id,))
             else:
                 df = pd.read_sql_query("""
@@ -1347,20 +955,17 @@ class SQLiteRepo:
                     WHERE p.status = 'open'
                 """, conn)
             return df
-        finally:
-            conn.close()
     
     def carregar_posicoes_fechadas(self, produto_id=None):
-        """Carrega posições fechadas com atributos do produto"""
-        conn = sqlite3.connect(self.db_path)
-        try:
+        """Carrega posicoes fechadas com atributos do produto"""
+        with self._get_connection() as conn:
             if produto_id:
                 df = pd.read_sql_query("""
                     SELECT p.*, 
                            a.motivo, a.perfil, a.alvo1, a.alvo2
                     FROM posicoes p
                     LEFT JOIN posicao_atributos_produto a ON p.id = a.posicao_id
-                    WHERE p.status = 'closed' AND p.produto_id = ?
+                    WHERE p.status = 'closed' AND p.produto_id = %s
                 """, conn, params=(produto_id,))
             else:
                 df = pd.read_sql_query("""
@@ -1371,14 +976,10 @@ class SQLiteRepo:
                     WHERE p.status = 'closed'
                 """, conn)
             return df
-        finally:
-            conn.close()
     
     def carregar_posicao(self, posicao_id):
-        """Carrega uma posição por ID com atributos do produto"""
-        conn = sqlite3.connect(self.db_path)
-        try:
-            # Carregar com JOIN para incluir atributos
+        """Carrega uma posicao por ID com atributos do produto"""
+        with self._get_connection() as conn:
             df = pd.read_sql_query(
                 """
                 SELECT 
@@ -1392,7 +993,7 @@ class SQLiteRepo:
                 FROM posicoes p
                 LEFT JOIN posicao_atributos_produto a 
                     ON p.id = a.posicao_id
-                WHERE p.id = ?
+                WHERE p.id = %s
                 """,
                 conn,
                 params=(posicao_id,)
@@ -1403,9 +1004,8 @@ class SQLiteRepo:
             
             posicao_dict = df.iloc[0].to_dict()
             
-            # Carregar stops da tabela separada
             df_stops = pd.read_sql_query(
-                "SELECT data, valor FROM stops WHERE posicao_id = ? ORDER BY data",
+                "SELECT data, valor FROM stops WHERE posicao_id = %s ORDER BY data",
                 conn,
                 params=(posicao_id,)
             )
@@ -1416,11 +1016,9 @@ class SQLiteRepo:
                 posicao_dict['stops'] = []
             
             return posicao_dict
-        finally:
-            conn.close()
     
     def atualizar_posicao(self, posicao_id, **kwargs):
-        """Atualiza uma posição existente"""
+        """Atualiza uma posicao existente"""
         self._validar_posicao_existe(posicao_id)
 
         campos_permitidos = ['ativo', 'coingecko_id', 'exchange_symbol', 'side', 'data_entrada',
@@ -1431,17 +1029,16 @@ class SQLiteRepo:
         valores = []
         for campo, valor in kwargs.items():
             if campo in campos_permitidos:
-                updates.append(f"{campo} = ?")
+                updates.append(f"{campo} = %s")
                 valores.append(valor)
             else:
-                raise ValueError(f"Campo '{campo}' não é permitido para atualização")
+                raise ValueError(f"Campo '{campo}' nao e permitido para atualizacao")
 
         if not updates:
             return posicao_id
 
         valores.append(posicao_id)
 
-        # Se atualizando ativo, registrar o novo ativo antes do UPDATE
         if 'ativo' in kwargs:
             novo_ativo = kwargs['ativo']
             coingecko_id = kwargs.get('coingecko_id')
@@ -1450,13 +1047,11 @@ class SQLiteRepo:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f"""
-                UPDATE posicoes SET {', '.join(updates)} WHERE id = ?
+                UPDATE posicoes SET {', '.join(updates)} WHERE id = %s
             """, valores)
 
-            # Se atualizando coingecko_id sem mudar ativo, atualizar também na tabela de ativos
             if 'coingecko_id' in kwargs and 'ativo' not in kwargs:
-                # Obter ativo da posição
-                cursor.execute("SELECT ativo FROM posicoes WHERE id = ?", (posicao_id,))
+                cursor.execute("SELECT ativo FROM posicoes WHERE id = %s", (posicao_id,))
                 row = cursor.fetchone()
                 if row:
                     ativo = row[0]
@@ -1465,20 +1060,12 @@ class SQLiteRepo:
         return posicao_id
 
     def obter_ultimo_stop(self, posicao_id):
-        """
-        Obtém o último stop salvo para uma posição.
-
-        Args:
-            posicao_id: ID da posição
-
-        Returns:
-            float or None: Valor do último stop, ou None se não houver
-        """
+        """Obtem o ultimo stop salvo para uma posicao."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT valor FROM stops
-                WHERE posicao_id = ?
+                WHERE posicao_id = %s
                 ORDER BY data DESC
                 LIMIT 1
             """, (posicao_id,))
@@ -1486,24 +1073,14 @@ class SQLiteRepo:
             return row[0] if row else None
 
     def adicionar_stop_posicao(self, posicao_id, data, valor):
-        """
-        Adiciona um novo stop a uma posição existente
-        
-        Args:
-            posicao_id: ID da posição
-            data: Data do stop (YYYY-MM-DD)
-            valor: Valor do stop
-        
-        Returns:
-            int: ID da posição atualizada
-        """
+        """Adiciona um novo stop a uma posicao existente."""
         self._validar_posicao_existe(posicao_id)
         
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO stops (posicao_id, data, valor)
-                VALUES (?, ?, ?)
+                VALUES (%s, %s, %s)
             """, (posicao_id, data, float(valor)))
         
         return posicao_id
@@ -1527,32 +1104,25 @@ class SQLiteRepo:
         if not posicao:
             raise ValueError(f"Posição com ID {posicao_id} não existe")
         
-        # Verificar se há alocações ativas associadas
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT COUNT(*) FROM alocacoes 
-                WHERE posicao_id = ? AND status = 'active'
+                WHERE posicao_id = %s AND status = 'active'
             """, (posicao_id,))
             count_alocacoes = cursor.fetchone()[0]
             
             if count_alocacoes > 0 and not forcar:
                 raise ValueError(
-                    f"Posição {posicao_id} possui {count_alocacoes} alocação(ões) ativa(s). "
+                    f"Posicao {posicao_id} possui {count_alocacoes} alocacao(oes) ativa(s). "
                     f"Use forcar=True para deletar mesmo assim."
                 )
 
-            # Deletar stops da posição
-            cursor.execute("DELETE FROM stops WHERE posicao_id = ?", (posicao_id,))
-
-            # Deletar alocações da posição
-            cursor.execute("DELETE FROM alocacoes WHERE posicao_id = ?", (posicao_id,))
-
-            # Deletar a posição
-            cursor.execute("DELETE FROM posicoes WHERE id = ?", (posicao_id,))
+            cursor.execute("DELETE FROM stops WHERE posicao_id = %s", (posicao_id,))
+            cursor.execute("DELETE FROM alocacoes WHERE posicao_id = %s", (posicao_id,))
+            cursor.execute("DELETE FROM posicoes WHERE id = %s", (posicao_id,))
             
-            # Verificar se foi deletado
-            cursor.execute("SELECT id FROM posicoes WHERE id = ?", (posicao_id,))
+            cursor.execute("SELECT id FROM posicoes WHERE id = %s", (posicao_id,))
             if cursor.fetchone() is None:
                 return True
         
@@ -1580,21 +1150,17 @@ class SQLiteRepo:
         self._validar_posicao_existe(posicao_id)
         self._validar_produto_existe(produto_id)
 
-        # Verificar se posição pertence ao produto
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM posicoes WHERE id = ? AND produto_id = ?",
+            cursor.execute("SELECT id FROM posicoes WHERE id = %s AND produto_id = %s",
                          (posicao_id, produto_id))
             if cursor.fetchone() is None:
-                raise ValueError(f"Posição {posicao_id} não pertence ao produto {produto_id}")
+                raise ValueError(f"Posicao {posicao_id} nao pertence ao produto {produto_id}")
 
         if not kwargs:
             return posicao_id
 
-        # Obter colunas existentes na tabela
         colunas_existentes = self.listar_colunas_atributos()
-
-        # Filtrar apenas atributos válidos (que existem como colunas)
         atributos_validos = {k: v for k, v in kwargs.items() if k in colunas_existentes}
 
         if not atributos_validos:
@@ -1603,21 +1169,19 @@ class SQLiteRepo:
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
-            # Construir query dinâmica
             colunas = ['posicao_id', 'produto_id'] + list(atributos_validos.keys())
-            placeholders = ['?'] * len(colunas)
+            placeholders = ['%s'] * len(colunas)
             valores = [posicao_id, produto_id] + list(atributos_validos.values())
 
-            # Construir parte de UPDATE para UPSERT
             updates = []
             for col in atributos_validos.keys():
-                updates.append(f"{col} = COALESCE(excluded.{col}, posicao_atributos_produto.{col})")
+                updates.append(f"{col} = COALESCE(EXCLUDED.{col}, posicao_atributos_produto.{col})")
 
             query = f"""
                 INSERT INTO posicao_atributos_produto ({', '.join(colunas)})
                 VALUES ({', '.join(placeholders)})
                 ON CONFLICT(posicao_id) DO UPDATE SET
-                    produto_id = excluded.produto_id,
+                    produto_id = EXCLUDED.produto_id,
                     {', '.join(updates)}
             """
 
@@ -1626,27 +1190,16 @@ class SQLiteRepo:
         return posicao_id
     
     def carregar_atributos_posicao(self, posicao_id):
-        """
-        Carrega atributos específicos de uma posição
-        
-        Args:
-            posicao_id: ID da posição
-        
-        Returns:
-            dict ou None: Dicionário com atributos ou None se não existir
-        """
-        conn = sqlite3.connect(self.db_path)
-        try:
+        """Carrega atributos especificos de uma posicao."""
+        with self._get_connection() as conn:
             df = pd.read_sql_query(
-                "SELECT * FROM posicao_atributos_produto WHERE posicao_id = ?",
+                "SELECT * FROM posicao_atributos_produto WHERE posicao_id = %s",
                 conn,
                 params=(posicao_id,)
             )
             if not df.empty:
                 return df.iloc[0].to_dict()
             return None
-        finally:
-            conn.close()
     
     def atualizar_atributos_posicao(self, posicao_id, **kwargs):
         """
@@ -1671,9 +1224,8 @@ class SQLiteRepo:
         valores = []
         for campo, valor in kwargs.items():
             if campo in colunas_existentes:
-                updates.append(f"{campo} = ?")
+                updates.append(f"{campo} = %s")
                 valores.append(valor)
-            # Ignorar campos não existentes silenciosamente
 
         if not updates:
             return posicao_id
@@ -1685,7 +1237,7 @@ class SQLiteRepo:
             cursor.execute(f"""
                 UPDATE posicao_atributos_produto
                 SET {', '.join(updates)}
-                WHERE posicao_id = ?
+                WHERE posicao_id = %s
             """, valores)
 
         return posicao_id
@@ -1693,23 +1245,19 @@ class SQLiteRepo:
     # ========== ALOCAÇÕES ==========
     
     def salvar_alocacao(self, produto_id, alocacao):
-        """Salva uma alocação (com validação de integridade referencial)"""
-        # Validar que o produto existe
+        """Salva uma alocacao (com validacao de integridade referencial)"""
         self._validar_produto_existe(produto_id)
-        
-        # Validar que a posição existe
         self._validar_posicao_existe(alocacao.posicao_id)
         
-        # Validar que a posição pertence ao produto
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id FROM posicoes 
-                WHERE id = ? AND produto_id = ?
+                WHERE id = %s AND produto_id = %s
             """, (alocacao.posicao_id, produto_id))
             if cursor.fetchone() is None:
                 raise ValueError(
-                    f"Posição {alocacao.posicao_id} não pertence ao produto {produto_id}"
+                    f"Posicao {alocacao.posicao_id} nao pertence ao produto {produto_id}"
                 )
         
         alocacao_id = self._gerar_id()
@@ -1720,7 +1268,7 @@ class SQLiteRepo:
                 INSERT INTO alocacoes (
                     id, produto_id, posicao_id, percentual, valor_usd, data, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (
                 alocacao_id,
                 produto_id,
@@ -1734,25 +1282,22 @@ class SQLiteRepo:
         return alocacao_id
     
     def salvar_alocacoes(self, produto_id, alocacoes):
-        """Salva múltiplas alocações (com validação de integridade referencial)"""
-        # Validar que o produto existe
+        """Salva multiplas alocacoes (com validacao de integridade referencial)"""
         self._validar_produto_existe(produto_id)
         
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
             for alocacao in alocacoes:
-                # Validar que a posição existe
                 self._validar_posicao_existe(alocacao.posicao_id)
                 
-                # Validar que a posição pertence ao produto
                 cursor.execute("""
                     SELECT id FROM posicoes 
-                    WHERE id = ? AND produto_id = ?
+                    WHERE id = %s AND produto_id = %s
                 """, (alocacao.posicao_id, produto_id))
                 if cursor.fetchone() is None:
                     raise ValueError(
-                        f"Posição {alocacao.posicao_id} não pertence ao produto {produto_id}"
+                        f"Posicao {alocacao.posicao_id} nao pertence ao produto {produto_id}"
                     )
                 
                 alocacao_id = self._gerar_id()
@@ -1760,7 +1305,7 @@ class SQLiteRepo:
                     INSERT INTO alocacoes (
                         id, produto_id, posicao_id, percentual, valor_usd, data, status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (
                     alocacao_id,
                     produto_id,
@@ -1771,42 +1316,36 @@ class SQLiteRepo:
                     alocacao.status
                 ))
         
-        return [self._gerar_id() for _ in alocacoes]  # Retornar IDs (simplificado)
+        return [self._gerar_id() for _ in alocacoes]
     
     def carregar_alocacoes_ativas(self, produto_id):
-        """Carrega alocações ativas de um produto"""
-        conn = sqlite3.connect(self.db_path)
-        try:
+        """Carrega alocacoes ativas de um produto"""
+        with self._get_connection() as conn:
             df = pd.read_sql_query("""
                 SELECT * FROM alocacoes 
-                WHERE produto_id = ? AND status = 'active'
+                WHERE produto_id = %s AND status = 'active'
             """, conn, params=(produto_id,))
             return df
-        finally:
-            conn.close()
     
     def carregar_alocacao(self, alocacao_id):
-        """Carrega uma alocação por ID"""
-        conn = sqlite3.connect(self.db_path)
-        try:
+        """Carrega uma alocacao por ID"""
+        with self._get_connection() as conn:
             df = pd.read_sql_query(
-                "SELECT * FROM alocacoes WHERE id = ?",
+                "SELECT * FROM alocacoes WHERE id = %s",
                 conn,
                 params=(alocacao_id,)
             )
             if not df.empty:
                 return df.iloc[0].to_dict()
             return None
-        finally:
-            conn.close()
     
     def atualizar_alocacao(self, alocacao_id, **kwargs):
-        """Atualiza uma alocação existente"""
+        """Atualiza uma alocacao existente"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM alocacoes WHERE id = ?", (alocacao_id,))
+            cursor.execute("SELECT id FROM alocacoes WHERE id = %s", (alocacao_id,))
             if cursor.fetchone() is None:
-                raise ValueError(f"Alocação com ID {alocacao_id} não existe")
+                raise ValueError(f"Alocacao com ID {alocacao_id} nao existe")
             
             campos_permitidos = ['percentual', 'valor_usd', 'data', 'status']
             
@@ -1814,15 +1353,15 @@ class SQLiteRepo:
             valores = []
             for campo, valor in kwargs.items():
                 if campo in campos_permitidos:
-                    updates.append(f"{campo} = ?")
+                    updates.append(f"{campo} = %s")
                     valores.append(valor)
                 else:
-                    raise ValueError(f"Campo '{campo}' não é permitido para atualização")
+                    raise ValueError(f"Campo '{campo}' nao e permitido para atualizacao")
             
             if updates:
                 valores.append(alocacao_id)
                 cursor.execute(f"""
-                    UPDATE alocacoes SET {', '.join(updates)} WHERE id = ?
+                    UPDATE alocacoes SET {', '.join(updates)} WHERE id = %s
                 """, valores)
         
         return alocacao_id
@@ -1830,8 +1369,7 @@ class SQLiteRepo:
     # ========== CARTEIRAS ==========
     
     def salvar_carteira(self, carteira):
-        """Salva ou atualiza uma carteira (UPSERT com validação de integridade)"""
-        # Validar que o produto existe
+        """Salva ou atualiza uma carteira (UPSERT com validacao de integridade)"""
         self._validar_produto_existe(carteira.produto_id)
         
         with self._get_connection() as conn:
@@ -1841,13 +1379,13 @@ class SQLiteRepo:
                     produto_id, valor_disponivel, valor_investido,
                     pnl_nao_realizado, valor_total, data_atualizacao
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT(produto_id) DO UPDATE SET
-                    valor_disponivel = excluded.valor_disponivel,
-                    valor_investido = excluded.valor_investido,
-                    pnl_nao_realizado = excluded.pnl_nao_realizado,
-                    valor_total = excluded.valor_total,
-                    data_atualizacao = excluded.data_atualizacao
+                    valor_disponivel = EXCLUDED.valor_disponivel,
+                    valor_investido = EXCLUDED.valor_investido,
+                    pnl_nao_realizado = EXCLUDED.pnl_nao_realizado,
+                    valor_total = EXCLUDED.valor_total,
+                    data_atualizacao = EXCLUDED.data_atualizacao
             """, (
                 carteira.produto_id,
                 carteira.valor_disponivel,
@@ -1863,10 +1401,9 @@ class SQLiteRepo:
         """Carrega carteira de um produto"""
         from domain.carteira import Carteira
         
-        conn = sqlite3.connect(self.db_path)
-        try:
+        with self._get_connection() as conn:
             df = pd.read_sql_query(
-                "SELECT * FROM carteiras WHERE produto_id = ?",
+                "SELECT * FROM carteiras WHERE produto_id = %s",
                 conn,
                 params=(produto_id,)
             )
@@ -1882,26 +1419,21 @@ class SQLiteRepo:
                     data_atualizacao=row['data_atualizacao']
                 )
             return None
-        finally:
-            conn.close()
     
     # ========== VALORES DIÁRIOS ==========
     # (Mantido igual - lê do Parquet do CoinGecko)
     
     def verificar_ativo_rastreado(self, ativo):
-        """Verifica se um ativo já está sendo rastreado"""
-        conn = sqlite3.connect(self.db_path)
-        try:
+        """Verifica se um ativo ja esta sendo rastreado"""
+        with self._get_connection() as conn:
             df = pd.read_sql_query(
-                "SELECT * FROM ativos_rastreados WHERE ativo = ?",
+                "SELECT * FROM ativos_rastreados WHERE ativo = %s",
                 conn,
                 params=(ativo,)
             )
             if not df.empty:
                 return df.iloc[0].to_dict()
             return None
-        finally:
-            conn.close()
     
     def registrar_ativo_rastreado(self, ativo, data_historico_inicial=None, coingecko_id=None):
         """Registra um ativo como rastreado"""
@@ -1915,25 +1447,22 @@ class SQLiteRepo:
         
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            # Verificar se já existe
-            cursor.execute("SELECT ativo FROM ativos_rastreados WHERE ativo = ?", (ativo,))
+            cursor.execute("SELECT ativo FROM ativos_rastreados WHERE ativo = %s", (ativo,))
             if cursor.fetchone():
-                # Atualizar
                 cursor.execute("""
                     UPDATE ativos_rastreados 
-                    SET data_ultima_atualizacao = ?,
-                        data_historico_inicial = COALESCE(?, data_historico_inicial),
-                        coingecko_id = COALESCE(?, coingecko_id)
-                    WHERE ativo = ?
+                    SET data_ultima_atualizacao = %s,
+                        data_historico_inicial = COALESCE(%s, data_historico_inicial),
+                        coingecko_id = COALESCE(%s, coingecko_id)
+                    WHERE ativo = %s
                 """, (data_atual, data_historico_inicial, coingecko_id, ativo))
             else:
-                # Inserir
                 cursor.execute("""
                     INSERT INTO ativos_rastreados (
                         ativo, coingecko_id, data_primeira_insercao,
                         data_ultima_atualizacao, data_historico_inicial
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s)
                 """, (ativo, coingecko_id, data_atual, data_atual, data_historico_inicial))
         
         return ativo

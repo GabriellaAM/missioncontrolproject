@@ -9,7 +9,8 @@ Este módulo busca cotações de:
 E atualiza a tabela trade_valores_diarios.
 """
 
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import requests
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -20,10 +21,8 @@ import os
 # Carregar .env da raiz do projeto
 try:
     from dotenv import load_dotenv
-    # Tentar encontrar o .env na raiz do MissionControl
-    env_path = Path(__file__).parent.parent.parent / ".env"
-    if env_path.exists():
-        load_dotenv(env_path)
+    _project_root = Path(__file__).parent.parent.parent
+    load_dotenv(_project_root / '.env')
 except ImportError:
     pass  # python-dotenv não instalado
 
@@ -40,12 +39,10 @@ class CotacoesService:
     _precos_atuais_cache_ttl: float = 300.0  # 5 minutos
 
     def __init__(self, db_path: Optional[Path] = None, gecko_api_key: Optional[str] = None):
-        if db_path is None:
-            script_dir = Path(__file__).parent
-            products_positions_dir = script_dir.parent
-            db_path = products_positions_dir / "data" / "products_positions.db"
-
-        self.db_path = db_path
+        # db_path mantido para compatibilidade de assinatura, mas não usado
+        self.db_url = os.getenv('SUPABASE_DB_URL')
+        if not self.db_url:
+            raise ValueError("SUPABASE_DB_URL environment variable is required")
         self.gecko_api_key = gecko_api_key or os.environ.get('GECKO_API_KEY')
 
         # Cache de mapeamento ativo -> exchange_symbol
@@ -65,11 +62,8 @@ class CotacoesService:
         cls._precos_atuais_cache.update(precos)
         cls._precos_atuais_cache_ts = time.time()
 
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+    def _get_connection(self):
+        return psycopg2.connect(self.db_url)
 
     # ================================================================
     # BINANCE
@@ -491,16 +485,17 @@ class CotacoesService:
     def obter_ativo_info(self, trade_id: int) -> Optional[Dict]:
         """Obtém informações do ativo associado a um trade."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         cursor.execute("""
             SELECT p.ativo, p.coingecko_id, p.exchange_symbol
             FROM trades_turma tt
             JOIN posicoes p ON tt.posicao_id = p.id
-            WHERE tt.id = ?
+            WHERE tt.id = %s
         """, (trade_id,))
 
         row = cursor.fetchone()
+        cursor.close()
         conn.close()
         return dict(row) if row else None
 
@@ -553,8 +548,11 @@ class CotacoesService:
 
         try:
             cursor.execute("""
-                INSERT OR REPLACE INTO trade_valores_diarios (trade_id, data, preco, fonte)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO trade_valores_diarios (trade_id, data, preco, fonte)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (trade_id, data) DO UPDATE SET
+                    preco = EXCLUDED.preco,
+                    fonte = EXCLUDED.fonte
             """, (trade_id, data, preco, fonte))
             conn.commit()
             return True
@@ -563,6 +561,7 @@ class CotacoesService:
             print(f"Erro ao atualizar cotação: {e}")
             return False
         finally:
+            cursor.close()
             conn.close()
 
     def atualizar_cotacoes_turma(self, turma_id: int) -> Dict[str, Any]:
@@ -573,7 +572,7 @@ class CotacoesService:
             Dict com estatísticas da atualização
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         # Buscar trades ativos
         cursor.execute("""
@@ -581,10 +580,11 @@ class CotacoesService:
             FROM carteira_turma ct
             JOIN trades_turma tt ON ct.trade_id = tt.id
             JOIN posicoes p ON tt.posicao_id = p.id
-            WHERE ct.turma_id = ? AND ct.ativo_atual = 1
+            WHERE ct.turma_id = %s AND ct.ativo_atual = 1
         """, (turma_id,))
 
         trades = cursor.fetchall()
+        cursor.close()
         conn.close()
 
         hoje = datetime.now().strftime("%Y-%m-%d")
@@ -655,10 +655,11 @@ class CotacoesService:
             Dict com estatísticas gerais
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         cursor.execute("SELECT id, nome FROM turmas")
         turmas = cursor.fetchall()
+        cursor.close()
         conn.close()
 
         resultado = {
@@ -702,7 +703,7 @@ class CotacoesService:
         from datetime import timedelta
 
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         hoje = datetime.now().strftime("%Y-%m-%d")
         ontem = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -715,7 +716,7 @@ class CotacoesService:
                 FROM carteira_turma ct
                 JOIN trades_turma tt ON ct.trade_id = tt.id
                 JOIN posicoes p ON tt.posicao_id = p.id
-                WHERE ct.turma_id = ? AND ct.ativo_atual = 1
+                WHERE ct.turma_id = %s AND ct.ativo_atual = 1
             """, (turma_id,))
         else:
             cursor.execute("""
@@ -761,7 +762,7 @@ class CotacoesService:
             cursor.execute("""
                 SELECT MIN(data) as primeira_data, MAX(data) as ultima_data
                 FROM trade_valores_diarios
-                WHERE trade_id = ?
+                WHERE trade_id = %s
             """, (trade_id,))
             row = cursor.fetchone()
             primeira_data = row['primeira_data'] if row and row['primeira_data'] else None
@@ -831,8 +832,9 @@ class CotacoesService:
                 if item_data >= data_insercao and item_data <= ontem:
                     try:
                         cursor.execute("""
-                            INSERT OR IGNORE INTO trade_valores_diarios (trade_id, data, preco, fonte)
-                            VALUES (?, ?, ?, 'coingecko_historico')
+                            INSERT INTO trade_valores_diarios (trade_id, data, preco, fonte)
+                            VALUES (%s, %s, %s, 'coingecko_historico')
+                            ON CONFLICT (trade_id, data) DO NOTHING
                         """, (trade_id, item_data, item['preco']))
                         if cursor.rowcount > 0:
                             dias_preenchidos += 1
@@ -848,6 +850,7 @@ class CotacoesService:
             })
 
         conn.commit()
+        cursor.close()
         conn.close()
 
         return resultado
@@ -897,7 +900,7 @@ if __name__ == "__main__":
     # Teste básico
     service = criar_cotacoes_service()
     print("CotacoesService criado com sucesso")
-    print(f"Database: {service.db_path}")
+    print(f"Database URL: {'Configurado' if service.db_url else 'AVISO: URL não encontrada'}")
     print(f"CoinGecko API Pro: {'Configurada' if service.gecko_api_key else 'AVISO: API key não encontrada'}")
 
     # Testar busca de preço

@@ -18,15 +18,21 @@ Fórmulas:
 - Rentabilidade Acumulada % = (Valor Hoje / Capital Base - 1) * 100
 """
 
-import sqlite3
+import psycopg2
+import psycopg2.extras
+import os
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
+from dotenv import load_dotenv
 
 from .cotacoes_service import CotacoesService
+
+_project_root = Path(__file__).parent.parent.parent
+load_dotenv(_project_root / '.env')
 
 
 # =============================================================================
@@ -148,11 +154,10 @@ class RentabilidadeService:
     FORMATO_DATA = "%Y-%m-%d"
 
     def __init__(self, db_path: Optional[Path] = None):
-        if db_path is None:
-            script_dir = Path(__file__).parent
-            products_positions_dir = script_dir.parent
-            db_path = products_positions_dir / "data" / "products_positions.db"
-        self.db_path = db_path
+        # db_path parameter kept for signature compatibility but ignored
+        self.db_url = os.getenv('SUPABASE_DB_URL')
+        if self.db_url is None:
+            raise ValueError("SUPABASE_DB_URL environment variable is not set")
         self.cotacoes_service = CotacoesService(db_path)
 
     def _validar_side(self, side: Any) -> Tuple[bool, Optional[str]]:
@@ -358,19 +363,16 @@ class RentabilidadeService:
             )
         return None
 
-    def _get_connection(self) -> sqlite3.Connection:
+    def _get_connection(self):
         """
         Obtém conexão com o banco de dados.
 
         Raises:
-            sqlite3.Error: Se não conseguir conectar
+            psycopg2.Error: Se não conseguir conectar
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        return psycopg2.connect(self.db_url)
 
-    def _get_connection_safe(self) -> Tuple[Optional[sqlite3.Connection], Optional[Erro]]:
+    def _get_connection_safe(self) -> Tuple[Optional[Any], Optional[Erro]]:
         """
         Obtém conexão com o banco de dados de forma segura.
 
@@ -378,28 +380,26 @@ class RentabilidadeService:
             Tuple (conexão ou None, erro ou None)
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON")
+            conn = psycopg2.connect(self.db_url)
             return conn, None
-        except sqlite3.Error as e:
+        except psycopg2.Error as e:
             return None, Erro(
                 tipo=TipoErro.CONEXAO_BANCO,
                 trade_id=None,
                 ativo=None,
                 mensagem=f"Erro ao conectar com banco de dados: {str(e)}",
-                valor_encontrado=str(self.db_path)
+                valor_encontrado=str(self.db_url)
             )
 
-    def _verificar_posicao_existe(self, posicao_id: int, conn: sqlite3.Connection) -> Optional[Erro]:
+    def _verificar_posicao_existe(self, posicao_id: int, conn) -> Optional[Erro]:
         """
         Verifica se uma posição existe no banco.
 
         Returns:
             Erro se posição não existe, None caso contrário
         """
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM posicoes WHERE id = ?", (posicao_id,))
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute("SELECT id FROM posicoes WHERE id = %s", (posicao_id,))
         if cursor.fetchone() is None:
             return Erro(
                 tipo=TipoErro.POSICAO_NAO_ENCONTRADA,
@@ -418,8 +418,8 @@ class RentabilidadeService:
             Tuple (capital_base, erro ou None se válido)
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT capital_base FROM turmas WHERE id = ?", (turma_id,))
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute("SELECT capital_base FROM turmas WHERE id = %s", (turma_id,))
         row = cursor.fetchone()
         conn.close()
 
@@ -480,10 +480,10 @@ class RentabilidadeService:
             if status == 'timeout':
                 # Buscar do banco mesmo para hoje como fallback
                 conn = self._get_connection()
-                cursor = conn.cursor()
+                cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
                 cursor.execute("""
                     SELECT preco FROM trade_valores_diarios
-                    WHERE trade_id = ? AND data <= ?
+                    WHERE trade_id = %s AND data <= %s
                     ORDER BY data DESC
                     LIMIT 1
                 """, (trade_id, dia))
@@ -495,10 +495,10 @@ class RentabilidadeService:
 
         # Buscar do banco de dados (para dias anteriores ou fallback)
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cursor.execute("""
             SELECT preco FROM trade_valores_diarios
-            WHERE trade_id = ? AND data <= ?
+            WHERE trade_id = %s AND data <= %s
             ORDER BY data DESC
             LIMIT 1
         """, (trade_id, dia))
@@ -520,7 +520,7 @@ class RentabilidadeService:
         calcular o PnL realizado.
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         cursor.execute("""
             SELECT
@@ -545,9 +545,9 @@ class RentabilidadeService:
             JOIN turmas t ON ct.turma_id = t.id
             JOIN produtos prod ON t.produto_id = prod.id
             LEFT JOIN posicao_atributos_produto pap ON p.id = pap.posicao_id
-            WHERE ct.turma_id = ?
-            AND date(ct.data_insercao) <= date(?)
-            AND (ct.data_remocao IS NULL OR date(ct.data_remocao) >= date(?))
+            WHERE ct.turma_id = %s
+            AND date(ct.data_insercao) <= date(%s)
+            AND (ct.data_remocao IS NULL OR date(ct.data_remocao) >= date(%s))
         """, (turma_id, dia, dia))
 
         trades = []
@@ -937,7 +937,7 @@ class RentabilidadeService:
         Inclui validações de side e preços.
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         cursor.execute("""
             SELECT
@@ -953,9 +953,9 @@ class RentabilidadeService:
             JOIN turmas t ON ct.turma_id = t.id
             JOIN produtos prod ON t.produto_id = prod.id
             LEFT JOIN posicao_atributos_produto pap ON p.id = pap.posicao_id
-            WHERE ct.turma_id = ?
+            WHERE ct.turma_id = %s
             AND ct.data_remocao IS NOT NULL
-            AND date(ct.data_remocao) < date(?)
+            AND date(ct.data_remocao) < date(%s)
         """, (turma_id, dia))
 
         pnl_total = 0.0
@@ -1014,10 +1014,10 @@ class RentabilidadeService:
             Lista de DailyPortfolio ordenada por data
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         # Obter data_inicio e capital_base da turma
-        cursor.execute("SELECT data_inicio, capital_base FROM turmas WHERE id = ?", (turma_id,))
+        cursor.execute("SELECT data_inicio, capital_base FROM turmas WHERE id = %s", (turma_id,))
         row = cursor.fetchone()
         if not row:
             conn.close()
@@ -1036,7 +1036,7 @@ class RentabilidadeService:
         # PRÉ-CARREGAR: todos os trades da turma (uma única query)
         # =====================================================================
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cursor.execute("""
             SELECT
                 ct.trade_id,
@@ -1060,8 +1060,8 @@ class RentabilidadeService:
             JOIN turmas t ON ct.turma_id = t.id
             JOIN produtos prod ON t.produto_id = prod.id
             LEFT JOIN posicao_atributos_produto pap ON p.id = pap.posicao_id
-            WHERE ct.turma_id = ?
-            AND date(ct.data_insercao) <= date(?)
+            WHERE ct.turma_id = %s
+            AND date(ct.data_insercao) <= date(%s)
         """, (turma_id, data_fim))
         todos_trades = [dict(r) for r in cursor.fetchall()]
         conn.close()
@@ -1137,10 +1137,10 @@ class RentabilidadeService:
             Dict[coingecko_id, Dict[data, preco]]
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         if turma_ids:
-            placeholders = ','.join('?' * len(turma_ids))
+            placeholders = ','.join(['%s'] * len(turma_ids))
             cursor.execute(f"""
                 SELECT DISTINCT p.coingecko_id
                 FROM carteira_turma ct
@@ -1209,28 +1209,28 @@ class RentabilidadeService:
         portfolio = self.calcular_portfolio_dia(turma_id, hoje)
 
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         # Obter nome da turma
         cursor.execute("""
             SELECT t.nome, t.data_inicio, t.capital_base, p.nome as produto_nome
             FROM turmas t
             JOIN produtos p ON t.produto_id = p.id
-            WHERE t.id = ?
+            WHERE t.id = %s
         """, (turma_id,))
         turma_info = cursor.fetchone()
 
         # Contar trades ativos
         cursor.execute("""
             SELECT COUNT(*) as count FROM carteira_turma
-            WHERE turma_id = ? AND ativo_atual = 1
+            WHERE turma_id = %s AND ativo_atual = 1
         """, (turma_id,))
         trades_ativos = cursor.fetchone()['count']
 
         # Contar trades fechados
         cursor.execute("""
             SELECT COUNT(*) as count FROM carteira_turma
-            WHERE turma_id = ? AND ativo_atual = 0
+            WHERE turma_id = %s AND ativo_atual = 0
         """, (turma_id,))
         trades_fechados = cursor.fetchone()['count']
 
@@ -1278,14 +1278,14 @@ class RentabilidadeService:
             Dict com informações da turma e série de rentabilidade
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         # Obter informações da turma
         cursor.execute("""
             SELECT t.nome, t.data_inicio, t.capital_base, p.nome as produto_nome
             FROM turmas t
             JOIN produtos p ON t.produto_id = p.id
-            WHERE t.id = ?
+            WHERE t.id = %s
         """, (turma_id,))
         turma_info = cursor.fetchone()
         conn.close()
@@ -1348,12 +1348,12 @@ class RentabilidadeService:
             Lista de dicts com rentabilidade histórica de cada turma
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         # Buscar todas as turmas
         if produto_id:
             cursor.execute("""
-                SELECT id FROM turmas WHERE produto_id = ? ORDER BY data_inicio DESC
+                SELECT id FROM turmas WHERE produto_id = %s ORDER BY data_inicio DESC
             """, (produto_id,))
         else:
             cursor.execute("SELECT id FROM turmas ORDER BY data_inicio DESC")
@@ -1384,7 +1384,7 @@ class RentabilidadeService:
             Lista de dicts com resumo de rentabilidade de cada turma
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         hoje = datetime.now().strftime("%Y-%m-%d")
 
         # Query otimizada: busca turmas com métricas pré-calculadas em uma única query
@@ -1401,7 +1401,7 @@ class RentabilidadeService:
                     (SELECT COUNT(*) FROM carteira_turma WHERE turma_id = t.id AND ativo_atual = 0) as trades_fechados
                 FROM turmas t
                 JOIN produtos p ON t.produto_id = p.id
-                WHERE t.produto_id = ?
+                WHERE t.produto_id = %s
                 ORDER BY t.data_inicio DESC
             """, (produto_id,))
         else:
@@ -1429,7 +1429,7 @@ class RentabilidadeService:
         turma_ids = [t['turma_id'] for t in turmas]
 
         # Buscar todos os trades de todas as turmas de uma vez (inclui coingecko_id)
-        placeholders = ','.join('?' * len(turma_ids))
+        placeholders = ','.join(['%s'] * len(turma_ids))
         cursor.execute(f"""
             SELECT
                 ct.turma_id,
@@ -1449,7 +1449,7 @@ class RentabilidadeService:
             JOIN posicoes p ON tt.posicao_id = p.id
             LEFT JOIN posicao_atributos_produto pap ON p.id = pap.posicao_id
             WHERE ct.turma_id IN ({placeholders})
-            AND date(ct.data_insercao) <= date(?)
+            AND date(ct.data_insercao) <= date(%s)
         """, (*turma_ids, hoje))
 
         trades_por_turma = {}
@@ -1572,11 +1572,11 @@ if __name__ == "__main__":
     # Teste básico
     service = criar_rentabilidade_service()
     print("RentabilidadeService criado com sucesso")
-    print(f"Database: {service.db_path}")
+    print(f"Database URL: {service.db_url}")
 
     # Testar com primeira turma
     conn = service._get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cursor.execute("SELECT id, nome FROM turmas LIMIT 3")
     turmas = cursor.fetchall()
     conn.close()

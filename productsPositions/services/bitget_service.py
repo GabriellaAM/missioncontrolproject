@@ -236,18 +236,18 @@ def fetch_spot_positions(credentials: Dict[str, str]) -> List[Dict]:
 
 def _batch_load_quantities(repo, posicao_ids: List[int]) -> Dict[int, float]:
     """Batch load quantities for multiple positions in a single query."""
-    import sqlite3
+    import psycopg2
     if not posicao_ids:
         return {}
 
-    placeholders = ','.join(['?' for _ in posicao_ids])
+    placeholders = ','.join(['%s' for _ in posicao_ids])
     query = f"""
         SELECT posicao_id, quantidade
         FROM posicao_atributos_produto
         WHERE posicao_id IN ({placeholders})
     """
 
-    conn = sqlite3.connect(repo.db_path)
+    conn = psycopg2.connect(repo.db_url)
     try:
         cursor = conn.cursor()
         cursor.execute(query, posicao_ids)
