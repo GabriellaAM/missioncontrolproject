@@ -1,4 +1,4 @@
-# Dependencias para Vercel serverless functions
+# Dependencias do projeto (Render / Cloud)
 psycopg2-binary>=2.9.0
 pandas>=2.0.0
 numpy>=1.24.0

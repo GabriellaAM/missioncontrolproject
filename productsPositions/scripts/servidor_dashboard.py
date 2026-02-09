@@ -3691,6 +3691,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'erro': str(e)}, 500)
             return
 
+        # API: Check ATR Stops (endpoint para cron externo)
+        if path == '/api/check_stops':
+            try:
+                from services.atr_stop_service import atualizar_stops_posicoes_abertas
+                resultado = atualizar_stops_posicoes_abertas(repo, verbose=False)
+                self._send_json({
+                    'status': 'ok',
+                    'timestamp': datetime.now().isoformat(),
+                    'resultado': {
+                        'updated': resultado.get('updated', 0),
+                        'skipped': resultado.get('skipped', 0),
+                        'unchanged': resultado.get('unchanged', 0),
+                        'breached': resultado.get('breached', 0),
+                        'errors': resultado.get('errors', [])
+                    }
+                })
+            except Exception as e:
+                self._send_json({'status': 'error', 'erro': str(e)}, 500)
+            return
+
+        # Health check (para monitoramento)
+        if path == '/health':
+            self._send_json({'status': 'ok', 'timestamp': datetime.now().isoformat()})
+            return
+
         # 404
         self._send_html("<h1>404 - Pagina nao encontrada</h1>", 404)
 
@@ -3698,9 +3723,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]}")
 
 
-def iniciar_servidor(porta=8080):
+def iniciar_servidor(porta=8080, host='localhost'):
     """Inicia o servidor do dashboard"""
-    servidor = HTTPServer(('localhost', porta), DashboardHandler)
+    servidor = HTTPServer((host, porta), DashboardHandler)
 
     print("=" * 60)
     print("  DASHBOARD WEB - Products & Positions")
@@ -3736,5 +3761,7 @@ def iniciar_servidor(porta=8080):
 
 if __name__ == "__main__":
     import sys
-    porta = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
-    iniciar_servidor(porta)
+    import os
+    porta = int(os.environ.get('PORT', sys.argv[1] if len(sys.argv) > 1 else 8080))
+    host = os.environ.get('HOST', '0.0.0.0' if os.environ.get('PORT') else 'localhost')
+    iniciar_servidor(porta, host)
