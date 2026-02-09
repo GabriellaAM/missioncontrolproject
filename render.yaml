@@ -4,6 +4,7 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python productsPositions/scripts/servidor_dashboard.py
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"

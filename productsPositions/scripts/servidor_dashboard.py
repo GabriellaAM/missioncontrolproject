@@ -2584,7 +2584,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             data = {}
 
-        repo = SQLiteRepo()
+        try:
+            repo = SQLiteRepo()
+        except Exception as e:
+            self._send_json({'erro': f'Falha na conexao com banco: {str(e)}'}, 500)
+            return
+
         path = self.path
 
         # Criar produto
@@ -2996,7 +3001,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        repo = SQLiteRepo()
+        # Health check (sem conexao ao banco - para Render/cloud)
+        if path == '/health':
+            self._send_json({'status': 'ok', 'timestamp': datetime.now().isoformat()})
+            return
+
+        try:
+            repo = SQLiteRepo()
+        except Exception as e:
+            self._send_json({'erro': f'Falha na conexao com banco: {str(e)}'}, 500)
+            return
 
         # Dashboard principal
         if path == '/' or path == '':
@@ -3709,11 +3723,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 })
             except Exception as e:
                 self._send_json({'status': 'error', 'erro': str(e)}, 500)
-            return
-
-        # Health check (para monitoramento)
-        if path == '/health':
-            self._send_json({'status': 'ok', 'timestamp': datetime.now().isoformat()})
             return
 
         # 404
