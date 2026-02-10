@@ -14,7 +14,7 @@ import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 
-from storage.sqlite_repo import SQLiteRepo
+from storage.sqlite_repo import get_repo
 from domain.posicao import Posicao
 from domain.produto import Produto
 from domain.tipo import Tipo
@@ -726,7 +726,7 @@ def get_visualizacao_html(produto, visualizacao, df_viz):
     nome_viz = visualizacao['nome']
     tipo = produto.get('tipo', 'Outro')
 
-    repo = SQLiteRepo()
+    repo = get_repo()
     visualizacoes = repo.listar_visualizacoes(produto_id)
 
     tabs_html = ""
@@ -2585,7 +2585,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             data = {}
 
         try:
-            repo = SQLiteRepo()
+            repo = get_repo()
         except Exception as e:
             self._send_json({'erro': f'Falha na conexao com banco: {str(e)}'}, 500)
             return
@@ -3007,7 +3007,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            repo = SQLiteRepo()
+            repo = get_repo()
         except Exception as e:
             self._send_json({'erro': f'Falha na conexao com banco: {str(e)}'}, 500)
             return
@@ -3736,9 +3736,23 @@ def iniciar_servidor(porta=8080, host='localhost'):
     """Inicia o servidor do dashboard"""
     servidor = HTTPServer((host, porta), DashboardHandler)
 
+    # Detectar qual banco está em uso (PostgreSQL ou SQLite fallback)
+    try:
+        repo = get_repo()
+        if getattr(repo, '_use_sqlite', False):
+            _db_info = "SQLite local (fallback)"
+        else:
+            import re as _re
+            _url = getattr(repo, 'db_url', '') or ''
+            _host_match = _re.search(r'@([^:/@]+)', _url)
+            _db_info = f"PostgreSQL ({_host_match.group(1)})" if _host_match else "PostgreSQL (configurado)"
+    except Exception as e:
+        _db_info = f"Erro: {e}"
+
     print("=" * 60)
     print("  DASHBOARD WEB - Products & Positions")
     print("=" * 60)
+    print(f"\n  Banco de dados: {_db_info}")
     print(f"\n  Servidor iniciado em: http://localhost:{porta}")
     print(f"\n  Rotas principais:")
     print(f"    /                  - Dashboard")

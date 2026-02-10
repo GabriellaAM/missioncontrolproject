@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from analytics.queries import *
-from storage.sqlite_repo import SQLiteRepo
+from storage.sqlite_repo import get_repo
 
 def display_produtos():
     """
@@ -19,7 +19,7 @@ def display_produtos():
     Returns:
         pd.DataFrame: DataFrame com todos os produtos
     """
-    repo = SQLiteRepo()
+    repo = get_repo()
     produtos = repo.listar_produtos()
     
     if not produtos:
@@ -53,7 +53,7 @@ def display_posicoes_abertas(produto_id=None, formatar=True, filtrar_colunas=Tru
         is_meme = False
         if produto_id is not None:
             try:
-                repo = SQLiteRepo()
+                repo = get_repo()
                 prod_info = repo.carregar_produto(produto_id)
                 if prod_info and 'nome' in prod_info:
                     nome_produto = str(prod_info['nome']).lower()
@@ -165,7 +165,7 @@ def display_posicoes_abertas(produto_id=None, formatar=True, filtrar_colunas=Tru
     tipo_perpetuos = False
     if produto_id is not None and produto_id != 4970919917:
         try:
-            repo = SQLiteRepo()
+            repo = get_repo()
             prod_info = repo.carregar_produto(produto_id)
             if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
                 tipo_str = prod_info['tipo'].lower()
@@ -536,7 +536,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
     tipo_perpetuos = False
     if produto_id is not None and produto_id != 4970919917:
         try:
-            repo = SQLiteRepo()
+            repo = get_repo()
             prod_info = repo.carregar_produto(produto_id)
             if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
                 tipo_str = prod_info['tipo'].lower()
@@ -552,7 +552,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
         is_meme = False
         if produto_id is not None:
             try:
-                repo = SQLiteRepo()
+                repo = get_repo()
                 prod_info = repo.carregar_produto(produto_id)
                 if prod_info and 'nome' in prod_info:
                     nome_produto = str(prod_info['nome']).lower()
@@ -822,7 +822,7 @@ def display_manutencoes_signals(produto_id=4970919917, formatar=True):
         is_meme = False
         if produto_id is not None:
             try:
-                repo = SQLiteRepo()
+                repo = get_repo()
                 prod_info = repo.carregar_produto(produto_id)
                 if prod_info and 'nome' in prod_info:
                     nome_produto = str(prod_info['nome']).lower()
@@ -945,7 +945,7 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
     tipo_perpetuos = False
     if produto_id is not None and produto_id != 4970919917:
         try:
-            repo = SQLiteRepo()
+            repo = get_repo()
             prod_info = repo.carregar_produto(produto_id)
             if prod_info and 'tipo' in prod_info and isinstance(prod_info['tipo'], str):
                 tipo_str = prod_info['tipo'].lower()
@@ -1006,7 +1006,7 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
         is_meme = False
         if produto_id is not None:
             try:
-                repo = SQLiteRepo()
+                repo = get_repo()
                 prod_info = repo.carregar_produto(produto_id)
                 if prod_info and 'nome' in prod_info:
                     nome_produto = str(prod_info['nome']).lower()

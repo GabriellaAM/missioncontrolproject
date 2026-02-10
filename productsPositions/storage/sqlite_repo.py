@@ -1,5 +1,7 @@
 import psycopg2
 import psycopg2.extras
+import sqlite3
+import warnings
 import pandas as pd
 import uuid
 import os
@@ -10,6 +12,10 @@ from datetime import datetime
 from typing import Optional, List, Dict
 from contextlib import contextmanager
 from dotenv import load_dotenv
+import threading
+
+# Suprime aviso do pandas ao usar nosso wrapper SQLite (compatível com DBAPI2)
+warnings.filterwarnings("ignore", message=".*Other DBAPI2.*", category=UserWarning)
 
 
 def _resolver_ipv4_do_host(db_url: str) -> str:
@@ -30,11 +36,80 @@ def _resolver_ipv4_do_host(db_url: str) -> str:
     return None
 
 
+def _sqlite_path_from_url(url: str) -> Path:
+    """Extrai path do arquivo a partir de URL sqlite:///path."""
+    path_str = url.replace("sqlite:///", "").replace("sqlite://", "")
+    return Path(path_str)
+
+
+class _SqliteCursorWrapper:
+    """Cursor que traduz placeholders %s (PostgreSQL) para ? (SQLite).
+    Expõe todos os atributos DBAPI2 necessários (description, rowcount, etc.)
+    para compatibilidade com pd.read_sql_query."""
+    def __init__(self, cursor):
+        self._cur = cursor
+    def execute(self, sql, params=None):
+        sql = sql.replace("%s", "?")
+        if params is not None:
+            self._cur.execute(sql, params)
+        else:
+            self._cur.execute(sql)
+        return self
+    def executemany(self, sql, params_list):
+        sql = sql.replace("%s", "?")
+        self._cur.executemany(sql, params_list)
+        return self
+    def fetchone(self): return self._cur.fetchone()
+    def fetchall(self): return self._cur.fetchall()
+    def fetchmany(self, size=None):
+        return self._cur.fetchmany(size) if size else self._cur.fetchmany()
+    def close(self): self._cur.close()
+    def __iter__(self): return iter(self._cur)
+    @property
+    def description(self): return self._cur.description
+    @property
+    def rowcount(self): return self._cur.rowcount
+    @property
+    def lastrowid(self): return self._cur.lastrowid
+
+
+class _SqliteConnectionWrapper:
+    """Wrapper de conexão sqlite3 compatível com DBAPI2 + pandas."""
+    _is_sqlite = True
+    def __init__(self, conn):
+        self._conn = conn
+    def cursor(self):
+        return _SqliteCursorWrapper(self._conn.cursor())
+    def execute(self, sql, params=None):
+        """Permite conn.execute() direto (usado por pandas internamente)."""
+        sql = sql.replace("%s", "?")
+        if params is not None:
+            return self._conn.execute(sql, params)
+        return self._conn.execute(sql)
+    def commit(self): self._conn.commit()
+    def rollback(self): self._conn.rollback()
+    def close(self): self._conn.close()
+    def __enter__(self): return self
+    def __exit__(self, *a): self.close(); return False
+
+
 def connect_pg(db_url, **kwargs):
     """
-    Wrapper para psycopg2.connect que forca IPv4.
-    Usar em vez de psycopg2.connect(db_url) em todo o projeto.
+    Conexão com o banco: PostgreSQL (Supabase) ou SQLite local (fallback).
+    - URL postgresql://... -> psycopg2 (força IPv4 quando possível).
+    - URL sqlite:///path -> sqlite3 (fallback quando Supabase inacessível).
     """
+    if not db_url:
+        raise RuntimeError("db_url nao informado")
+    if db_url.strip().lower().startswith("sqlite://"):
+        path = _sqlite_path_from_url(db_url)
+        if not path.is_absolute():
+            path = Path(__file__).parent.parent.parent / path
+        conn = sqlite3.connect(str(path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-64000")
+        return _SqliteConnectionWrapper(conn)
     hostaddr = _resolver_ipv4_do_host(db_url)
     if hostaddr:
         return psycopg2.connect(db_url, hostaddr=hostaddr, **kwargs)
@@ -44,30 +119,92 @@ def connect_pg(db_url, **kwargs):
 _project_root = Path(__file__).parent.parent.parent
 load_dotenv(_project_root / '.env')
 
+# Path do SQLite local (fallback quando Supabase inacessível)
+_DEFAULT_SQLITE_PATH = Path(__file__).parent.parent / "data" / "products_positions.db"
+# Evita imprimir a mensagem de fallback várias vezes por processo
+_FALLBACK_PRINTED = False
+
+
 class SQLiteRepo:
     """
-    Repositorio usando PostgreSQL (Supabase) para armazenar todos os dados.
-    
-    NOTA: O nome da classe permanece SQLiteRepo para compatibilidade com imports
-    existentes em todo o projeto. A implementacao agora usa PostgreSQL/Supabase.
-    
-    Estrutura:
-    - Banco PostgreSQL no Supabase (conexao via SUPABASE_DB_URL no .env)
-    - (valores diarios continuam sendo lidos de data_parquet/crypto_data/coingecko/{coingecko_id}/data.parquet)
+    Repositorio: PostgreSQL (Supabase) ou SQLite local (fallback).
+    Tenta Supabase primeiro; se falhar (DNS, timeout, rede), usa
+    productsPositions/data/products_positions.db.
     """
     
     def __init__(self, db_path=None):
-        # db_path ignorado - usamos SUPABASE_DB_URL do .env
-        self.db_url = os.getenv('SUPABASE_DB_URL')
+        self._use_sqlite = False
+        self.db_url = (os.getenv('SUPABASE_DB_URL') or '').strip()
+        if db_path:
+            self.db_url = "sqlite:///" + str(Path(db_path).resolve())
+            self._use_sqlite = True
+        elif self.db_url and not self.db_url.lower().startswith("sqlite://"):
+            # Tentar resolver o host primeiro (evita psycopg2 quando DNS falha)
+            use_supabase = True
+            host_match = re.search(r'@([^:/@]+)', self.db_url)
+            if host_match:
+                hostname = host_match.group(1)
+                try:
+                    socket.getaddrinfo(hostname, None, socket.AF_INET)
+                except (socket.gaierror, socket.error, OSError):
+                    use_supabase = False
+            if use_supabase:
+                try:
+                    conn = connect_pg(self.db_url, connect_timeout=3)
+                    conn.close()
+                except (Exception, OSError):
+                    use_supabase = False
+            if not use_supabase:
+                self.db_url = "sqlite:///" + str(_DEFAULT_SQLITE_PATH.resolve())
+                self._use_sqlite = True
+                global _FALLBACK_PRINTED
+                if not _FALLBACK_PRINTED:
+                    _FALLBACK_PRINTED = True
+                    print("[SQLiteRepo] Supabase inacessível; usando banco local:", _DEFAULT_SQLITE_PATH)
         if not self.db_url:
-            raise RuntimeError("SUPABASE_DB_URL nao configurado no .env")
-        
-        # Inicializar banco de dados (garantir schema e dados essenciais)
-        self._inicializar_banco()
+            self.db_url = "sqlite:///" + str(_DEFAULT_SQLITE_PATH.resolve())
+            self._use_sqlite = True
+            print("[SQLiteRepo] SUPABASE_DB_URL não configurado; usando banco local:", _DEFAULT_SQLITE_PATH)
+        self._sqlite_conn = None  # conexão única reutilizada em modo SQLite (apenas na thread que a criou)
+        self._sqlite_conn_thread_id = None
+        if not self._use_sqlite:
+            self._inicializar_banco()
     
     @contextmanager
     def _get_connection(self):
-        """Context manager para conexoes PostgreSQL com commit automatico"""
+        """Context manager: PostgreSQL abre/fecha a cada uso; SQLite reutiliza uma conexão só na mesma thread."""
+        if self._use_sqlite:
+            current_id = threading.current_thread().ident
+            if self._sqlite_conn is not None and self._sqlite_conn_thread_id == current_id:
+                conn = self._sqlite_conn
+                try:
+                    yield conn
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                return
+            if self._sqlite_conn is None:
+                self._sqlite_conn = connect_pg(self.db_url)
+                self._sqlite_conn_thread_id = current_id
+                conn = self._sqlite_conn
+                try:
+                    yield conn
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                return
+            conn = connect_pg(self.db_url)
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+            return
         conn = connect_pg(self.db_url)
         try:
             yield conn
@@ -77,9 +214,17 @@ class SQLiteRepo:
             raise
         finally:
             conn.close()
-    
+
+    def connection(self):
+        """Context manager para uso externo (ex: analytics). Em SQLite reutiliza a mesma conexão."""
+        return self._get_connection()
+
     def _get_pg_columns(self, conn, table_name):
-        """Retorna lista de colunas de uma tabela no PostgreSQL."""
+        """Retorna lista de colunas da tabela (PostgreSQL ou SQLite)."""
+        if getattr(conn, "_is_sqlite", False):
+            with conn.cursor() as cur:
+                cur.execute("PRAGMA table_info(" + table_name.replace("'", "''") + ")")
+                return [row[1] for row in cur.fetchall()]
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT column_name FROM information_schema.columns
@@ -97,7 +242,9 @@ class SQLiteRepo:
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}{default_clause}")
 
     def _inicializar_banco(self):
-        """Garante que o schema existe e dados essenciais estao presentes."""
+        """Garante que o schema existe e dados essenciais (apenas PostgreSQL)."""
+        if self._use_sqlite:
+            return
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
@@ -1526,3 +1673,16 @@ class SQLiteRepo:
         # Converter para formato esperado (lista de tuplas)
         return [(v['data'], v['preco']) for v in valores]
 
+
+_REPO_INSTANCE = None
+
+
+def get_repo():
+    """Singleton do repositório (evita múltiplas instâncias e checagens por request)."""
+    global _REPO_INSTANCE
+    if _REPO_INSTANCE is None:
+        try:
+            _REPO_INSTANCE = SQLiteRepo()
+        except Exception:
+            _REPO_INSTANCE = SQLiteRepo(db_path=str(_DEFAULT_SQLITE_PATH))
+    return _REPO_INSTANCE

@@ -2,7 +2,7 @@ import pandas as pd
 import psycopg2
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from storage.sqlite_repo import SQLiteRepo, connect_pg
+from storage.sqlite_repo import SQLiteRepo, get_repo
 from services.valor_diario_service import ValorDiarioService
 from services.atr_stop_service import atualizar_stops_posicoes_abertas
 from services.bitget_service import sync_positions_with_exchange, get_bitget_credentials
@@ -31,13 +31,10 @@ def _batch_load_stops(repo, posicao_ids: list) -> dict:
         )
     """
 
-    conn = connect_pg(repo.db_url)
-    try:
+    with repo.connection() as conn:
         cursor = conn.cursor()
         cursor.execute(query, posicao_ids)
         return {row[0]: row[1] for row in cursor.fetchall()}
-    finally:
-        conn.close()
 
 
 def _batch_load_prices(coingecko_ids: list) -> dict:
@@ -100,13 +97,10 @@ def _batch_load_allocations(repo, produto_id: int, ativos: list) -> dict:
         WHERE rn = 1 AND ativo IN ({placeholders})
     """
 
-    conn = connect_pg(repo.db_url)
-    try:
+    with repo.connection() as conn:
         cursor = conn.cursor()
         cursor.execute(query, [produto_id] + ativos_upper)
         return {row[0]: row[1] for row in cursor.fetchall()}
-    finally:
-        conn.close()
 
 
 # Cache for product type detection (avoid repeated DB lookups)
@@ -172,13 +166,12 @@ def calcular_rr(preco_atual, alvo2, stop_atual):
 
 def posicoes_abertas(produto_id=None):
     """Retorna posições abertas com preço atual e atributos do produto"""
-    repo = SQLiteRepo()
+    repo = get_repo()
 
     # Detectar tipo de produto (com cache)
     tipo_spot, tipo_perpetuos = _get_product_type(repo, produto_id)
 
-    conn = connect_pg(repo.db_url)
-    try:
+    with repo.connection() as conn:
         if produto_id:
             if produto_id == 4970919917:
                 # Produto Crypto Signals: incluir atributos específicos (motivo, perfil, alvos)
@@ -216,8 +209,6 @@ def posicoes_abertas(produto_id=None):
                 WHERE p.status = 'open'
             """
             df = pd.read_sql_query(query, conn)
-    finally:
-        conn.close()
 
     # ATR stop updates: only run if there are positions with atr_multiplier configured
     # Optimized to ~0.05s per position (was 0.15s before numpy optimization)
@@ -251,8 +242,7 @@ def posicoes_abertas(produto_id=None):
 
     # Reload positions after Bitget sync to get updated quantities
     if bitget_ran:
-        conn = connect_pg(repo.db_url)
-        try:
+        with repo.connection() as conn:
             query = """
                 SELECT
                     p.*,
@@ -267,8 +257,6 @@ def posicoes_abertas(produto_id=None):
                 WHERE p.status = 'open' AND p.produto_id = %s
             """
             df = pd.read_sql_query(query, conn, params=(produto_id,))
-        finally:
-            conn.close()
 
     # Adicionar preço atual, stop atual, RR e PnL dinamicamente para posições abertas
     if not df.empty:
@@ -475,13 +463,12 @@ def posicoes_abertas(produto_id=None):
 
 def posicoes_fechadas(produto_id=None):
     """Retorna posições fechadas com atributos do produto"""
-    repo = SQLiteRepo()
+    repo = get_repo()
 
     # Detectar tipo de produto (com cache)
     tipo_spot, tipo_perpetuos = _get_product_type(repo, produto_id)
 
-    conn = connect_pg(repo.db_url)
-    try:
+    with repo.connection() as conn:
         if produto_id:
             if produto_id == 4970919917:
                 # Produto Crypto Signals: incluir atributos específicos
@@ -520,8 +507,6 @@ def posicoes_fechadas(produto_id=None):
                 WHERE p.status = 'closed'
             """
             df = pd.read_sql_query(query, conn)
-    finally:
-        conn.close()
     
     # Para posições fechadas, preço_atual = preço_saida
     # Calcular stop_atual para TODAS as posições fechadas
@@ -694,11 +679,8 @@ def manutencoes_signals(produto_id=4970919917):
             'stop_valor', 'rr'
         ])
 
-    repo = SQLiteRepo()
-    import psycopg2
-    conn = connect_pg(repo.db_url)
-
-    try:
+    repo = get_repo()
+    with repo.connection() as conn:
         # Selecionar todas as posições abertas do produto e seus stops (exceto o primeiro stop)
         query = """
             SELECT 
@@ -729,8 +711,6 @@ def manutencoes_signals(produto_id=4970919917):
             ORDER BY p.id, s.data
         """
         df = pd.read_sql_query(query, conn, params=(produto_id,))
-    finally:
-        conn.close()
 
     if df.empty:
         return df
@@ -814,7 +794,7 @@ def historico_posicoes(produto_id=None):
 
 def valores_do_ativo(ativo, data_inicio=None, data_fim=None):
     """Retorna valores diários de um ativo"""
-    repo = SQLiteRepo()
+    repo = get_repo()
     valores = repo.obter_valores_diarios_ativo(ativo, data_inicio, data_fim)
     
     if not valores:
@@ -824,7 +804,7 @@ def valores_do_ativo(ativo, data_inicio=None, data_fim=None):
 
 def valores_da_posicao(posicao_id):
     """Retorna valores diários de uma posição (via JOIN com ativo)"""
-    repo = SQLiteRepo()
+    repo = get_repo()
     
     # Carregar posição para obter o ativo
     posicao = repo.carregar_posicao(posicao_id)
@@ -839,26 +819,22 @@ def valores_da_posicao(posicao_id):
 
 def alocacoes_do_produto(produto_id):
     """Retorna alocações ativas de um produto"""
-    repo = SQLiteRepo()
+    repo = get_repo()
     return repo.carregar_alocacoes_ativas(produto_id)
 
 def alocacoes_da_posicao(posicao_id):
     """Retorna alocações de uma posição específica"""
-    repo = SQLiteRepo()
-    import psycopg2
-    conn = connect_pg(repo.db_url)
-    try:
+    repo = get_repo()
+    with repo.connection() as conn:
         df = pd.read_sql_query("""
             SELECT * FROM alocacoes 
             WHERE posicao_id = %s AND status = 'active'
         """, conn, params=(posicao_id,))
         return df
-    finally:
-        conn.close()
 
 def resumo_alocacoes(produto_id):
     """Resumo de alocações com informações de posições"""
-    repo = SQLiteRepo()
+    repo = get_repo()
     
     # Carregar alocações com JOIN direto no SQL
     with repo._get_connection() as conn:
@@ -874,7 +850,7 @@ def resumo_alocacoes(produto_id):
 
 def carteira_do_produto(produto_id):
     """Retorna carteira de um produto"""
-    repo = SQLiteRepo()
+    repo = get_repo()
     carteira = repo.carregar_carteira(produto_id)
     
     if carteira:
@@ -890,7 +866,7 @@ def carteira_do_produto(produto_id):
 
 def resumo_completo_produto(produto_id):
     """Resumo completo: produto + carteira"""
-    repo = SQLiteRepo()
+    repo = get_repo()
     
     # Carregar produto
     produto = repo.carregar_produto(produto_id)
