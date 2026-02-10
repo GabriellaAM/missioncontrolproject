@@ -106,6 +106,10 @@ class SQLiteRepo:
 
             # Migrar usa_quantidade para produtos existentes
             self._migrar_usa_quantidade(conn)
+
+            # Garantir colunas ATR na tabela posicoes
+            self._ensure_column(conn, 'posicoes', 'atr_period', 'INTEGER')
+            self._ensure_column(conn, 'posicoes', 'atr_multiplier', 'DOUBLE PRECISION')
     
     def _garantir_tipos_essenciais(self, conn=None):
         """Garante que os tipos essenciais (Perpetuos e Spot) sempre existam"""

@@ -70,7 +70,9 @@ CREATE TABLE IF NOT EXISTS posicoes (
     data_saida TEXT,
     preco_saida DOUBLE PRECISION,
     status TEXT NOT NULL CHECK(status IN ('open', 'closed')),
-    atr_data_inicio TEXT
+    atr_data_inicio TEXT,
+    atr_period INTEGER,
+    atr_multiplier DOUBLE PRECISION
 );
 
 -- Stops
