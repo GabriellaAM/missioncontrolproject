@@ -3,8 +3,8 @@ services:
     name: missioncontrol-dashboard
     runtime: python
     buildCommand: pip install -r requirements.txt
-    # Migração one-shot: atualiza alocações no Supabase (CSVs AC, EXC, HB, LC). Após rodar, remova o "migrar_alocacoes_para_supabase.py && " e delete o script.
-    startCommand: python productsPositions/scripts/migrar_alocacoes_para_supabase.py && python productsPositions/scripts/servidor_dashboard.py
+    # Dashboard inicia a migração de alocações (CSVs -> Supabase) em thread na subida; logs no Render.
+    startCommand: python productsPositions/scripts/servidor_dashboard.py
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION

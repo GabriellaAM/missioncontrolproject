@@ -41,6 +41,24 @@ from turmas_dashboard import (
 )
 
 
+def _rodar_migracao_alocacoes_em_background():
+    """Roda migração de alocações (CSVs -> Supabase) em thread para não bloquear o servidor. Logs aparecem no Render."""
+    import threading
+    _scripts_dir = Path(__file__).resolve().parent
+    def _run():
+        try:
+            if str(_scripts_dir) not in sys.path:
+                sys.path.insert(0, str(_scripts_dir))
+            from atualizar_alocacoes_csv import main
+            print("[MIGRAÇÃO ALOCAÇÕES] Iniciando em background (mesmo banco do dashboard)...", flush=True)
+            n = main(dry_run=False)
+            print(f"[MIGRAÇÃO ALOCAÇÕES] Concluída. Total de alocações inseridas: {n}", flush=True)
+        except Exception as e:
+            print(f"[MIGRAÇÃO ALOCAÇÕES] ERRO: {e}", flush=True)
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+
 def atualizar_dados_produto(repo, produto_id: int) -> dict:
     """
     Atualiza dados do produto em paralelo (Bitget sync + ATR stops).
@@ -3774,6 +3792,9 @@ def iniciar_servidor(porta=8080, host='localhost'):
         webbrowser.open(f'http://localhost:{porta}')
     except:
         pass
+
+    # Migração de alocações (CSVs -> Supabase) em background; logs aparecem no Render
+    _rodar_migracao_alocacoes_em_background()
 
     try:
         servidor.serve_forever()
