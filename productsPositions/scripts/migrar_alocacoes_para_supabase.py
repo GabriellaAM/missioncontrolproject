@@ -9,6 +9,7 @@ Quando o Supabase estiver atualizado, você pode:
   2. Deletar este arquivo (migrar_alocacoes_para_supabase.py)
 """
 from pathlib import Path
+import os
 import sys
 
 # Incluir scripts/ e productsPositions para o import
@@ -17,10 +18,19 @@ _root_pp = _scripts.parent
 sys.path.insert(0, str(_scripts))
 sys.path.insert(0, str(_root_pp))
 
-from atualizar_alocacoes_csv import main
+from atualizar_alocacoes_csv import main, DIR_CSV, PRODUTOS_CSV
 
 if __name__ == "__main__":
-    print("[MIGRAÇÃO ALOCAÇÕES] Iniciando atualização no banco (Supabase se SUPABASE_DB_URL estiver definido)...")
+    # Diagnóstico para Render: env e CSVs
+    has_url = bool((os.getenv("SUPABASE_DB_URL") or "").strip())
+    print("[MIGRAÇÃO ALOCAÇÕES] SUPABASE_DB_URL definido:", has_url)
+    if not has_url:
+        print("[MIGRAÇÃO ALOCAÇÕES] AVISO: Sem SUPABASE_DB_URL o app usa SQLite local (dados efêmeros no Render).")
+    print("[MIGRAÇÃO ALOCAÇÕES] Diretório CSVs:", DIR_CSV)
+    for nome in PRODUTOS_CSV:
+        p = DIR_CSV / f"{nome}.csv"
+        print(f"  {nome}.csv existe: {p.exists()}")
+    print("[MIGRAÇÃO ALOCAÇÕES] Iniciando atualização no banco...")
     try:
         n = main(dry_run=False)
         print("[MIGRAÇÃO ALOCAÇÕES] Concluída com sucesso. Total de alocações inseridas:", n)

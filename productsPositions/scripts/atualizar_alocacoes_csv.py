@@ -16,7 +16,8 @@ from services.alocacao_service import AlocacaoService
 # Nome do CSV (arquivo) -> nome do produto no banco (se diferente)
 PRODUTOS_CSV = ("AC", "EXC", "HB", "LC")
 MAP_CSV_TO_PRODUTO = {"AC": "Alphacoins"}  # CSV AC.csv -> produto "Alphacoins"
-DIR_CSV = Path(__file__).parent.parent  # productsPositions
+# Caminho absoluto para funcionar no Render (CWD pode ser qualquer)
+DIR_CSV = Path(__file__).resolve().parent.parent  # productsPositions
 
 
 def _parse_percentual(val):
