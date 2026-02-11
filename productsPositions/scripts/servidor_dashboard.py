@@ -44,17 +44,20 @@ from turmas_dashboard import (
 def _rodar_migracao_alocacoes_em_background():
     """Roda migração de alocações (CSVs -> Supabase) em thread para não bloquear o servidor. Logs aparecem no Render."""
     import threading
+    import traceback
     _scripts_dir = Path(__file__).resolve().parent
     def _run():
         try:
             if str(_scripts_dir) not in sys.path:
                 sys.path.insert(0, str(_scripts_dir))
+            print("[MIGRAÇÃO ALOCAÇÕES] Importando módulo...", flush=True)
             from atualizar_alocacoes_csv import main
-            print("[MIGRAÇÃO ALOCAÇÕES] Iniciando em background (mesmo banco do dashboard)...", flush=True)
+            print("[MIGRAÇÃO ALOCAÇÕES] Iniciando (mesmo banco do dashboard)...", flush=True)
             n = main(dry_run=False)
             print(f"[MIGRAÇÃO ALOCAÇÕES] Concluída. Total de alocações inseridas: {n}", flush=True)
         except Exception as e:
             print(f"[MIGRAÇÃO ALOCAÇÕES] ERRO: {e}", flush=True)
+            print(traceback.format_exc(), flush=True)
     t = threading.Thread(target=_run, daemon=True)
     t.start()
 
@@ -3028,6 +3031,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             repo = get_repo()
         except Exception as e:
             self._send_json({'erro': f'Falha na conexao com banco: {str(e)}'}, 500)
+            return
+
+        # API: Rodar migração de alocações (CSVs -> Supabase) sob demanda; retorna resultado para diagnóstico
+        if path == '/api/migrar-alocacoes':
+            try:
+                _scripts_dir = Path(__file__).resolve().parent
+                if str(_scripts_dir) not in sys.path:
+                    sys.path.insert(0, str(_scripts_dir))
+                from atualizar_alocacoes_csv import main, PRODUTOS_CSV, DIR_CSV
+                erros = []
+                for nome in PRODUTOS_CSV:
+                    p = DIR_CSV / f"{nome}.csv"
+                    if not p.exists():
+                        erros.append(f"CSV não encontrado: {p}")
+                if erros:
+                    self._send_json({'sucesso': False, 'erro': 'Arquivos não encontrados', 'detalhes': erros}, 400)
+                    return
+                n = main(dry_run=False)
+                self._send_json({'sucesso': True, 'alocacoes_inseridas': n})
+            except Exception as e:
+                import traceback
+                self._send_json({'sucesso': False, 'erro': str(e), 'traceback': traceback.format_exc()}, 500)
             return
 
         # Dashboard principal

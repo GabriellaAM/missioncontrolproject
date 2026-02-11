@@ -197,7 +197,9 @@ def processar_produto(repo, nome_produto, dry_run=False):
 
 
 def main(dry_run=False):
-    print("[ALOCAÇÕES] Conectando ao banco e carregando CSVs (AC, EXC, HB, LC)...")
+    def _log(msg):
+        print(msg, flush=True)
+    _log("[ALOCAÇÕES] Conectando ao banco e carregando CSVs (AC, EXC, HB, LC)...")
     repo = SQLiteRepo()
     total_del = 0
     total_ins = 0
@@ -209,18 +211,18 @@ def main(dry_run=False):
         total_ins += ins_n
         all_erros.extend(erros)
         if dry_run:
-            print(f"  [dry-run] {nome}: deletaria {del_n} alocações, inseriria {ins_n}")
+            _log(f"  [dry-run] {nome}: deletaria {del_n} alocações, inseriria {ins_n}")
         else:
-            print(f"  {nome}: {del_n} alocações removidas, {ins_n} inseridas.")
+            _log(f"  {nome}: {del_n} alocações removidas, {ins_n} inseridas.")
 
     if all_erros:
-        print("\nAvisos/erros:")
+        _log("\nAvisos/erros:")
         for e in all_erros[:50]:
-            print(f"  - {e}")
+            _log(f"  - {e}")
         if len(all_erros) > 50:
-            print(f"  ... e mais {len(all_erros) - 50}.")
+            _log(f"  ... e mais {len(all_erros) - 50}.")
 
-    print(f"\nTotal: {total_del} removidas, {total_ins} inseridas.")
+    _log(f"\nTotal: {total_del} removidas, {total_ins} inseridas.")
     return total_ins
 
 
