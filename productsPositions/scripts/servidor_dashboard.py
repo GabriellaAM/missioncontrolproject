@@ -3039,16 +3039,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 _scripts_dir = Path(__file__).resolve().parent
                 if str(_scripts_dir) not in sys.path:
                     sys.path.insert(0, str(_scripts_dir))
-                from atualizar_alocacoes_csv import main, PRODUTOS_CSV, DIR_CSV
+                import importlib
+                import atualizar_alocacoes_csv as _mod_aloc
+                importlib.reload(_mod_aloc)
                 erros = []
-                for nome in PRODUTOS_CSV:
-                    p = DIR_CSV / f"{nome}.csv"
+                for nome in _mod_aloc.PRODUTOS_CSV:
+                    p = _mod_aloc.DIR_CSV / f"{nome}.csv"
                     if not p.exists():
                         erros.append(f"CSV não encontrado: {p}")
                 if erros:
                     self._send_json({'sucesso': False, 'erro': 'Arquivos não encontrados', 'detalhes': erros}, 400)
                     return
-                n = main(dry_run=False)
+                n = _mod_aloc.main(dry_run=False)
                 self._send_json({'sucesso': True, 'alocacoes_inseridas': n})
             except Exception as e:
                 import traceback
