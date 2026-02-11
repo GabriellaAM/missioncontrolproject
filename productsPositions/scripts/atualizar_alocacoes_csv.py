@@ -15,7 +15,7 @@ from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from storage.sqlite_repo import SQLiteRepo
+from storage.sqlite_repo import connect_pg
 
 # Nome do CSV (arquivo) -> nome do produto no banco (se diferente)
 PRODUTOS_CSV = ("AC", "EXC", "HB", "LC")
@@ -167,14 +167,23 @@ def processar_produto(conn, nome_produto, dry_run=False):
 
 
 def main(dry_run=False):
+    import os
     _log("[ALOCAÇÕES] Conectando ao banco e carregando CSVs (AC, EXC, HB, LC)...")
-    repo = SQLiteRepo()
+
+    # Abrir conexão diretamente (sem context manager do repo que faz auto-commit)
+    db_url = (os.getenv('SUPABASE_DB_URL') or '').strip()
+    if not db_url:
+        _log("[ALOCAÇÕES] ERRO: SUPABASE_DB_URL não definido.")
+        return 0
+
+    conn = connect_pg(db_url)
+    conn.autocommit = False  # transação explícita
+
     total_del = 0
     total_ins = 0
     all_erros = []
 
-    # Uma única conexão para toda a migração
-    with repo._get_connection() as conn:
+    try:
         for nome in PRODUTOS_CSV:
             _log(f"  Processando {nome}...")
             del_n, ins_n, erros_prod = processar_produto(conn, nome, dry_run=dry_run)
@@ -185,6 +194,16 @@ def main(dry_run=False):
                 _log(f"  [dry-run] {nome}: deletaria {del_n} alocações, inseriria {ins_n}")
             else:
                 _log(f"  {nome}: {del_n} alocações removidas, {ins_n} inseridas.")
+
+        if not dry_run:
+            conn.commit()
+            _log("[ALOCAÇÕES] Commit realizado.")
+    except Exception as e:
+        conn.rollback()
+        _log(f"[ALOCAÇÕES] ERRO — rollback: {e}")
+        raise
+    finally:
+        conn.close()
 
     if all_erros:
         _log("\nAvisos/erros:")
