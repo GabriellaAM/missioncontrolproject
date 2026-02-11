@@ -28,6 +28,10 @@ google_client.json
 # --------------------
 # 4) Data Files
 # --------------------
+# SQLite DB e arquivos WAL (não versionar)
+productsPositions/data/*.db
+productsPositions/data/*.db-wal
+productsPositions/data/*.db-shm
 # Ignore all CSVs in macro and micro folders
 data/onChainData/*.csv
 data/macro/fredData/*.csv
