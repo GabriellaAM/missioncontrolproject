@@ -41,27 +41,6 @@ from turmas_dashboard import (
 )
 
 
-def _rodar_migracao_alocacoes_em_background():
-    """Roda migração de alocações (CSVs -> Supabase) em thread para não bloquear o servidor. Logs aparecem no Render."""
-    import threading
-    import traceback
-    _scripts_dir = Path(__file__).resolve().parent
-    def _run():
-        try:
-            if str(_scripts_dir) not in sys.path:
-                sys.path.insert(0, str(_scripts_dir))
-            print("[MIGRAÇÃO ALOCAÇÕES] Importando módulo...", flush=True)
-            from atualizar_alocacoes_csv import main
-            print("[MIGRAÇÃO ALOCAÇÕES] Iniciando (mesmo banco do dashboard)...", flush=True)
-            n = main(dry_run=False)
-            print(f"[MIGRAÇÃO ALOCAÇÕES] Concluída. Total de alocações inseridas: {n}", flush=True)
-        except Exception as e:
-            print(f"[MIGRAÇÃO ALOCAÇÕES] ERRO: {e}", flush=True)
-            print(traceback.format_exc(), flush=True)
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-
-
 def atualizar_dados_produto(repo, produto_id: int) -> dict:
     """
     Atualiza dados do produto em paralelo (Bitget sync + ATR stops).
@@ -2368,138 +2347,335 @@ def get_confirmar_remover_atributo_html(produto, config):
 
 
 def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
-    """Formulario para criar alocacao"""
+    """Pagina de alocacoes em formato planilha (tabela Data x Ativos com %) — tema escuro"""
     produtos_options = ""
     if produtos:
         for p in produtos:
             selected = 'selected' if produto_id and p['id'] == produto_id else ''
             produtos_options += f'<option value="{p["id"]}" {selected}>{p["nome"]}</option>'
-
-    posicoes_options = ""
-    if posicoes is not None and not posicoes.empty:
-        for _, pos in posicoes.iterrows():
-            pos_id = pos.get('id') or pos.get('ID')
-            ativo = pos.get('ativo') or pos.get('Ativo', 'N/A')
-            side = pos.get('side') or pos.get('tipo', '')
-            preco = pos.get('preco_entrada') or pos.get('Preço Entrada', 0)
-            posicoes_options += f'<option value="{pos_id}">{ativo} ({side}) - ${preco:,.2f}</option>'
-
+    hoje = date.today().isoformat()
     return f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Nova Alocacao</title>
-        <style>{get_base_styles()}</style>
+        <title>Alocacoes - Tabela</title>
+        <style>
+            {get_base_styles()}
+
+            /* ===== Planilha de alocacoes ===== */
+            .aloc-header {{
+                display: flex; align-items: center; gap: 1.2rem;
+                margin-bottom: 1.5rem; flex-wrap: wrap;
+            }}
+            .aloc-header select {{
+                padding: 10px 14px; border-radius: 8px;
+                border: 2px solid #2a2a4a; background: #16213e;
+                color: #eee; font-size: 1em; min-width: 200px;
+            }}
+            .aloc-header select:focus {{ border-color: #4ecca3; outline: none; }}
+            .aloc-header label {{ color: #4ecca3; font-weight: bold; }}
+            .aloc-meta {{
+                display: flex; gap: 1rem; flex-wrap: wrap;
+                margin-bottom: 1rem; align-items: center;
+            }}
+            .aloc-meta .pill {{
+                background: rgba(78,204,163,.12); border: 1px solid rgba(78,204,163,.25);
+                color: #4ecca3; padding: 5px 14px; border-radius: 20px; font-size: .85em;
+            }}
+            .aloc-meta .pill b {{ color: #fff; }}
+
+            /* Scroll wrapper */
+            .sheet-wrap {{
+                overflow-x: auto; border-radius: 12px;
+                border: 1px solid #2a2a4a; max-height: 65vh; overflow-y: auto;
+            }}
+            .sheet {{
+                border-collapse: separate; border-spacing: 0;
+                width: max-content; min-width: 100%; font-size: .85rem;
+            }}
+            .sheet th, .sheet td {{
+                padding: 7px 10px; white-space: nowrap;
+                border-right: 1px solid #2a2a4a; border-bottom: 1px solid #2a2a4a;
+            }}
+            .sheet thead {{ position: sticky; top: 0; z-index: 3; }}
+            .sheet thead th {{
+                background: linear-gradient(135deg, #4ecca3 0%, #3db892 100%);
+                color: #1a1a2e; font-weight: 700; text-align: center;
+            }}
+            .sheet thead th:first-child {{ text-align: left; }}
+            .sheet tbody td {{ text-align: right; color: #ccc; }}
+            .sheet tbody td:first-child {{ text-align: left; color: #eee; font-weight: 600; }}
+            .sheet tbody tr:nth-child(odd) td {{ background: #16213e; }}
+            .sheet tbody tr:nth-child(even) td {{ background: #1a1f33; }}
+            .sheet tbody tr:hover td {{ background: rgba(78,204,163,.08); }}
+
+            /* Celulas com valor > 0 ganham destaque */
+            .sheet .val-pos {{ color: #4ecca3; }}
+            .sheet .val-zero {{ color: #444; }}
+
+            /* Coluna Data fixa */
+            .sheet .col-data {{
+                position: sticky; left: 0; z-index: 2;
+                border-right: 2px solid #4ecca3;
+            }}
+            .sheet thead .col-data {{ z-index: 4; }}
+
+            /* Coluna Total */
+            .sheet .col-total {{
+                font-weight: 700; color: #ffd93d !important;
+                border-left: 2px solid #4ecca3;
+            }}
+
+            /* Nova linha (inputs) */
+            .sheet tr.nova-linha td {{
+                background: rgba(78,204,163,.08) !important;
+                border-top: 2px solid #4ecca3;
+            }}
+            .sheet .nova-linha input[type="date"],
+            .sheet .nova-linha input[type="number"] {{
+                background: #16213e; color: #eee;
+                border: 1px solid #2a2a4a; border-radius: 5px;
+                padding: 5px 7px; font-size: .85rem;
+            }}
+            .sheet .nova-linha input:focus {{
+                border-color: #4ecca3; outline: none;
+                box-shadow: 0 0 0 2px rgba(78,204,163,.25);
+            }}
+            .sheet .nova-linha input[type="date"] {{ width: 135px; }}
+            .sheet .nova-linha input[type="number"] {{ width: 68px; text-align: right; }}
+
+            /* Paginacao */
+            .pag-bar {{
+                display: flex; align-items: center; gap: .7rem;
+                margin-top: 1rem; flex-wrap: wrap;
+            }}
+            .pag-bar button {{
+                background: #16213e; color: #4ecca3; border: 1px solid #2a2a4a;
+                padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: .85em;
+            }}
+            .pag-bar button:hover {{ border-color: #4ecca3; }}
+            .pag-bar button:disabled {{ opacity: .35; cursor: default; }}
+            .pag-bar span {{ color: #888; font-size: .85em; }}
+
+            /* Botao salvar */
+            .save-bar {{
+                display: flex; gap: 1rem; align-items: center;
+                margin-top: 1.2rem; flex-wrap: wrap;
+            }}
+
+            /* Loading */
+            .sheet-loading {{
+                text-align: center; padding: 3rem; color: #4ecca3;
+            }}
+            .sheet-loading .spinner {{
+                width: 36px; height: 36px; margin: 0 auto 1rem;
+                border: 3px solid #2a2a4a; border-top-color: #4ecca3;
+                border-radius: 50%; animation: spin .8s linear infinite;
+            }}
+            @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        </style>
     </head>
     <body>
         {get_navbar()}
         <div class="container">
-            <div class="card" style="max-width: 600px; margin: 0 auto;">
-                <h2>Nova Alocacao</h2>
+            <div class="card">
+                <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:1rem; margin-bottom:8px;">
+                    <h2 style="margin:0;">Alocacoes</h2>
+                    <a href="/" class="btn btn-secondary btn-sm">Voltar ao Dashboard</a>
+                </div>
+                <p style="color:#718096; margin-bottom:1.2rem; font-size:.9em;">
+                    Tabela estilo planilha: uma linha por data, colunas por ativo (%).
+                    Adicione uma nova linha abaixo e salve.
+                </p>
+
+                <div class="aloc-header">
+                    <label for="produtoSelect">Produto</label>
+                    <select id="produtoSelect" onchange="carregarTabela()">
+                        <option value="">Selecione um produto...</option>
+                        {produtos_options}
+                    </select>
+                </div>
+
                 <div id="alert" class="alert"></div>
-                <form id="alocacaoForm">
-                    <div class="form-group">
-                        <label>Produto</label>
-                        <select name="produto_id" id="produtoSelect" required onchange="carregarPosicoes()">
-                            <option value="">Selecione um produto</option>
-                            {produtos_options}
-                        </select>
+                <div id="metaInfo"></div>
+                <div id="tabelaContainer">
+                    <div class="empty-state">
+                        <h3>Nenhum produto selecionado</h3>
+                        <p>Escolha um produto acima para visualizar e adicionar alocacoes.</p>
                     </div>
-                    <div class="form-group">
-                        <label>Posicao</label>
-                        <select name="posicao_id" id="posicaoSelect" required>
-                            <option value="">Selecione uma posicao</option>
-                            {posicoes_options}
-                        </select>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Percentual Alocado (%)</label>
-                            <input type="number" name="percentual" step="0.01" min="0" max="100" required placeholder="Ex: 10.5">
-                        </div>
-                        <div class="form-group">
-                            <label>Valor em USD (opcional)</label>
-                            <input type="number" name="valor_usd" step="0.01" placeholder="Ex: 1000.00">
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Data da Alocacao (opcional)</label>
-                        <input type="date" name="data_alocacao" value="{date.today().isoformat()}">
-                    </div>
-                    <div class="actions">
-                        <button type="submit" class="btn btn-primary">Criar Alocacao</button>
-                        <a href="/" class="btn btn-secondary">Cancelar</a>
-                    </div>
-                </form>
+                </div>
             </div>
         </div>
         <script>
-            async function carregarPosicoes() {{
-                const produtoId = document.getElementById('produtoSelect').value;
-                const posicaoSelect = document.getElementById('posicaoSelect');
+        (function() {{
+            const PAGE_SIZE = 30;
+            let allData = null;
+            let currentPage = 0;
 
-                if (!produtoId) {{
-                    posicaoSelect.innerHTML = '<option value="">Selecione uma posicao</option>';
+            function esc(s) {{
+                if (s == null) return '';
+                const d = document.createElement('div');
+                d.textContent = s;
+                return d.innerHTML;
+            }}
+
+            function showAlert(msg, isError) {{
+                const el = document.getElementById('alert');
+                el.textContent = msg;
+                el.className = 'alert show ' + (isError ? 'alert-error' : 'alert-success');
+                setTimeout(() => el.className = 'alert', 5000);
+            }}
+
+            window.carregarTabela = async function() {{
+                const pid = document.getElementById('produtoSelect').value;
+                const ct = document.getElementById('tabelaContainer');
+                const mi = document.getElementById('metaInfo');
+                if (!pid) {{
+                    ct.innerHTML = '<div class="empty-state"><h3>Nenhum produto selecionado</h3><p>Escolha um produto acima.</p></div>';
+                    mi.innerHTML = '';
                     return;
                 }}
-
+                ct.innerHTML = '<div class="sheet-loading"><div class="spinner"></div>Carregando alocacoes...</div>';
+                mi.innerHTML = '';
                 try {{
-                    const response = await fetch('/api/posicoes/abertas/' + produtoId);
-                    const data = await response.json();
-
-                    posicaoSelect.innerHTML = '<option value="">Selecione uma posicao</option>';
-                    if (data.posicoes) {{
-                        data.posicoes.forEach(pos => {{
-                            const option = document.createElement('option');
-                            option.value = pos.id;
-                            option.textContent = pos.ativo + ' (' + pos.side + ') - $' + pos.preco_entrada.toFixed(2);
-                            posicaoSelect.appendChild(option);
-                        }});
-                    }}
-                }} catch (error) {{
-                    console.error('Erro ao carregar posicoes:', error);
+                    const r = await fetch('/api/alocacoes/tabela?produto_id=' + pid);
+                    const data = await r.json();
+                    if (data.erro) throw new Error(data.erro);
+                    allData = data;
+                    currentPage = Math.max(0, Math.ceil(data.linhas.length / PAGE_SIZE) - 1);
+                    renderMeta();
+                    renderPage();
+                }} catch (e) {{
+                    ct.innerHTML = '<div class="empty-state"><h3>Erro</h3><p>' + esc(e.message) + '</p></div>';
                 }}
+            }};
+
+            function renderMeta() {{
+                const d = allData;
+                const total = d.linhas.length;
+                const mi = document.getElementById('metaInfo');
+                mi.innerHTML = '<div class="aloc-meta">'
+                    + '<div class="pill"><b>' + esc(d.produto_nome) + '</b></div>'
+                    + '<div class="pill">' + d.colunas.length + ' ativos</div>'
+                    + '<div class="pill">' + total + ' datas</div>'
+                    + '</div>';
             }}
 
-            document.getElementById('alocacaoForm').addEventListener('submit', async (e) => {{
-                e.preventDefault();
-                const form = e.target;
-                const alert = document.getElementById('alert');
+            function renderPage() {{
+                const d = allData;
+                const colunas = d.colunas;
+                const linhas = d.linhas;
+                const totalPages = Math.max(1, Math.ceil(linhas.length / PAGE_SIZE));
+                const start = currentPage * PAGE_SIZE;
+                const end = Math.min(start + PAGE_SIZE, linhas.length);
+                const slice = linhas.slice(start, end);
+                const hoje = '{hoje}';
 
-                const dados = {{
-                    produto_id: parseInt(form.produto_id.value),
-                    posicao_id: parseInt(form.posicao_id.value),
-                    percentual: parseFloat(form.percentual.value),
-                    valor_usd: form.valor_usd.value ? parseFloat(form.valor_usd.value) : null,
-                    data_alocacao: form.data_alocacao.value || null
-                }};
+                let h = '<div class="sheet-wrap"><table class="sheet"><thead><tr>';
+                h += '<th class="col-data">Data</th>';
+                colunas.forEach(c => h += '<th>' + esc(c) + '</th>');
+                h += '<th class="col-total">Total</th>';
+                h += '</tr></thead><tbody>';
 
-                try {{
-                    const response = await fetch('/api/alocacao/criar', {{
-                        method: 'POST',
-                        headers: {{'Content-Type': 'application/json'}},
-                        body: JSON.stringify(dados)
+                slice.forEach(linha => {{
+                    let soma = 0;
+                    h += '<tr><td class="col-data">' + esc(linha.data) + '</td>';
+                    colunas.forEach(col => {{
+                        const v = (linha.ativos && linha.ativos[col]) || 0;
+                        soma += v;
+                        const cls = v > 0 ? 'val-pos' : 'val-zero';
+                        h += '<td class="' + cls + '">' + v.toFixed(2) + '%</td>';
                     }});
-                    const result = await response.json();
-                    if (result.sucesso) {{
-                        alert.className = 'alert alert-success show';
-                        alert.textContent = 'Alocacao criada!';
-                        setTimeout(() => window.location.href = '/produto/' + dados.produto_id, 1000);
-                    }} else {{
-                        throw new Error(result.erro);
-                    }}
-                }} catch (error) {{
-                    alert.className = 'alert alert-error show';
-                    alert.textContent = 'Erro: ' + error.message;
-                }}
-            }});
+                    h += '<td class="col-total">' + soma.toFixed(1) + '%</td></tr>';
+                }});
 
-            // Carregar posicoes se produto ja selecionado
-            if (document.getElementById('produtoSelect').value) {{
-                carregarPosicoes();
+                // Nova linha
+                h += '<tr class="nova-linha"><td class="col-data"><input type="date" id="novaData" value="' + hoje + '"></td>';
+                colunas.forEach(col => {{
+                    h += '<td><input type="number" step="0.01" min="0" max="100" placeholder="-" data-ativo="' + esc(col) + '"></td>';
+                }});
+                h += '<td class="col-total" id="novaTotal">0%</td></tr>';
+                h += '</tbody></table></div>';
+
+                // Paginacao
+                h += '<div class="pag-bar">';
+                h += '<button onclick="pagAloc(0)" ' + (currentPage <= 0 ? 'disabled' : '') + '>&#171; Inicio</button>';
+                h += '<button onclick="pagAloc(' + (currentPage - 1) + ')" ' + (currentPage <= 0 ? 'disabled' : '') + '>&#8249; Anterior</button>';
+                h += '<span>Pagina ' + (currentPage + 1) + ' de ' + totalPages + '</span>';
+                h += '<button onclick="pagAloc(' + (currentPage + 1) + ')" ' + (currentPage >= totalPages - 1 ? 'disabled' : '') + '>Proxima &#8250;</button>';
+                h += '<button onclick="pagAloc(' + (totalPages - 1) + ')" ' + (currentPage >= totalPages - 1 ? 'disabled' : '') + '>Fim &#187;</button>';
+                h += '</div>';
+
+                // Botao salvar
+                h += '<div class="save-bar">';
+                h += '<button type="button" class="btn btn-primary" onclick="salvarLinha()">Salvar nova linha</button>';
+                h += '<span style="color:#666; font-size:.85em;">Preencha os percentuais na linha verde e clique em salvar.</span>';
+                h += '</div>';
+
+                document.getElementById('tabelaContainer').innerHTML = h;
+
+                // Listener para atualizar total da nova linha em tempo real
+                document.querySelectorAll('#tabelaContainer .nova-linha input[type="number"]').forEach(inp => {{
+                    inp.addEventListener('input', atualizarNovaTotal);
+                }});
             }}
+
+            function atualizarNovaTotal() {{
+                let soma = 0;
+                document.querySelectorAll('#tabelaContainer .nova-linha input[data-ativo]').forEach(inp => {{
+                    const v = parseFloat(inp.value);
+                    if (!isNaN(v)) soma += v;
+                }});
+                const el = document.getElementById('novaTotal');
+                if (el) el.textContent = soma.toFixed(1) + '%';
+            }}
+
+            window.pagAloc = function(page) {{
+                if (!allData) return;
+                const totalPages = Math.max(1, Math.ceil(allData.linhas.length / PAGE_SIZE));
+                currentPage = Math.max(0, Math.min(page, totalPages - 1));
+                renderPage();
+            }};
+
+            window.salvarLinha = async function() {{
+                if (!allData) return;
+                const produtoId = allData.produto_id;
+                const dataLinha = document.getElementById('novaData').value;
+                if (!dataLinha) {{ showAlert('Informe a data.', true); return; }}
+                const ativos = {{}};
+                document.querySelectorAll('#tabelaContainer .nova-linha input[data-ativo]').forEach(inp => {{
+                    const val = parseFloat(inp.value);
+                    if (!isNaN(val) && val > 0) ativos[inp.getAttribute('data-ativo')] = val;
+                }});
+                if (Object.keys(ativos).length === 0) {{
+                    showAlert('Informe ao menos um percentual > 0.', true);
+                    return;
+                }}
+                try {{
+                    const r = await fetch('/api/alocacao/linha', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ produto_id: produtoId, data: dataLinha, ativos: ativos }})
+                    }});
+                    const result = await r.json();
+                    if (result.sucesso) {{
+                        let msg = result.alocacoes_criadas + ' alocacao(oes) salvas.';
+                        if (result.avisos && result.avisos.length) msg += ' Avisos: ' + result.avisos.join('; ');
+                        showAlert(msg, false);
+                        carregarTabela();
+                    }} else {{
+                        showAlert(result.erro || 'Erro desconhecido', true);
+                    }}
+                }} catch (e) {{
+                    showAlert('Erro: ' + e.message, true);
+                }}
+            }};
+
+            // Auto-load se produto ja selecionado
+            if (document.getElementById('produtoSelect').value) carregarTabela();
+        }})();
         </script>
     </body>
     </html>
@@ -2966,6 +3142,55 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'sucesso': False, 'erro': str(e)}, 400)
             return
 
+        # Criar uma linha de alocações (uma data com % por ativo) — estilo planilha
+        if path == '/api/alocacao/linha':
+            try:
+                produto_id = int(data.get('produto_id'))
+                data_linha = (data.get('data') or '').strip()[:10]
+                ativos = data.get('ativos') or {}
+                if not data_linha:
+                    self._send_json({'sucesso': False, 'erro': 'Campo "data" obrigatório'}, 400)
+                    return
+                from services.alocacao_service import AlocacaoService
+                with repo._get_connection() as conn:
+                    cur = conn.cursor()
+                    criadas = 0
+                    erros = []
+                    for ativo, pct in ativos.items():
+                        if not ativo or (isinstance(pct, (int, float)) and float(pct) <= 0):
+                            continue
+                        try:
+                            pct_f = float(pct)
+                        except (TypeError, ValueError):
+                            continue
+                        if pct_f <= 0:
+                            continue
+                        cur.execute("""
+                            SELECT id FROM posicoes
+                            WHERE produto_id = %s AND ativo = %s
+                            AND (data_entrada IS NULL OR data_entrada <= %s)
+                            AND (data_saida IS NULL OR data_saida >= %s)
+                            ORDER BY id DESC LIMIT 1
+                        """, (produto_id, ativo.strip(), data_linha, data_linha))
+                        row = cur.fetchone()
+                        if not row:
+                            erros.append(f"{ativo}: nenhuma posição aberta na data {data_linha}")
+                            continue
+                        posicao_id = row[0]
+                        alocacao = AlocacaoService.criar_alocacao(
+                            produto_id=produto_id,
+                            posicao_id=posicao_id,
+                            percentual=pct_f,
+                            valor_usd=None,
+                            data=data_linha
+                        )
+                        repo.salvar_alocacao(produto_id, alocacao)
+                        criadas += 1
+                self._send_json({'sucesso': True, 'alocacoes_criadas': criadas, 'avisos': erros})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
         # ============================================================
         # ROTAS DE TURMAS (POST)
         # ============================================================
@@ -3033,28 +3258,45 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({'erro': f'Falha na conexao com banco: {str(e)}'}, 500)
             return
 
-        # API: Rodar migração de alocações (CSVs -> Supabase) sob demanda; retorna resultado para diagnóstico
-        if path == '/api/migrar-alocacoes':
+        # API: Tabela de alocações (pivot: datas x ativos) para tela estilo planilha
+        if path == '/api/alocacoes/tabela':
             try:
-                _scripts_dir = Path(__file__).resolve().parent
-                if str(_scripts_dir) not in sys.path:
-                    sys.path.insert(0, str(_scripts_dir))
-                import importlib
-                import atualizar_alocacoes_csv as _mod_aloc
-                importlib.reload(_mod_aloc)
-                erros = []
-                for nome in _mod_aloc.PRODUTOS_CSV:
-                    p = _mod_aloc.DIR_CSV / f"{nome}.csv"
-                    if not p.exists():
-                        erros.append(f"CSV não encontrado: {p}")
-                if erros:
-                    self._send_json({'sucesso': False, 'erro': 'Arquivos não encontrados', 'detalhes': erros}, 400)
+                produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
+                if not produto_id:
+                    self._send_json({'erro': 'produto_id obrigatório'}, 400)
                     return
-                n = _mod_aloc.main(dry_run=False)
-                self._send_json({'sucesso': True, 'alocacoes_inseridas': n})
+                produto = repo.carregar_produto(produto_id)
+                if not produto:
+                    self._send_json({'erro': 'Produto não encontrado'}, 404)
+                    return
+                with repo._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT DISTINCT ativo FROM posicoes WHERE produto_id = %s ORDER BY ativo
+                    """, (produto_id,))
+                    colunas = [r[0] for r in cur.fetchall()]
+                    cur.execute("""
+                        SELECT CAST(a.data AS TEXT), p.ativo, a.percentual
+                        FROM alocacoes a
+                        INNER JOIN posicoes p ON a.posicao_id = p.id
+                        WHERE a.produto_id = %s AND a.status = 'active'
+                        ORDER BY a.data, p.ativo
+                    """, (produto_id,))
+                    rows = cur.fetchall()
+                from collections import defaultdict
+                by_date = defaultdict(dict)
+                for data, ativo, pct in rows:
+                    d = str(data)[:10] if data else ''
+                    by_date[d][ativo] = round(float(pct), 2)
+                linhas = [{'data': d, 'ativos': by_date[d]} for d in sorted(by_date.keys())]
+                self._send_json({
+                    'produto_id': produto_id,
+                    'produto_nome': produto.get('nome', ''),
+                    'colunas': colunas,
+                    'linhas': linhas
+                })
             except Exception as e:
-                import traceback
-                self._send_json({'sucesso': False, 'erro': str(e), 'traceback': traceback.format_exc()}, 500)
+                self._send_json({'erro': str(e)}, 500)
             return
 
         # Dashboard principal
@@ -3155,14 +3397,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_html("<h1>Produto nao encontrado</h1>", 404)
             return
 
-        # Formulario nova alocacao
+        # Tela de alocações em tabela (estilo planilha: Data x Ativos)
         if path == '/alocacao/nova':
             produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
             produtos = repo.listar_produtos()
-            posicoes = None
-            if produto_id:
-                posicoes = repo.carregar_posicoes_abertas(produto_id)
-            self._send_html(get_form_alocacao_html(produto_id, produtos, posicoes))
+            self._send_html(get_form_alocacao_html(produto_id=produto_id, produtos=produtos))
             return
 
         # API: Listar posicoes abertas de um produto (para AJAX)
@@ -3819,9 +4058,6 @@ def iniciar_servidor(porta=8080, host='localhost'):
         webbrowser.open(f'http://localhost:{porta}')
     except:
         pass
-
-    # Migração de alocações (CSVs -> Supabase) em background; logs aparecem no Render
-    _rodar_migracao_alocacoes_em_background()
 
     try:
         servidor.serve_forever()

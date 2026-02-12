@@ -3,7 +3,6 @@ services:
     name: missioncontrol-dashboard
     runtime: python
     buildCommand: pip install -r requirements.txt
-    # Dashboard inicia a migração de alocações (CSVs -> Supabase) em thread na subida; logs no Render.
     startCommand: python productsPositions/scripts/servidor_dashboard.py
     healthCheckPath: /health
     envVars:
