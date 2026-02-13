@@ -173,6 +173,69 @@ def obter_dados_para_visualizacao(produto_id, visualizacao):
 # HTML TEMPLATES
 # ============================================================
 
+def _get_preencher_precos_btn(produto_id):
+    """Gera o botão dropdown + JS para preencher preços de um produto."""
+    return f'''
+        <div class="dropdown-precos" style="display:inline-block; position:relative;">
+            <button type="button" class="btn btn-sm btn-secondary" onclick="this.nextElementSibling.classList.toggle('show')">
+                Preencher Precos &#9662;
+            </button>
+            <div class="dropdown-precos-menu" style="display:none; position:absolute; right:0; top:100%; margin-top:4px; background:#16213e; border:1px solid #4ecca3; border-radius:8px; min-width:220px; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,.4);">
+                <a href="#" onclick="return preencherPrecos({produto_id},'entrada')" style="display:block;padding:10px 16px;color:#eee;text-decoration:none;font-size:.85em;border-bottom:1px solid #2a2a4a;">
+                    Precos de <b style="color:#4ecca3;">Entrada</b>
+                </a>
+                <a href="#" onclick="return preencherPrecos({produto_id},'saida')" style="display:block;padding:10px 16px;color:#eee;text-decoration:none;font-size:.85em;border-bottom:1px solid #2a2a4a;">
+                    Precos de <b style="color:#4ecca3;">Saida</b>
+                </a>
+                <a href="#" onclick="return preencherPrecos({produto_id},'ambos')" style="display:block;padding:10px 16px;color:#eee;text-decoration:none;font-size:.85em;">
+                    <b style="color:#4ecca3;">Todos</b> (Entrada + Saida)
+                </a>
+            </div>
+        </div>
+        <style>
+            .dropdown-precos-menu.show {{ display:block!important; }}
+        </style>
+    '''
+
+
+def _get_preencher_precos_js():
+    """Retorna o JavaScript para o botão de preencher preços (incluir uma vez por página)."""
+    return '''
+    <script>
+    // Fechar dropdown ao clicar fora
+    document.addEventListener('click', function(e) {
+        document.querySelectorAll('.dropdown-precos-menu.show').forEach(function(m) {
+            if (!m.parentElement.contains(e.target)) m.classList.remove('show');
+        });
+    });
+    function preencherPrecos(produtoId, tipo) {
+        document.querySelectorAll('.dropdown-precos-menu.show').forEach(function(m) { m.classList.remove('show'); });
+        var nomes = {entrada: 'preços de entrada', saida: 'preços de saída', ambos: 'todos os preços'};
+        if (!confirm('Preencher ' + nomes[tipo] + ' faltantes? O processo roda em background.')) return false;
+        var toast = document.createElement('div');
+        toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#16213e;border:1px solid #4ecca3;color:#4ecca3;padding:14px 24px;border-radius:10px;z-index:9999;font-size:.9em;box-shadow:0 4px 16px rgba(0,0,0,.5);';
+        toast.textContent = 'Iniciando preenchimento de ' + nomes[tipo] + '...';
+        document.body.appendChild(toast);
+        fetch('/api/posicoes/preencher-precos?produto_id=' + produtoId + '&tipo=' + tipo)
+            .then(function(r) { return r.json(); })
+            .then(function(res) {
+                if (res.sucesso) {
+                    toast.innerHTML = '<b style="color:#ffd93d;">OK!</b> ' + res.mensagem;
+                } else {
+                    toast.innerHTML = '<b style="color:#ff6b6b;">Erro:</b> ' + (res.erro || 'Falha desconhecida');
+                }
+                setTimeout(function() { toast.remove(); }, 8000);
+            })
+            .catch(function(e) {
+                toast.innerHTML = '<b style="color:#ff6b6b;">Erro:</b> ' + e.message;
+                setTimeout(function() { toast.remove(); }, 8000);
+            });
+        return false;
+    }
+    </script>
+    '''
+
+
 def get_base_styles():
     """Estilos CSS compartilhados"""
     return """
@@ -707,12 +770,14 @@ def get_produto_html(produto, visualizacoes, repo):
                         <a href="/atr/config?produto_id={produto_id}" class="btn btn-sm btn-secondary">ATR Stop</a>
                         <a href="/posicao/fechar?produto_id={produto_id}" class="btn btn-sm btn-secondary">Fechar Posicao</a>
                         <a href="/posicoes/deletar?produto_id={produto_id}" class="btn btn-sm btn-danger">Deletar Posicao</a>
+                        {_get_preencher_precos_btn(produto_id)}
                     </div>
                 </div>
                 {content_html}
             </div>
         </div>
 
+    {_get_preencher_precos_js()}
     </body>
     </html>
     """
@@ -789,12 +854,14 @@ def get_visualizacao_html(produto, visualizacao, df_viz):
                         <a href="/atr/config?produto_id={produto_id}" class="btn btn-sm btn-secondary">ATR Stop</a>
                         <a href="/posicao/fechar?produto_id={produto_id}" class="btn btn-sm btn-secondary">Fechar Posicao</a>
                         <a href="/posicoes/deletar?produto_id={produto_id}" class="btn btn-sm btn-danger">Deletar Posicao</a>
+                        {_get_preencher_precos_btn(produto_id)}
                     </div>
                 </div>
                 {content_html}
             </div>
         </div>
 
+    {_get_preencher_precos_js()}
     </body>
     </html>
     """
@@ -3280,6 +3347,155 @@ def preencher_preco_saida_posicoes_fechadas(repo, produto_id=None):
     return resultado
 
 
+def preencher_precos_posicoes(repo, produto_id, tipo='ambos'):
+    """
+    Preenche preços faltantes nas posições de um produto.
+
+    tipo:
+      - 'entrada': preenche preco_entrada na data_entrada (posições com preco_entrada NULL ou 0)
+      - 'saida':   preenche preco_saida na data_saida (posições fechadas com preco_saida NULL ou 0)
+      - 'ambos':   faz os dois
+
+    Usa Bitget primeiro, depois CoinGecko como fallback.
+    Pula stablecoins (USDT, USDC, TUSD, etc.).
+    Retorna dict com contagem de preenchidos/erros.
+    """
+    import time as _time
+
+    _STABLECOINS = {'USDT', 'USDC', 'TUSD', 'BUSD', 'DAI', 'UST', 'GUSD', 'USDP', 'FDUSD'}
+    resultado = {
+        'entrada_preenchidas': 0, 'entrada_total': 0,
+        'saida_preenchidas': 0, 'saida_total': 0,
+        'erros': 0, 'skipped_stable': 0
+    }
+
+    try:
+        cotacoes = CotacoesService(db_url=repo.db_url)
+    except Exception as e:
+        print(f"[PREENCHER-PRECOS] CotacoesService indisponível: {e}", flush=True)
+        resultado['erro_servico'] = str(e)
+        return resultado
+
+    def _buscar_preco(repo, ativo_nome, data_str, coingecko_id, exchange_symbol):
+        """Busca preço histórico: Bitget → CoinGecko fallback. Retorna (preco, fonte) ou (None, None)."""
+        cg_id = (coingecko_id or '').strip() or None
+        if not cg_id:
+            info = repo.obter_ativo(ativo_nome)
+            cg_id = (info.get('coingecko_id') or '').strip() or None if info else None
+        symbol = (exchange_symbol or '').strip() or None
+        if not symbol and ativo_nome:
+            symbol = ativo_nome.upper().replace(' ', '') + 'USDT'
+
+        preco = None
+        fonte = None
+
+        # 1. Bitget (API pública, rápida)
+        if symbol:
+            try:
+                preco = cotacoes.obter_preco_fechamento_bitget_data(symbol, data_str)
+                if preco is not None:
+                    fonte = 'bitget'
+            except Exception:
+                pass
+
+        # 2. CoinGecko fallback
+        if preco is None and cg_id:
+            try:
+                res = cotacoes.obter_preco_historico_exato(cg_id, data_str)
+                if res.get('status') in ('ok', 'fallback') and res.get('preco') is not None:
+                    preco = float(res['preco'])
+                    fonte = 'coingecko'
+            except Exception:
+                pass
+
+        return preco, fonte
+
+    # --- Preços de ENTRADA ---
+    if tipo in ('entrada', 'ambos'):
+        with repo._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, ativo, CAST(data_entrada AS TEXT), coingecko_id, exchange_symbol
+                FROM posicoes
+                WHERE produto_id = %s
+                  AND data_entrada IS NOT NULL
+                  AND (preco_entrada IS NULL OR preco_entrada = 0)
+            """, (produto_id,))
+            rows_entrada = cur.fetchall()
+
+        resultado['entrada_total'] = len(rows_entrada)
+        print(f"[PREENCHER-PRECOS] Produto {produto_id}: {len(rows_entrada)} posições sem preco_entrada", flush=True)
+
+        for (pos_id, ativo, data_entrada, cg_id, ex_sym) in rows_entrada:
+            data_str = str(data_entrada)[:10] if data_entrada else ''
+            if not data_str:
+                resultado['erros'] += 1
+                continue
+            ativo_nome = str(ativo).strip() if ativo else ''
+            if ativo_nome.upper() in _STABLECOINS:
+                resultado['skipped_stable'] += 1
+                print(f"[PREENCHER-PRECOS] SKIP stablecoin entrada: {ativo_nome}", flush=True)
+                continue
+
+            preco, fonte = _buscar_preco(repo, ativo_nome, data_str, cg_id, ex_sym)
+            if preco is not None:
+                try:
+                    repo.atualizar_posicao(pos_id, preco_entrada=preco)
+                    resultado['entrada_preenchidas'] += 1
+                    print(f"[PREENCHER-PRECOS] OK ENTRADA pos_id={pos_id} {ativo_nome} {data_str} -> {preco:.6f} ({fonte})", flush=True)
+                except Exception as e:
+                    resultado['erros'] += 1
+                    print(f"[PREENCHER-PRECOS] Erro ao salvar entrada {pos_id}: {e}", flush=True)
+            else:
+                resultado['erros'] += 1
+                print(f"[PREENCHER-PRECOS] NAO ENCONTRADO ENTRADA: {ativo_nome} {data_str}", flush=True)
+            _time.sleep(0.2)
+
+    # --- Preços de SAÍDA ---
+    if tipo in ('saida', 'ambos'):
+        with repo._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, ativo, CAST(data_saida AS TEXT), coingecko_id, exchange_symbol
+                FROM posicoes
+                WHERE produto_id = %s AND status = 'closed'
+                  AND data_saida IS NOT NULL
+                  AND (preco_saida IS NULL OR preco_saida = 0)
+            """, (produto_id,))
+            rows_saida = cur.fetchall()
+
+        resultado['saida_total'] = len(rows_saida)
+        print(f"[PREENCHER-PRECOS] Produto {produto_id}: {len(rows_saida)} posições fechadas sem preco_saida", flush=True)
+
+        for (pos_id, ativo, data_saida, cg_id, ex_sym) in rows_saida:
+            data_str = str(data_saida)[:10] if data_saida else ''
+            if not data_str:
+                resultado['erros'] += 1
+                continue
+            ativo_nome = str(ativo).strip() if ativo else ''
+            if ativo_nome.upper() in _STABLECOINS:
+                resultado['skipped_stable'] += 1
+                print(f"[PREENCHER-PRECOS] SKIP stablecoin saída: {ativo_nome}", flush=True)
+                continue
+
+            preco, fonte = _buscar_preco(repo, ativo_nome, data_str, cg_id, ex_sym)
+            if preco is not None:
+                try:
+                    repo.atualizar_posicao(pos_id, preco_saida=preco)
+                    resultado['saida_preenchidas'] += 1
+                    print(f"[PREENCHER-PRECOS] OK SAIDA pos_id={pos_id} {ativo_nome} {data_str} -> {preco:.6f} ({fonte})", flush=True)
+                except Exception as e:
+                    resultado['erros'] += 1
+                    print(f"[PREENCHER-PRECOS] Erro ao salvar saída {pos_id}: {e}", flush=True)
+            else:
+                resultado['erros'] += 1
+                print(f"[PREENCHER-PRECOS] NAO ENCONTRADO SAIDA: {ativo_nome} {data_str}", flush=True)
+            _time.sleep(0.2)
+
+    print(f"[PREENCHER-PRECOS] Finalizado produto {produto_id}: {resultado}", flush=True)
+    return resultado
+
+
 # ============================================================
 # HTTP SERVER
 # ============================================================
@@ -4563,6 +4779,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 t = threading.Thread(target=_run, daemon=True)
                 t.start()
                 self._send_json({'sucesso': True, 'mensagem': 'Preenchimento iniciado em background. Acompanhe no terminal.'})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 500)
+            return
+
+        # API: Preencher preços (entrada/saída/ambos) para qualquer produto — via dashboard
+        # GET /api/posicoes/preencher-precos?produto_id=X&tipo=entrada|saida|ambos
+        if path.startswith('/api/posicoes/preencher-precos'):
+            try:
+                params = {}
+                if '?' in self.path:
+                    qs = self.path.split('?')[1]
+                    params = dict(p.split('=') for p in qs.split('&') if '=' in p)
+                produto_id_param = int(params.get('produto_id', 0))
+                tipo_param = params.get('tipo', 'ambos')
+                if not produto_id_param:
+                    self._send_json({'sucesso': False, 'erro': 'produto_id obrigatório'}, 400)
+                    return
+                if tipo_param not in ('entrada', 'saida', 'ambos'):
+                    tipo_param = 'ambos'
+                import threading
+                bg_repo = get_repo()
+                def _run_precos():
+                    try:
+                        resultado = preencher_precos_posicoes(bg_repo, produto_id_param, tipo_param)
+                        print(f"[PREENCHER-PRECOS] Finalizado: {resultado}", flush=True)
+                    except Exception as e:
+                        print(f"[PREENCHER-PRECOS] Erro na thread: {e}", flush=True)
+                t = threading.Thread(target=_run_precos, daemon=True)
+                t.start()
+                nomes_tipo = {'entrada': 'preços de entrada', 'saida': 'preços de saída', 'ambos': 'todos os preços'}
+                self._send_json({
+                    'sucesso': True,
+                    'mensagem': f'Preenchimento de {nomes_tipo[tipo_param]} iniciado em background. Acompanhe no terminal/logs.',
+                    'produto_id': produto_id_param,
+                    'tipo': tipo_param
+                })
             except Exception as e:
                 self._send_json({'sucesso': False, 'erro': str(e)}, 500)
             return
