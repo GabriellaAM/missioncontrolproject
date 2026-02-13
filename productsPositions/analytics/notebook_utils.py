@@ -566,6 +566,16 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
             df['preco_entrada'] = df['preco_entrada'].apply(lambda x: f"${x:,.{decimais_entrada}f}" if pd.notna(x) else "")
         
         # Formatar preco_saida com 5 casas se for meme, senão 2. Stablecoins sem preço → "—"
+        # Normalizar para float (PostgreSQL/Supabase retorna Decimal; SQLite retorna float)
+        def _to_float_preco(v):
+            if v is None or pd.isna(v):
+                return None
+            try:
+                if hasattr(v, '__float__'):
+                    return float(v)
+                return float(v)
+            except (TypeError, ValueError):
+                return None
         _STABLECOINS = {'USDT', 'USDC', 'TUSD', 'BUSD', 'DAI', 'UST', 'GUSD', 'USDP', 'FDUSD'}
         if 'preco_saida' in df.columns:
             decimais_saida = 5 if is_meme else 2
@@ -573,24 +583,24 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
                 x = row['preco_saida'] if isinstance(row, pd.Series) else row
                 ativo = (row['ativo'] if isinstance(row, pd.Series) and 'ativo' in row.index else None) or ''
                 ativo_upper = str(ativo).strip().upper()
-                if pd.isna(x) or x is None or (isinstance(x, (int, float)) and x == 0):
+                x_num = _to_float_preco(x)
+                if x_num is None or x_num == 0:
                     return "—" if ativo_upper in _STABLECOINS else ""
-                if isinstance(x, (int, float)):
-                    # Para valores muito pequenos, usar mais casas decimais para evitar mostrar apenas zeros
-                    if abs(x) > 0 and abs(x) < 0.01:
-                        return f"${x:.8f}".rstrip('0').rstrip('.')
-                    else:
-                        return f"${x:,.{decimais_saida}f}"
-                return ""
+                # Valor numérico (já normalizado para float)
+                if abs(x_num) > 0 and abs(x_num) < 0.01:
+                    return f"${x_num:.8f}".rstrip('0').rstrip('.')
+                return f"${x_num:,.{decimais_saida}f}"
             if 'ativo' in df.columns:
                 df['preco_saida'] = df.apply(_formatar_preco_saida_fechadas, axis=1)
             else:
-                df['preco_saida'] = df['preco_saida'].apply(
-                    lambda x: "—" if (pd.isna(x) or x is None or x == 0) else (
-                        f"${x:.8f}".rstrip('0').rstrip('.') if isinstance(x, (int, float)) and abs(x) > 0 and abs(x) < 0.01
-                        else (f"${x:,.{decimais_saida}f}" if isinstance(x, (int, float)) else "")
-                    )
-                )
+                def _fmt_one(x):
+                    x_num = _to_float_preco(x)
+                    if x_num is None or x_num == 0:
+                        return "—"
+                    if abs(x_num) > 0 and abs(x_num) < 0.01:
+                        return f"${x_num:.8f}".rstrip('0').rstrip('.')
+                    return f"${x_num:,.{decimais_saida}f}"
+                df['preco_saida'] = df['preco_saida'].apply(_fmt_one)
         
         # Formatar preco_atual (sempre 2 casas)
         if 'preco_atual' in df.columns:
