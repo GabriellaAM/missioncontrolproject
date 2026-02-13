@@ -32,19 +32,24 @@ class CotacoesService:
     """Serviço para buscar e atualizar cotações de ativos."""
 
     BINANCE_API_URL = "https://api.binance.com/api/v3"
-    COINGECKO_API_URL = "https://pro-api.coingecko.com/api/v3"
+    BITGET_API_URL = "https://api.bitget.com"
+    COINGECKO_PRO_API_URL = "https://pro-api.coingecko.com/api/v3"
+    COINGECKO_FREE_API_URL = "https://api.coingecko.com/api/v3"
 
     # Cache module-level de preços atuais com TTL (compartilhado entre instâncias)
     _precos_atuais_cache: Dict[str, float] = {}
     _precos_atuais_cache_ts: float = 0.0
     _precos_atuais_cache_ttl: float = 300.0  # 5 minutos
 
-    def __init__(self, db_path: Optional[Path] = None, gecko_api_key: Optional[str] = None):
+    def __init__(self, db_path: Optional[Path] = None, gecko_api_key: Optional[str] = None,
+                 db_url: Optional[str] = None):
         # db_path mantido para compatibilidade de assinatura, mas não usado
-        self.db_url = os.getenv('SUPABASE_DB_URL')
+        self.db_url = (db_url if db_url is not None else os.getenv('SUPABASE_DB_URL') or '').strip()
         if not self.db_url:
-            raise ValueError("SUPABASE_DB_URL environment variable is required")
+            raise ValueError("SUPABASE_DB_URL ou db_url é obrigatório")
         self.gecko_api_key = gecko_api_key or os.environ.get('GECKO_API_KEY')
+        # Usar Pro API se tiver key, senão Free API
+        self.COINGECKO_API_URL = self.COINGECKO_PRO_API_URL if self.gecko_api_key else self.COINGECKO_FREE_API_URL
 
         # Cache de mapeamento ativo -> exchange_symbol
         self._symbol_cache: Dict[str, str] = {}
@@ -132,6 +137,113 @@ class CotacoesService:
         except Exception as e:
             print(f"Erro ao buscar klines Binance para {symbol}: {e}")
         return []
+
+    def obter_preco_fechamento_binance_data(self, symbol: str, data: str) -> Optional[float]:
+        """
+        Obtém preço de fechamento (close do candle diário) para uma data na Binance.
+        symbol: par (ex: BTCUSDT). data: YYYY-MM-DD.
+        """
+        klines = self.obter_klines_binance(symbol, interval="1d", limit=365)
+        if not klines:
+            return None
+        for k in klines:
+            if k.get('open_time') == data:
+                return k.get('close')
+        return None
+
+    # ================================================================
+    # BITGET (API pública, sem autenticação)
+    # ================================================================
+
+    def obter_klines_bitget(self, symbol: str, period: str = "1Dutc", limit: int = 200) -> List[Dict]:
+        """
+        Obtém candles históricos da Bitget spot (endpoint público history-candles).
+
+        Args:
+            symbol: Par (ex: BTCUSDT)
+            period: 1Dutc (diário UTC), 1H, 4H, etc.
+            limit: Número de candles
+
+        Returns:
+            Lista de dicts com open_time, close, etc.
+        """
+        try:
+            # API v2 spot: history-candles (endTime = até quando buscar; retorna candles antes)
+            end_time = datetime.now()
+            end_ts_ms = int(end_time.timestamp() * 1000)
+            response = requests.get(
+                f"{self.BITGET_API_URL}/api/v2/spot/market/history-candles",
+                params={
+                    "symbol": symbol.upper(),
+                    "granularity": period,
+                    "endTime": str(end_ts_ms),
+                    "limit": str(min(limit, 200))
+                },
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("code") != "00000":
+                    return []
+                arr = data.get("data", [])
+                if not arr:
+                    return []
+                # Bitget retorna [ts, open, high, low, close, volume, ...]
+                klines = []
+                for k in arr:
+                    if len(k) >= 5:
+                        try:
+                            ts_ms = int(k[0])
+                            close = float(k[4])
+                        except (TypeError, ValueError):
+                            continue
+                        klines.append({
+                            "open_time": datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d"),
+                            "close": close
+                        })
+                return klines
+        except Exception as e:
+            print(f"Erro ao buscar klines Bitget para {symbol}: {e}")
+        return []
+
+    def obter_preco_fechamento_bitget_data(self, symbol: str, data: str) -> Optional[float]:
+        """
+        Obtém preço de fechamento (close do candle diário) para uma data na Bitget.
+        symbol: par (ex: BTCUSDT). data: YYYY-MM-DD.
+        """
+        try:
+            # Pedir candles até 1 dia após a data desejada para incluir o candle da data
+            data_obj = datetime.strptime(data, "%Y-%m-%d")
+            end_time = data_obj.replace(hour=23, minute=59, second=59) + timedelta(days=1)
+            end_ts_ms = int(end_time.timestamp() * 1000)
+            response = requests.get(
+                f"{self.BITGET_API_URL}/api/v2/spot/market/history-candles",
+                params={
+                    "symbol": symbol.upper(),
+                    "granularity": "1Dutc",
+                    "endTime": str(end_ts_ms),
+                    "limit": "10"
+                },
+                timeout=10
+            )
+            if response.status_code != 200:
+                return None
+            result = response.json()
+            if result.get("code") != "00000":
+                return None
+            arr = result.get("data", [])
+            for k in arr:
+                if len(k) >= 5:
+                    try:
+                        ts_ms = int(k[0])
+                        day_str = datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d")
+                        if day_str == data:
+                            return float(k[4])
+                    except (TypeError, ValueError):
+                        continue
+        except Exception as e:
+            print(f"Erro ao buscar preço Bitget para {symbol} em {data}: {e}")
+        return None
 
     # ================================================================
     # COINGECKO

@@ -565,21 +565,32 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
             decimais_entrada = 5 if is_meme else 2
             df['preco_entrada'] = df['preco_entrada'].apply(lambda x: f"${x:,.{decimais_entrada}f}" if pd.notna(x) else "")
         
-        # Formatar preco_saida com 5 casas se for meme, senão 2
+        # Formatar preco_saida com 5 casas se for meme, senão 2. Stablecoins sem preço → "—"
+        _STABLECOINS = {'USDT', 'USDC', 'TUSD', 'BUSD', 'DAI', 'UST', 'GUSD', 'USDP', 'FDUSD'}
         if 'preco_saida' in df.columns:
             decimais_saida = 5 if is_meme else 2
-            def _formatar_preco_saida_fechadas(x):
-                if pd.isna(x) or x is None:
-                    return ""
+            def _formatar_preco_saida_fechadas(row):
+                x = row['preco_saida'] if isinstance(row, pd.Series) else row
+                ativo = (row['ativo'] if isinstance(row, pd.Series) and 'ativo' in row.index else None) or ''
+                ativo_upper = str(ativo).strip().upper()
+                if pd.isna(x) or x is None or (isinstance(x, (int, float)) and x == 0):
+                    return "—" if ativo_upper in _STABLECOINS else ""
                 if isinstance(x, (int, float)):
                     # Para valores muito pequenos, usar mais casas decimais para evitar mostrar apenas zeros
                     if abs(x) > 0 and abs(x) < 0.01:
-                        # Usar até 8 casas decimais para valores muito pequenos (sem vírgula para evitar problemas)
                         return f"${x:.8f}".rstrip('0').rstrip('.')
                     else:
                         return f"${x:,.{decimais_saida}f}"
                 return ""
-            df['preco_saida'] = df['preco_saida'].apply(_formatar_preco_saida_fechadas)
+            if 'ativo' in df.columns:
+                df['preco_saida'] = df.apply(_formatar_preco_saida_fechadas, axis=1)
+            else:
+                df['preco_saida'] = df['preco_saida'].apply(
+                    lambda x: "—" if (pd.isna(x) or x is None or x == 0) else (
+                        f"${x:.8f}".rstrip('0').rstrip('.') if isinstance(x, (int, float)) and abs(x) > 0 and abs(x) < 0.01
+                        else (f"${x:,.{decimais_saida}f}" if isinstance(x, (int, float)) else "")
+                    )
+                )
         
         # Formatar preco_atual (sempre 2 casas)
         if 'preco_atual' in df.columns:

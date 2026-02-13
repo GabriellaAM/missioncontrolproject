@@ -2410,6 +2410,16 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
             .sheet tbody tr:nth-child(odd) td {{ background: #16213e; }}
             .sheet tbody tr:nth-child(even) td {{ background: #1a1f33; }}
             .sheet tbody tr:hover td {{ background: rgba(78,204,163,.08); }}
+            .sheet tbody td.cell-edit {{ cursor: cell; }}
+            .sheet tbody td.cell-edit:hover {{ background: rgba(78,204,163,.12) !important; }}
+            .sheet .cell-edit input,
+            .sheet .cell-editing input {{
+                width: 100%; min-width: 50px; text-align: right;
+                padding: 4px 6px; font-size: .85rem;
+                background: #16213e; color: #4ecca3;
+                border: 1px solid #4ecca3; border-radius: 4px;
+                outline: none; box-shadow: 0 0 0 2px rgba(78,204,163,.25);
+            }}
 
             /* Celulas com valor > 0 ganham destaque */
             .sheet .val-pos {{ color: #4ecca3; }}
@@ -2487,7 +2497,7 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                 </div>
                 <p style="color:#718096; margin-bottom:1.2rem; font-size:.9em;">
                     Tabela estilo planilha: uma linha por data, colunas por ativo (%).
-                    Adicione uma nova linha abaixo e salve.
+                    Para <b>adicionar um novo ativo (nova coluna)</b>, use o campo abaixo. Depois preencha o % na nova coluna e salve a linha.
                 </p>
 
                 <div class="aloc-header">
@@ -2496,6 +2506,17 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                         <option value="">Selecione um produto...</option>
                         {produtos_options}
                     </select>
+                </div>
+
+                <div id="addAtivoBar" style="display:none; margin-bottom:1rem; padding:14px; background:rgba(78,204,163,.08); border:1px solid rgba(78,204,163,.25); border-radius:8px;">
+                    <div style="color:#4ecca3; font-weight:bold; margin-bottom:10px;">Adicionar ativo (nova coluna)</div>
+                    <div style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:8px;">
+                        <input type="text" id="novoAtivoInput" placeholder="Ativo (ex: BTC, ETH)" style="width:120px; padding:8px 10px; border-radius:6px; border:1px solid #2a2a4a; background:#16213e; color:#eee;">
+                        <input type="text" id="novoAtivoCoingecko" placeholder="CoinGecko ID (opcional, ex: bitcoin)" style="width:180px; padding:8px 10px; border-radius:6px; border:1px solid #2a2a4a; background:#16213e; color:#eee;">
+                        <input type="text" id="novoAtivoSymbol" placeholder="Símbolo exchange (opcional, ex: BTCUSDT)" style="width:200px; padding:8px 10px; border-radius:6px; border:1px solid #2a2a4a; background:#16213e; color:#eee;">
+                        <button type="button" class="btn btn-sm btn-primary" id="btnAdicionarAtivo">+ Adicionar</button>
+                    </div>
+                    <span id="addAtivoMsg" style="font-size:.85em; color:#888;"></span>
                 </div>
 
                 <div id="alert" class="alert"></div>
@@ -2532,6 +2553,8 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                 const pid = document.getElementById('produtoSelect').value;
                 const ct = document.getElementById('tabelaContainer');
                 const mi = document.getElementById('metaInfo');
+                const addBar = document.getElementById('addAtivoBar');
+                if (addBar) addBar.style.display = pid ? 'block' : 'none';
                 if (!pid) {{
                     ct.innerHTML = '<div class="empty-state"><h3>Nenhum produto selecionado</h3><p>Escolha um produto acima.</p></div>';
                     mi.innerHTML = '';
@@ -2573,7 +2596,15 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                 const slice = linhas.slice(start, end);
                 const hoje = '{hoje}';
 
-                let h = '<div class="sheet-wrap"><table class="sheet"><thead><tr>';
+                function escAttr(s) {{ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }}
+                // Texto para clipboard: Data + valores separados por tab (para Ctrl+V colar nas colunas certas)
+                function rowToTsv(linha) {{
+                    const data = linha.data || '';
+                    const vals = colunas.map(col => ((linha.ativos && linha.ativos[col]) != null ? Number(linha.ativos[col]) : 0).toFixed(2));
+                    return data + '\\t' + vals.join('\\t');
+                }}
+
+                let h = '<div class="sheet-wrap" id="sheetWrap"><table class="sheet" id="sheetAloc"><thead><tr>';
                 h += '<th class="col-data">Data</th>';
                 colunas.forEach(c => h += '<th>' + esc(c) + '</th>');
                 h += '<th class="col-total">Total</th>';
@@ -2581,12 +2612,13 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
 
                 slice.forEach(linha => {{
                     let soma = 0;
-                    h += '<tr><td class="col-data">' + esc(linha.data) + '</td>';
+                    const tsv = escAttr(rowToTsv(linha));
+                    h += '<tr class="row-dados" data-row-copy="' + tsv + '"><td class="col-data">' + esc(linha.data) + '</td>';
                     colunas.forEach(col => {{
                         const v = (linha.ativos && linha.ativos[col]) || 0;
                         soma += v;
-                        const cls = v > 0 ? 'val-pos' : 'val-zero';
-                        h += '<td class="' + cls + '">' + v.toFixed(2) + '%</td>';
+                        const cls = (v > 0 ? 'val-pos' : 'val-zero') + ' cell-edit';
+                        h += '<td class="' + cls + '" data-data="' + esc(linha.data) + '" data-ativo="' + esc(col) + '" data-val="' + v.toFixed(2) + '">' + v.toFixed(2) + '%</td>';
                     }});
                     h += '<td class="col-total">' + soma.toFixed(1) + '%</td></tr>';
                 }});
@@ -2608,17 +2640,94 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                 h += '<button onclick="pagAloc(' + (totalPages - 1) + ')" ' + (currentPage >= totalPages - 1 ? 'disabled' : '') + '>Fim &#187;</button>';
                 h += '</div>';
 
-                // Botao salvar
+                // Botao salvar e dica
                 h += '<div class="save-bar">';
                 h += '<button type="button" class="btn btn-primary" onclick="salvarLinha()">Salvar nova linha</button>';
-                h += '<span style="color:#666; font-size:.85em;">Preencha os percentuais na linha verde e clique em salvar.</span>';
+                h += '<span style="color:#666; font-size:.85em;">Selecione uma linha, Ctrl+C para copiar; clique na nova linha e Ctrl+V para colar nas colunas.</span>';
                 h += '</div>';
 
                 document.getElementById('tabelaContainer').innerHTML = h;
 
-                // Listener para atualizar total da nova linha em tempo real
-                document.querySelectorAll('#tabelaContainer .nova-linha input[type="number"]').forEach(inp => {{
+                // Ctrl+C: ao copiar uma linha de dados, colocar no clipboard em formato tab-separado
+                const wrap = document.getElementById('sheetWrap');
+                if (wrap) {{
+                    wrap.addEventListener('copy', function(e) {{
+                        const sel = document.getSelection();
+                        if (!sel || sel.rangeCount === 0) return;
+                        let node = sel.anchorNode;
+                        while (node && node !== wrap) {{
+                            if (node.nodeType === 1 && node.classList && node.classList.contains('row-dados')) {{
+                                const tsv = node.getAttribute('data-row-copy');
+                                if (tsv) {{
+                                    e.preventDefault();
+                                    e.clipboardData.setData('text/plain', tsv);
+                                }}
+                                return;
+                            }}
+                            node = node.parentNode;
+                        }}
+                    }});
+                }}
+
+                // Ctrl+V na nova linha: distribuir valores por coluna (tab ou newline)
+                // Enter na nova linha: salvar a linha
+                document.querySelectorAll('#tabelaContainer .nova-linha input').forEach(inp => {{
                     inp.addEventListener('input', atualizarNovaTotal);
+                    inp.addEventListener('keydown', function(e) {{
+                        if (e.key === 'Enter') {{ e.preventDefault(); window.salvarLinha(); }}
+                    }});
+                    inp.addEventListener('paste', function(e) {{
+                        e.preventDefault();
+                        const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+                        const parts = text.trim().split(/[\\t\\n\\r]+/).map(s => s.trim()).filter(Boolean);
+                        if (parts.length === 0) return;
+                        const dataInp = document.getElementById('novaData');
+                        const inputs = [dataInp, ...document.querySelectorAll('#tabelaContainer .nova-linha input[data-ativo]')];
+                        parts.forEach((part, i) => {{
+                            if (inputs[i]) {{
+                                if (i === 0) inputs[i].value = part.replace(/\\s/g, '').substring(0, 10);
+                                else inputs[i].value = part.replace(',', '.').replace(/[^0-9.-]/g, '') || '';
+                            }}
+                        }});
+                        atualizarNovaTotal();
+                    }});
+                }});
+
+                // Duplo clique na célula para editar; Enter salva
+                document.querySelectorAll('#tabelaContainer .sheet tbody td.cell-edit').forEach(td => {{
+                    td.addEventListener('dblclick', function() {{
+                        const cell = this;
+                        const dataVal = cell.getAttribute('data-data');
+                        const ativoVal = cell.getAttribute('data-ativo');
+                        const val = cell.getAttribute('data-val') || '0';
+                        const produtoId = allData.produto_id;
+                        const origHtml = cell.innerHTML;
+                        cell.innerHTML = '<input type="number" step="0.01" min="0" max="100" value="' + esc(val) + '">';
+                        const inp = cell.querySelector('input');
+                        inp.focus();
+                        inp.select();
+                        let done = false;
+                        function finish() {{
+                            if (done) return;
+                            done = true;
+                            const newVal = inp.value.trim() === '' ? '0' : inp.value.replace(',', '.');
+                            const num = parseFloat(newVal);
+                            if (isNaN(num) || num < 0) {{ cell.innerHTML = origHtml; return; }}
+                            fetch('/api/alocacao/celula', {{
+                                method: 'POST',
+                                headers: {{ 'Content-Type': 'application/json' }},
+                                body: JSON.stringify({{ produto_id: produtoId, data: dataVal, ativo: ativoVal, percentual: num }})
+                            }}).then(r => r.json()).then(res => {{
+                                if (res.sucesso) carregarTabela();
+                                else {{ cell.innerHTML = origHtml; showAlert(res.erro || 'Erro ao salvar', true); }}
+                            }}).catch(() => {{ cell.innerHTML = origHtml; }});
+                        }}
+                        inp.addEventListener('keydown', function(e) {{
+                            if (e.key === 'Enter') {{ e.preventDefault(); finish(); }}
+                            if (e.key === 'Escape') {{ done = true; cell.innerHTML = origHtml; }}
+                        }});
+                        inp.addEventListener('blur', function() {{ finish(); }});
+                    }});
                 }});
             }}
 
@@ -2672,6 +2781,45 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                     showAlert('Erro: ' + e.message, true);
                 }}
             }};
+
+            // Adicionar ativo (nova coluna)
+            document.getElementById('btnAdicionarAtivo').addEventListener('click', async function() {{
+                const pid = document.getElementById('produtoSelect').value;
+                const inp = document.getElementById('novoAtivoInput');
+                const inpCg = document.getElementById('novoAtivoCoingecko');
+                const inpSym = document.getElementById('novoAtivoSymbol');
+                const msgEl = document.getElementById('addAtivoMsg');
+                const ativo = (inp && inp.value || '').trim().toUpperCase();
+                const coingecko_id = (inpCg && inpCg.value || '').trim() || null;
+                const exchange_symbol = (inpSym && inpSym.value || '').trim() || null;
+                if (!pid) {{ showAlert('Selecione um produto antes.', true); return; }}
+                if (!ativo) {{ showAlert('Digite o nome do ativo (ex: BTC, ETH).', true); return; }}
+                if (msgEl) msgEl.textContent = 'Adicionando...';
+                try {{
+                    const body = {{ produto_id: parseInt(pid), ativo: ativo }};
+                    if (coingecko_id) body.coingecko_id = coingecko_id;
+                    if (exchange_symbol) body.exchange_symbol = exchange_symbol;
+                    const r = await fetch('/api/alocacao/adicionar-ativo', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify(body)
+                    }});
+                    const res = await r.json();
+                    if (res.sucesso) {{
+                        if (msgEl) {{ msgEl.textContent = res.mensagem || 'Ok'; msgEl.style.color = '#4ecca3'; }}
+                        if (inp) inp.value = '';
+                        if (inpCg) inpCg.value = '';
+                        if (inpSym) inpSym.value = '';
+                        carregarTabela();
+                    }} else {{
+                        showAlert(res.erro || 'Erro ao adicionar ativo', true);
+                        if (msgEl) msgEl.textContent = '';
+                    }}
+                }} catch (e) {{
+                    showAlert('Erro: ' + e.message, true);
+                    if (msgEl) msgEl.textContent = '';
+                }}
+            }});
 
             // Auto-load se produto ja selecionado
             if (document.getElementById('produtoSelect').value) carregarTabela();
@@ -2734,6 +2882,402 @@ def get_confirmar_delete_visualizacao_html(produto, visualizacao):
     </body>
     </html>
     """
+
+
+# ============================================================
+# Produtos cujas alocações definem as posições (sem filtro de datas)
+# Alphacoins=3476245316, EXC=2150859854, HB=2000449260, LC=2394004756
+#
+# Ciclo de vida:
+#   1. Alocação > 0 sem posição aberta → cria posição (data_entrada = data)
+#   2. Alocações > 0 continuam → mesma posição
+#   3. Alocação = 0 com posição aberta → fecha posição (data_saida = data)
+#   4. Alocação > 0 novamente → cria NOVA posição
+# ============================================================
+_PRODUTOS_ALOCACAO_LIVRE = {3476245316, 2150859854, 2000449260, 2394004756}
+_NOMES_ALOCACAO_LIVRE = {'Alphacoins', 'EXC', 'HB', 'LC'}
+
+def _is_produto_livre(repo, produto_id):
+    """Verifica se o produto é de alocação livre (AC/EXC/HB/LC)."""
+    if produto_id in _PRODUTOS_ALOCACAO_LIVRE:
+        return True
+    produto = repo.carregar_produto(produto_id)
+    return produto and produto.get('nome') in _NOMES_ALOCACAO_LIVRE
+
+def _encontrar_ou_criar_posicao(repo, produto_id, ativo, data_linha):
+    """
+    Encontra uma posição para o ativo no produto.
+    - Para produtos de alocação livre (AC/EXC/HB/LC): busca posição ABERTA
+      (status='open') do ativo. Se não existir, cria uma nova.
+    - Para outros produtos: exige posição aberta na data.
+    Retorna posicao_id ou None.
+    """
+    livre = _is_produto_livre(repo, produto_id)
+
+    with repo._get_connection() as conn:
+        cur = conn.cursor()
+        if livre:
+            # Buscar posição ABERTA (status='open') para esse ativo
+            cur.execute("""
+                SELECT id FROM posicoes
+                WHERE produto_id = %s AND ativo = %s AND status = 'open'
+                ORDER BY id DESC LIMIT 1
+            """, (produto_id, ativo))
+        else:
+            # Buscar posição aberta na data
+            cur.execute("""
+                SELECT id FROM posicoes
+                WHERE produto_id = %s AND ativo = %s
+                AND (data_entrada IS NULL OR data_entrada <= %s)
+                AND (data_saida IS NULL OR data_saida >= %s)
+                ORDER BY id DESC LIMIT 1
+            """, (produto_id, ativo, data_linha, data_linha))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+
+    # Não encontrou posição aberta; criar automaticamente se for produto livre
+    if livre:
+        try:
+            posicao = Posicao(
+                ativo=ativo,
+                side='long',
+                preco_entrada=0,
+                data_entrada=data_linha,
+            )
+            posicao_id = repo.salvar_posicao(produto_id, posicao)
+            print(f"[ALOCAÇÃO] Posição ABERTA automaticamente: {ativo} (data_entrada={data_linha}) no produto {produto_id}", flush=True)
+            return posicao_id
+        except Exception as e:
+            print(f"[ALOCAÇÃO] Erro ao criar posição para {ativo}: {e}", flush=True)
+
+    return None
+
+def _fechar_posicao_se_zerado(repo, produto_id, ativo, data_linha):
+    """
+    Para produtos de alocação livre: quando uma alocação vai a 0%,
+    fecha a posição aberta do ativo (data_saida = data, status = 'closed').
+    Retorna True se fechou, False caso contrário.
+    """
+    if not _is_produto_livre(repo, produto_id):
+        return False
+
+    with repo._get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id FROM posicoes
+            WHERE produto_id = %s AND ativo = %s AND status = 'open'
+            ORDER BY id DESC LIMIT 1
+        """, (produto_id, ativo))
+        row = cur.fetchone()
+        if not row:
+            return False
+
+    posicao_id = row[0]
+    try:
+        repo.atualizar_posicao(posicao_id, data_saida=data_linha, status='closed')
+        print(f"[ALOCAÇÃO] Posição FECHADA automaticamente: {ativo} (data_saida={data_linha}) no produto {produto_id}", flush=True)
+        return True
+    except Exception as e:
+        print(f"[ALOCAÇÃO] Erro ao fechar posição para {ativo}: {e}", flush=True)
+        return False
+
+
+def reconciliar_posicoes_com_alocacoes(repo, produto_id):
+    """
+    Para produtos de alocação livre (AC/EXC/HB/LC), reconstrói as posições
+    a partir dos dados de alocação.
+
+    Lógica central:
+      - A timeline do produto = todas as datas onde QUALQUER ativo tem alocação.
+      - Se um ativo está AUSENTE em uma data da timeline, significa 0% nessa data.
+      - Abertas: ativos com alocação > 0 na DATA MAIS RECENTE da timeline.
+      - Fechadas: ativos que tiveram alocação > 0 em algum período, mas na data
+        mais recente estão ausentes (ou já saíram antes).
+      - data_entrada: primeira data do bloco contínuo de presença.
+      - data_saida: última data de presença antes do gap (posição fechada).
+
+    Funciona tanto em SQLite quanto PostgreSQL.
+    """
+    if not _is_produto_livre(repo, produto_id):
+        return
+
+    from collections import defaultdict
+
+    with repo._get_connection() as conn:
+        cur = conn.cursor()
+
+        # 1. Timeline: todas as datas distintas com alocação neste produto
+        cur.execute("""
+            SELECT DISTINCT CAST(a.data AS TEXT)
+            FROM alocacoes a
+            WHERE a.produto_id = %s AND a.status = 'active'
+            ORDER BY 1
+        """, (produto_id,))
+        todas_datas = [str(r[0])[:10] for r in cur.fetchall()]
+
+        if not todas_datas:
+            return
+
+        # 2. Todas as alocações > 0 (alocações = 0 nunca são armazenadas)
+        cur.execute("""
+            SELECT p.ativo, CAST(a.data AS TEXT), p.id
+            FROM alocacoes a
+            INNER JOIN posicoes p ON a.posicao_id = p.id
+            WHERE a.produto_id = %s AND a.status = 'active' AND a.percentual > 0
+        """, (produto_id,))
+        allocs = cur.fetchall()
+
+        # 3. Todas as posições do produto
+        cur.execute("""
+            SELECT id, ativo, data_entrada, data_saida, status
+            FROM posicoes WHERE produto_id = %s
+        """, (produto_id,))
+        todas_posicoes = cur.fetchall()
+
+    if not allocs:
+        # Nenhuma alocação > 0 → fechar todas as posições abertas
+        for pid, ativo, de, ds, st in todas_posicoes:
+            if st == 'open':
+                try:
+                    repo.atualizar_posicao(pid, status='closed')
+                except Exception:
+                    pass
+        return
+
+    data_mais_recente = max(todas_datas)
+
+    # Mapear: ativo → set de datas onde tem alocação > 0
+    ativo_datas = defaultdict(set)
+    for ativo, data, pos_id in allocs:
+        ativo_datas[str(ativo).strip()].add(str(data)[:10])
+
+    # ---------------------------------------------------------------
+    # Detectar períodos por ativo (gap-and-island na timeline)
+    # Um ativo AUSENTE em uma data da timeline = 0% = gap
+    # ---------------------------------------------------------------
+    ativo_periodos = {}
+    for ativo, datas_presentes in ativo_datas.items():
+        periodos = []
+        inicio = fim = None
+        for d in todas_datas:
+            if d in datas_presentes:
+                if inicio is None:
+                    inicio = d
+                fim = d
+            else:
+                # Gap: ativo ausente nesta data → fechar período atual
+                if inicio is not None:
+                    periodos.append({'inicio': inicio, 'fim': fim, 'aberto': False})
+                    inicio = fim = None
+        # Período final
+        if inicio is not None:
+            aberto = data_mais_recente in datas_presentes
+            periodos.append({
+                'inicio': inicio,
+                'fim': None if aberto else fim,
+                'aberto': aberto
+            })
+        ativo_periodos[ativo] = periodos
+
+    # ---------------------------------------------------------------
+    # Reconciliar: mapear cada período a uma posição existente
+    # ---------------------------------------------------------------
+    posicoes_por_ativo = defaultdict(list)
+    for pid, ativo, de, ds, st in todas_posicoes:
+        posicoes_por_ativo[str(ativo).strip()].append({
+            'id': pid,
+            'data_entrada': str(de)[:10] if de else None,
+            'data_saida': str(ds)[:10] if ds else None,
+            'status': st
+        })
+
+    n_atualizadas = 0
+
+    for ativo, periodos in ativo_periodos.items():
+        pos_list = sorted(posicoes_por_ativo.get(ativo, []), key=lambda x: x['id'])
+
+        for i, per in enumerate(periodos):
+            if i < len(pos_list):
+                pos = pos_list[i]
+            else:
+                # Criar nova posição para este período
+                nova = Posicao(ativo=ativo, side='long', preco_entrada=0, data_entrada=per['inicio'])
+                novo_id = repo.salvar_posicao(produto_id, nova)
+                pos = {'id': novo_id, 'data_entrada': per['inicio'], 'data_saida': None, 'status': 'open'}
+                pos_list.append(pos)
+                print(f"[RECONCILIAR] Posição criada: {ativo} ({per['inicio']})", flush=True)
+
+            # Calcular updates necessários
+            updates = {}
+            if pos['data_entrada'] != per['inicio']:
+                updates['data_entrada'] = per['inicio']
+
+            if per['aberto']:
+                if pos['status'] != 'open':
+                    updates['status'] = 'open'
+                if pos['data_saida'] is not None:
+                    updates['data_saida'] = None
+            else:
+                if pos['status'] != 'closed':
+                    updates['status'] = 'closed'
+                if pos['data_saida'] != per['fim']:
+                    updates['data_saida'] = per['fim']
+
+            if updates:
+                try:
+                    repo.atualizar_posicao(pos['id'], **updates)
+                    n_atualizadas += 1
+                except Exception as e:
+                    print(f"[RECONCILIAR] Erro ao atualizar posição {pos['id']} ({ativo}): {e}", flush=True)
+
+        # Fechar posições excedentes para este ativo (sem período correspondente)
+        for j in range(len(periodos), len(pos_list)):
+            pos = pos_list[j]
+            if pos['status'] == 'open':
+                try:
+                    repo.atualizar_posicao(pos['id'], status='closed')
+                    n_atualizadas += 1
+                except Exception as e:
+                    print(f"[RECONCILIAR] Erro ao fechar excedente {pos['id']}: {e}", flush=True)
+
+    # Fechar posições de ativos que NÃO têm nenhuma alocação > 0
+    for ativo, pos_list in posicoes_por_ativo.items():
+        if ativo not in ativo_periodos:
+            for pos in pos_list:
+                if pos['status'] == 'open':
+                    try:
+                        repo.atualizar_posicao(pos['id'], status='closed')
+                        n_atualizadas += 1
+                    except Exception as e:
+                        print(f"[RECONCILIAR] Erro ao fechar órfã {pos['id']}: {e}", flush=True)
+
+    if n_atualizadas:
+        print(f"[RECONCILIAR] Produto {produto_id}: {n_atualizadas} posições atualizadas", flush=True)
+
+
+def preencher_preco_saida_posicoes_fechadas(repo, produto_id=None):
+    """
+    Busca no CoinGecko (e fallback Bitget) o preço de fechamento na data_saida
+    das posições fechadas dos produtos AC/EXC/HB/LC que estão sem preco_saida.
+
+    produto_id: se informado, processa só esse produto; senão, os 4 produtos.
+    Retorna dict: preenchidas, preenchidas_bitget, sem_identificador, erros, total.
+    """
+    ids_produtos = list(_PRODUTOS_ALOCACAO_LIVRE) if produto_id is None else [int(produto_id)]
+    with repo._get_connection() as conn:
+        cur = conn.cursor()
+        if produto_id is not None:
+            cur.execute("""
+                SELECT p.id, p.ativo, CAST(p.data_saida AS TEXT), p.coingecko_id, p.exchange_symbol
+                FROM posicoes p
+                WHERE p.produto_id = %s AND p.status = 'closed'
+                AND p.data_saida IS NOT NULL AND (p.preco_saida IS NULL OR p.preco_saida = 0)
+                ORDER BY p.data_saida
+            """, (produto_id,))
+        else:
+            placeholders = ','.join(['%s'] * len(ids_produtos))
+            cur.execute(f"""
+                SELECT p.id, p.ativo, CAST(p.data_saida AS TEXT), p.coingecko_id, p.exchange_symbol
+                FROM posicoes p
+                WHERE p.produto_id IN ({placeholders}) AND p.status = 'closed'
+                AND p.data_saida IS NOT NULL AND (p.preco_saida IS NULL OR p.preco_saida = 0)
+                ORDER BY p.data_saida
+            """, ids_produtos)
+        rows = cur.fetchall()
+
+    if not rows:
+        return {'preenchidas': 0, 'preenchidas_bitget': 0, 'sem_identificador': 0, 'erros': 0, 'total': 0}
+
+    try:
+        cotacoes = CotacoesService(db_url=repo.db_url)
+    except Exception as e:
+        print(f"[PREENCHER-PRECO-SAIDA] CotacoesService indisponível: {e}", flush=True)
+        return {'preenchidas': 0, 'preenchidas_bitget': 0, 'sem_identificador': 0, 'erros': len(rows), 'total': len(rows), 'erro_servico': str(e)}
+
+    preenchidas = 0
+    preenchidas_bitget = 0
+    sem_identificador = 0
+    erros = 0
+
+    import time as _time
+
+    # Stablecoins: preço fixo = 1.0 (não faz sentido buscar API)
+    _STABLECOINS = {'USDT', 'USDC', 'TUSD', 'BUSD', 'DAI', 'UST', 'GUSD', 'USDP', 'FDUSD'}
+
+    print(f"[PREENCHER-PRECO-SAIDA] {len(rows)} posições fechadas sem preco_saida", flush=True)
+
+    for (pos_id, ativo, data_saida, coingecko_id, exchange_symbol) in rows:
+        data_str = str(data_saida)[:10] if data_saida else ''
+        if not data_str:
+            erros += 1
+            continue
+        ativo_nome = str(ativo).strip() if ativo else ''
+
+        # Stablecoins: pular (deixar sem preco_saida — exibido como "—")
+        if ativo_nome.upper() in _STABLECOINS:
+            print(f"[PREENCHER-PRECO-SAIDA] SKIP stablecoin: pos_id={pos_id} {ativo_nome} {data_str}", flush=True)
+            continue
+
+        cg_id = (coingecko_id or '').strip() or None
+        if not cg_id:
+            info = repo.obter_ativo(ativo_nome)
+            cg_id = (info.get('coingecko_id') or '').strip() or None if info else None
+        symbol = (exchange_symbol or '').strip() or None
+        if not symbol and ativo_nome:
+            symbol = ativo_nome.upper().replace(' ', '') + 'USDT'
+
+        preco = None
+        fonte = None
+
+        # 1. Tentar Bitget primeiro (API pública, rápida, sem key)
+        if symbol:
+            try:
+                preco = cotacoes.obter_preco_fechamento_bitget_data(symbol, data_str)
+                if preco is not None:
+                    fonte = 'bitget'
+            except Exception as e:
+                print(f"[PREENCHER-PRECO-SAIDA] Bitget falhou para {symbol} em {data_str}: {e}", flush=True)
+
+        # 2. Fallback CoinGecko
+        if preco is None and cg_id:
+            try:
+                res = cotacoes.obter_preco_historico_exato(cg_id, data_str)
+                if res.get('status') in ('ok', 'fallback') and res.get('preco') is not None:
+                    preco = float(res['preco'])
+                    fonte = 'coingecko'
+            except Exception as e:
+                print(f"[PREENCHER-PRECO-SAIDA] CoinGecko falhou para {cg_id} em {data_str}: {e}", flush=True)
+
+        if preco is not None and fonte:
+            try:
+                repo.atualizar_posicao(pos_id, preco_saida=preco)
+                if fonte == 'bitget':
+                    preenchidas_bitget += 1
+                else:
+                    preenchidas += 1
+                print(f"[PREENCHER-PRECO-SAIDA] OK pos_id={pos_id} {ativo_nome} {data_str} -> {preco:.6f} ({fonte})", flush=True)
+            except Exception as e:
+                erros += 1
+                print(f"[PREENCHER-PRECO-SAIDA] Erro ao atualizar posição {pos_id}: {e}", flush=True)
+        elif not cg_id and not symbol:
+            sem_identificador += 1
+            print(f"[PREENCHER-PRECO-SAIDA] SEM ID: pos_id={pos_id} {ativo_nome} {data_str}", flush=True)
+        else:
+            erros += 1
+            print(f"[PREENCHER-PRECO-SAIDA] NÃO ENCONTRADO: pos_id={pos_id} {ativo_nome} {data_str} (cg={cg_id}, sym={symbol})", flush=True)
+
+        _time.sleep(0.2)  # rate limit gentil
+
+    resultado = {
+        'preenchidas': preenchidas,
+        'preenchidas_bitget': preenchidas_bitget,
+        'sem_identificador': sem_identificador,
+        'erros': erros,
+        'total': len(rows)
+    }
+    print(f"[PREENCHER-PRECO-SAIDA] Resultado: {resultado}", flush=True)
+    return resultado
 
 
 # ============================================================
@@ -3152,41 +3696,140 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_json({'sucesso': False, 'erro': 'Campo "data" obrigatório'}, 400)
                     return
                 from services.alocacao_service import AlocacaoService
+                livre = _is_produto_livre(repo, produto_id)
+                criadas = 0
+                fechadas = 0
+                erros = []
+                for ativo, pct in ativos.items():
+                    if not ativo:
+                        continue
+                    try:
+                        pct_f = float(pct)
+                    except (TypeError, ValueError):
+                        continue
+
+                    ativo_nome = ativo.strip()
+
+                    if pct_f <= 0:
+                        # Para produtos livres: alocação zerada → fechar posição
+                        if livre:
+                            if _fechar_posicao_se_zerado(repo, produto_id, ativo_nome, data_linha):
+                                fechadas += 1
+                        continue
+
+                    # Alocação > 0: encontrar ou criar posição
+                    posicao_id = _encontrar_ou_criar_posicao(repo, produto_id, ativo_nome, data_linha)
+                    if not posicao_id:
+                        erros.append(f"{ativo}: nenhuma posição encontrada/criada")
+                        continue
+                    alocacao = AlocacaoService.criar_alocacao(
+                        produto_id=produto_id,
+                        posicao_id=posicao_id,
+                        percentual=pct_f,
+                        valor_usd=None,
+                        data=data_linha
+                    )
+                    repo.salvar_alocacao(produto_id, alocacao)
+                    criadas += 1
+                self._send_json({'sucesso': True, 'alocacoes_criadas': criadas, 'posicoes_fechadas': fechadas, 'avisos': erros})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
+        # Atualizar uma célula de alocação (produto_id, data, ativo, percentual)
+        if path == '/api/alocacao/celula':
+            try:
+                produto_id = int(data.get('produto_id'))
+                data_linha = (data.get('data') or '').strip()[:10]
+                ativo = (data.get('ativo') or '').strip()
+                try:
+                    percentual = float(data.get('percentual'))
+                except (TypeError, ValueError):
+                    self._send_json({'sucesso': False, 'erro': 'percentual inválido'}, 400)
+                    return
+                if not data_linha or not ativo:
+                    self._send_json({'sucesso': False, 'erro': 'data e ativo obrigatórios'}, 400)
+                    return
                 with repo._get_connection() as conn:
                     cur = conn.cursor()
-                    criadas = 0
-                    erros = []
-                    for ativo, pct in ativos.items():
-                        if not ativo or (isinstance(pct, (int, float)) and float(pct) <= 0):
-                            continue
-                        try:
-                            pct_f = float(pct)
-                        except (TypeError, ValueError):
-                            continue
-                        if pct_f <= 0:
-                            continue
-                        cur.execute("""
-                            SELECT id FROM posicoes
-                            WHERE produto_id = %s AND ativo = %s
-                            AND (data_entrada IS NULL OR data_entrada <= %s)
-                            AND (data_saida IS NULL OR data_saida >= %s)
-                            ORDER BY id DESC LIMIT 1
-                        """, (produto_id, ativo.strip(), data_linha, data_linha))
-                        row = cur.fetchone()
-                        if not row:
-                            erros.append(f"{ativo}: nenhuma posição aberta na data {data_linha}")
-                            continue
-                        posicao_id = row[0]
-                        alocacao = AlocacaoService.criar_alocacao(
-                            produto_id=produto_id,
-                            posicao_id=posicao_id,
-                            percentual=pct_f,
-                            valor_usd=None,
-                            data=data_linha
-                        )
-                        repo.salvar_alocacao(produto_id, alocacao)
-                        criadas += 1
-                self._send_json({'sucesso': True, 'alocacoes_criadas': criadas, 'avisos': erros})
+                    cur.execute("""
+                        SELECT a.id, CAST(a.data AS TEXT) FROM alocacoes a
+                        INNER JOIN posicoes p ON a.posicao_id = p.id
+                        WHERE a.produto_id = %s AND p.ativo = %s AND a.status = 'active'
+                    """, (produto_id, ativo))
+                    rows = cur.fetchall()
+                found = None
+                for r in rows:
+                    r_data = str(r[1])[:10] if r[1] else ''
+                    if r_data == data_linha:
+                        found = r[0]
+                        break
+                if found:
+                    repo.atualizar_alocacao(found, percentual=percentual)
+                    # Se editou para 0, verificar se deve fechar a posição
+                    if percentual <= 0:
+                        _fechar_posicao_se_zerado(repo, produto_id, ativo, data_linha)
+                    self._send_json({'sucesso': True})
+                else:
+                    if percentual <= 0:
+                        # Alocação 0 e não existe → nada a fazer (mas fechar posição se produto livre)
+                        _fechar_posicao_se_zerado(repo, produto_id, ativo, data_linha)
+                        self._send_json({'sucesso': True})
+                        return
+                    posicao_id = _encontrar_ou_criar_posicao(repo, produto_id, ativo, data_linha)
+                    if not posicao_id:
+                        self._send_json({'sucesso': False, 'erro': f'Não foi possível encontrar/criar posição para {ativo}'}, 404)
+                        return
+                    from services.alocacao_service import AlocacaoService
+                    alocacao = AlocacaoService.criar_alocacao(
+                        produto_id=produto_id,
+                        posicao_id=posicao_id,
+                        percentual=percentual,
+                        valor_usd=None,
+                        data=data_linha
+                    )
+                    repo.salvar_alocacao(produto_id, alocacao)
+                    self._send_json({'sucesso': True})
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 400)
+            return
+
+        # Adicionar novo ativo (nova coluna) na tabela de alocação: cria posição mínima + opcional coingecko_id/exchange_symbol
+        if path == '/api/alocacao/adicionar-ativo':
+            try:
+                produto_id = int(data.get('produto_id'))
+                ativo = (data.get('ativo') or '').strip()
+                if not ativo:
+                    self._send_json({'sucesso': False, 'erro': 'Informe o nome do ativo (ex: BTC, ETH).'}, 400)
+                    return
+                coingecko_id = (data.get('coingecko_id') or '').strip() or None
+                exchange_symbol = (data.get('exchange_symbol') or '').strip() or None
+                produto = repo.carregar_produto(produto_id)
+                if not produto:
+                    self._send_json({'sucesso': False, 'erro': 'Produto não encontrado.'}, 404)
+                    return
+                from datetime import date
+                hoje = date.today().isoformat()
+                posicao_id = _encontrar_ou_criar_posicao(repo, produto_id, ativo, hoje)
+                if not posicao_id:
+                    self._send_json({
+                        'sucesso': False,
+                        'erro': 'Não foi possível criar a posição. Para produtos que não são de alocação livre (AC/EXC/HB/LC), use "Nova Posição" na página do produto.'
+                    }, 400)
+                    return
+                updates = {}
+                if coingecko_id:
+                    updates['coingecko_id'] = coingecko_id
+                if exchange_symbol:
+                    updates['exchange_symbol'] = exchange_symbol
+                if updates:
+                    try:
+                        repo.atualizar_posicao(posicao_id, **updates)
+                        if coingecko_id:
+                            repo.registrar_ativo(ativo, coingecko_id)
+                    except Exception as e:
+                        print(f"[ADICIONAR-ATIVO] Aviso ao salvar coingecko_id/symbol: {e}", flush=True)
+                self._send_json({'sucesso': True, 'mensagem': f'Ativo "{ativo}" adicionado. A tabela será atualizada.'})
             except Exception as e:
                 self._send_json({'sucesso': False, 'erro': str(e)}, 400)
             return
@@ -3544,6 +4187,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                 return
 
                             # Ver visualizacao
+                            # Para produtos de alocação livre, reconciliar posições com alocações
+                            reconciliar_posicoes_com_alocacoes(repo, produto_id)
+
                             # Atualizar dados automaticamente em paralelo
                             atualizar_dados_produto(repo, produto_id)
 
@@ -3559,6 +4205,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # Posicoes abertas/fechadas (fallback sem visualizacoes)
                 if len(parts) >= 4 and parts[3] in ['abertas', 'fechadas']:
                     tipo = parts[3]
+
+                    # Para produtos de alocação livre, reconciliar posições com alocações
+                    reconciliar_posicoes_com_alocacoes(repo, produto_id)
 
                     # Atualizar dados automaticamente em paralelo (apenas para abertas)
                     if tipo == 'abertas':
@@ -3577,6 +4226,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
 
                 # Pagina do produto (default)
+                # Para produtos de alocação livre, reconciliar posições com alocações
+                reconciliar_posicoes_com_alocacoes(repo, produto_id)
+
                 # Atualizar dados automaticamente (Bitget sync + ATR stops) em paralelo
                 atualizar_dados_produto(repo, produto_id)
 
@@ -3886,6 +4538,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     'dias_preenchidos': resultado.get('dias_preenchidos', 0),
                     'erros': resultado.get('erros', 0)
                 })
+            except Exception as e:
+                self._send_json({'sucesso': False, 'erro': str(e)}, 500)
+            return
+
+        # API: Preencher preco_saida das posições fechadas (AC/EXC/HB/LC) via Bitget/CoinGecko
+        # Roda em background thread para não travar o servidor
+        if path.startswith('/api/posicoes/preencher-preco-saida'):
+            try:
+                produto_id_param = None
+                if '?' in self.path:
+                    qs = self.path.split('?')[1]
+                    params = dict(p.split('=') for p in qs.split('&') if '=' in p)
+                    if 'produto_id' in params:
+                        produto_id_param = int(params['produto_id'])
+                import threading
+                bg_repo = get_repo()
+                def _run():
+                    try:
+                        resultado = preencher_preco_saida_posicoes_fechadas(bg_repo, produto_id_param)
+                        print(f"[PREENCHER-PRECO-SAIDA] Finalizado: {resultado}", flush=True)
+                    except Exception as e:
+                        print(f"[PREENCHER-PRECO-SAIDA] Erro na thread: {e}", flush=True)
+                t = threading.Thread(target=_run, daemon=True)
+                t.start()
+                self._send_json({'sucesso': True, 'mensagem': 'Preenchimento iniciado em background. Acompanhe no terminal.'})
             except Exception as e:
                 self._send_json({'sucesso': False, 'erro': str(e)}, 500)
             return
