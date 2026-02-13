@@ -779,7 +779,13 @@ def historico_posicoes(produto_id=None):
     if not frames:
         return pd.DataFrame()
 
-    df = pd.concat(frames, ignore_index=True, sort=False)
+    # Alinhar colunas para evitar FutureWarning do pandas (concat com colunas vazias/all-NA)
+    all_cols = set()
+    for f in frames:
+        all_cols.update(f.columns.tolist())
+    all_cols = sorted(all_cols)
+    aligned = [f.reindex(columns=all_cols) for f in frames]
+    df = pd.concat(aligned, ignore_index=True, sort=False)
 
     # Garantir ordenação pela data de entrada
     if 'data_entrada' in df.columns:
