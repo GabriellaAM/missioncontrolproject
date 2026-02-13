@@ -26,7 +26,7 @@ from analytics.notebook_utils import (
     display_alocacoes,
 )
 from services.atr_stop_service import atualizar_stops_posicoes_abertas, calcular_stop_para_posicao
-from services.bitget_service import sync_positions_with_exchange
+from services.bitget_service import sync_positions_with_exchange, auto_sync_positions
 from services.notificacao_service import notificar_stop_atingido
 from services.turmas_service import TurmasService
 from services.rentabilidade_service import RentabilidadeService
@@ -41,6 +41,23 @@ from turmas_dashboard import (
 )
 
 
+def _normalizar_data_entrada(val, fallback_today=True):
+    """Converte data_entrada (date, datetime, Timestamp, NaT, str) para YYYY-MM-DD. Usa hoje só se fallback_today e valor vazio."""
+    if val is None or val == '':
+        return date.today().isoformat() if fallback_today else ''
+    try:
+        if pd.isna(val):  # pandas NaT
+            return date.today().isoformat() if fallback_today else ''
+        if hasattr(val, 'strftime'):
+            return val.strftime('%Y-%m-%d')
+        s = str(val).strip()[:10]
+        if s and len(s) == 10 and s[4] == '-' and s[7] == '-':
+            return s
+    except Exception:
+        pass
+    return date.today().isoformat() if fallback_today else ''
+
+
 def atualizar_dados_produto(repo, produto_id: int) -> dict:
     """
     Atualiza dados do produto em paralelo (Bitget sync + ATR stops).
@@ -53,10 +70,10 @@ def atualizar_dados_produto(repo, produto_id: int) -> dict:
 
     def sync_bitget():
         try:
-            return sync_positions_with_exchange(repo, produto_id, verbose=False)
+            return auto_sync_positions(repo, produto_id, verbose=True)
         except Exception as e:
             print(f"[BITGET] Erro ao sincronizar produto {produto_id}: {e}")
-            return {'synced': 0, 'errors': [str(e)]}
+            return {'opened': 0, 'closed': 0, 'synced': 0, 'errors': [str(e)]}
 
     def update_atr():
         try:
@@ -74,8 +91,15 @@ def atualizar_dados_produto(repo, produto_id: int) -> dict:
         resultado['atr'] = future_atr.result()
 
     # Log resumido
-    if resultado['bitget'] and resultado['bitget'].get('synced', 0) > 0:
-        print(f"[BITGET] Produto {produto_id}: {resultado['bitget']['synced']} posicoes sincronizadas")
+    bg = resultado.get('bitget') or {}
+    opened = bg.get('opened', 0)
+    closed = bg.get('closed', 0)
+    synced = bg.get('synced', 0)
+    if opened or closed or synced:
+        print(f"[BITGET] Produto {produto_id}: {opened} abertas, {closed} fechadas, {synced} atualizadas")
+    if bg.get('errors'):
+        for err in bg['errors']:
+            print(f"[BITGET] Produto {produto_id} ERRO: {err}")
     if resultado['atr'] and resultado['atr'].get('updated', 0) > 0:
         print(f"[ATR] Produto {produto_id}: {resultado['atr']['updated']} stops atualizados")
 
@@ -1422,7 +1446,10 @@ def get_form_editar_posicao_html(produto, posicao):
     side = posicao.get('side') or posicao.get('tipo') or posicao.get('Tipo', 'long')
     preco_entrada = posicao.get('preco_entrada') or posicao.get('Preço Entrada', 0)
     quantidade = posicao.get('quantidade') or posicao.get('Quantidade', '')
-    data_entrada = posicao.get('data_entrada') or posicao.get('Data Entrada', date.today().isoformat())
+    data_entrada = _normalizar_data_entrada(
+        posicao.get('data_entrada') or posicao.get('Data Entrada'),
+        fallback_today=True
+    )
     is_spot = 'spot' in produto.get('tipo', '').lower()
 
     # Para spot, não mostra seletor de tipo
@@ -1538,7 +1565,7 @@ def get_form_atr_stop_html(produto, posicao):
     pos_id = posicao.get('id') or posicao.get('ID')
     ativo = posicao.get('ativo') or posicao.get('Ativo', 'N/A')
     preco_entrada = posicao.get('preco_entrada') or posicao.get('Preço Entrada', 0)
-    data_entrada = posicao.get('data_entrada') or ''
+    data_entrada = _normalizar_data_entrada(posicao.get('data_entrada') or posicao.get('Data Entrada'), fallback_today=False) or '—'
     current_period = posicao.get('atr_period') or 14
     current_mult = posicao.get('atr_multiplier') or 3.0
     current_data_inicio = posicao.get('atr_data_inicio') or ''
@@ -3758,22 +3785,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             product_type=product_type
                         )
                         if breached:
-                            # Salvar um valor especial para indicar que foi breached
-                            hoje = dt_date.today().strftime('%Y-%m-%d')
-                            repo.adicionar_stop_posicao(posicao_id, hoje, -1)  # -1 indica breached
+                            # Verificar se já foi notificado (último stop = -1 indica breach já registrado)
+                            ultimo_stop = repo.obter_ultimo_stop(posicao_id)
+                            ja_notificado = (ultimo_stop is not None and float(ultimo_stop) == -1.0)
+
+                            if not ja_notificado:
+                                # Salvar -1 para indicar que stop foi atingido (marca como notificado)
+                                hoje = dt_date.today().strftime('%Y-%m-%d')
+                                repo.adicionar_stop_posicao(posicao_id, hoje, -1)  # -1 indica breached
+                                # Enviar notificação por Telegram
+                                try:
+                                    nome_produto = produto_info['nome'] if produto_info else "Desconhecido"
+                                    notificar_stop_atingido(
+                                        ativo=posicao['ativo'],
+                                        side=posicao['side'],
+                                        preco_entrada=posicao.get('preco_entrada'),
+                                        produto_nome=nome_produto,
+                                        data_entrada=posicao.get('data_entrada')
+                                    )
+                                    print(f"[Dashboard] Notificação de stop enviada para {posicao['ativo']}")
+                                except Exception as e:
+                                    print(f"[Dashboard] Erro ao enviar notificação de stop: {e}")
+                            else:
+                                print(f"[Dashboard] Stop já notificado para {posicao['ativo']} — pulando notificação")
                             mensagem = 'ATR configurado - STOP ATINGIDO!'
-                            # Enviar notificação por e-mail
-                            try:
-                                nome_produto = produto_info['nome'] if produto_info else "Desconhecido"
-                                notificar_stop_atingido(
-                                    ativo=posicao['ativo'],
-                                    side=posicao['side'],
-                                    preco_entrada=posicao.get('preco_entrada'),
-                                    produto_nome=nome_produto,
-                                    data_entrada=posicao.get('data_entrada')
-                                )
-                            except Exception as e:
-                                print(f"[Dashboard] Erro ao enviar e-mail de stop: {e}")
                         elif stop is not None:
                             hoje = dt_date.today().strftime('%Y-%m-%d')
                             repo.adicionar_stop_posicao(posicao_id, hoje, stop)

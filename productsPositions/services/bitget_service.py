@@ -42,10 +42,12 @@ def _get_session() -> requests.Session:
 def _normalize_product_name(nome: str) -> str:
     """
     Normalizes product name for environment variable lookup.
-    Example: "Soros 3" -> "SOROS_3"
+    Example: "Soros 3" -> "SOROS_3", "Soros Spot 2" -> "SOROS_SPOT_2"
     """
+    if not nome or not isinstance(nome, str):
+        return ""
     # Remove accents and special chars, replace spaces with underscore
-    nome = nome.upper()
+    nome = nome.strip().upper()
     nome = re.sub(r'[^A-Z0-9_]', '_', nome)
     nome = re.sub(r'_+', '_', nome)  # Multiple underscores to single
     nome = nome.strip('_')
@@ -61,6 +63,9 @@ def get_bitget_credentials(produto_nome: str) -> Optional[Dict[str, str]]:
         BITGET_SECRET_KEY_SOROS_3=xxx
         BITGET_PASSPHRASE_SOROS_3=xxx
 
+    Fallback: if the product name ends with " 1" (e.g. "Soros Spot 1"),
+    also tries without the "_1" suffix (e.g. BITGET_API_KEY_SOROS_SPOT).
+
     Args:
         produto_nome: Product name as stored in database
 
@@ -69,9 +74,26 @@ def get_bitget_credentials(produto_nome: str) -> Optional[Dict[str, str]]:
     """
     normalized = _normalize_product_name(produto_nome)
 
-    api_key = os.getenv(f"BITGET_API_KEY_{normalized}")
-    secret_key = os.getenv(f"BITGET_SECRET_KEY_{normalized}")
-    passphrase = os.getenv(f"BITGET_PASSPHRASE_{normalized}")
+    # Try exact match first
+    creds = _try_env_credentials(normalized)
+    if creds:
+        return creds
+
+    # Fallback: strip trailing _1 (e.g. "Soros Spot 1" -> SOROS_SPOT_1 -> SOROS_SPOT)
+    if normalized.endswith("_1"):
+        fallback = normalized[:-2]
+        creds = _try_env_credentials(fallback)
+        if creds:
+            return creds
+
+    return None
+
+
+def _try_env_credentials(suffix: str) -> Optional[Dict[str, str]]:
+    """Tries to load Bitget credentials from env for a given suffix."""
+    api_key = os.getenv(f"BITGET_API_KEY_{suffix}")
+    secret_key = os.getenv(f"BITGET_SECRET_KEY_{suffix}")
+    passphrase = os.getenv(f"BITGET_PASSPHRASE_{suffix}")
 
     if api_key and secret_key and passphrase:
         return {
@@ -121,6 +143,87 @@ def _bitget_request(credentials: Dict[str, str], method: str, endpoint: str, bod
     return response.json()
 
 
+# Base URL para endpoints públicos (sem autenticação)
+BITGET_PUBLIC_BASE = "https://api.bitget.com"
+
+
+def fetch_bitget_tickers_perpetuals() -> Dict[str, float]:
+    """
+    Busca preços atuais (mark price) de todos os contratos perpétuos USDT na Bitget.
+    Endpoint público — não requer API key.
+
+    Returns:
+        Dict[symbol, mark_price] ex: {"BTCUSDT": 69144.4, "SOLUSDT": 85.188}
+    """
+    url = f"{BITGET_PUBLIC_BASE}/api/v2/mix/market/tickers"
+    params = {"productType": "USDT-FUTURES"}
+    try:
+        session = _get_session()
+        r = session.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != "00000":
+            return {}
+        result = {}
+        for item in data.get("data", []):
+            symbol = item.get("symbol")
+            mark = item.get("markPrice")
+            if symbol and mark is not None:
+                try:
+                    result[symbol] = float(mark)
+                except (TypeError, ValueError):
+                    pass
+        return result
+    except Exception:
+        return {}
+
+
+def fetch_bitget_tickers_spot() -> Dict[str, float]:
+    """
+    Busca preços atuais (last) de todos os pares spot na Bitget.
+    Endpoint público — não requer API key.
+
+    Returns:
+        Dict[symbol, last_price] ex: {"BTCUSDT": 69108.04, "SOLUSDT": 85.02}
+        Apenas pares *USDT para uso com posições spot.
+    """
+    url = f"{BITGET_PUBLIC_BASE}/api/v2/spot/market/tickers"
+    try:
+        session = _get_session()
+        r = session.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != "00000":
+            return {}
+        result = {}
+        for item in data.get("data", []):
+            symbol = item.get("symbol")
+            last = item.get("lastPr")
+            if symbol and last is not None and symbol.endswith("USDT"):
+                try:
+                    result[symbol] = float(last)
+                except (TypeError, ValueError):
+                    pass
+        return result
+    except Exception:
+        return {}
+
+
+def fetch_bitget_ticker_spot(symbol: str) -> Optional[float]:
+    """
+    Busca preço atual (last) de um par spot na Bitget.
+    Endpoint público — não requer API key.
+
+    Args:
+        symbol: Par de negociação (ex: BTCUSDT)
+
+    Returns:
+        Preço atual ou None
+    """
+    tickers = fetch_bitget_tickers_spot()
+    return tickers.get(symbol) if symbol in tickers else None
+
+
 def fetch_perpetual_positions(credentials: Dict[str, str]) -> List[Dict]:
     """
     Fetches open perpetual positions from Bitget.
@@ -145,94 +248,84 @@ def fetch_perpetual_positions(credentials: Dict[str, str]) -> List[Dict]:
         # Bitget returns positions with total > 0
         total = float(pos.get("total", 0))
         if total > 0:
+            # Campo correto é openPriceAvg (não averageOpenPrice)
+            entry_price = float(pos.get("openPriceAvg", 0) or 0)
             positions.append({
                 "symbol": pos.get("symbol", "").replace("USDT", ""),  # BTCUSDT -> BTC
                 "exchange_symbol": pos.get("symbol", ""),  # Keep original
                 "side": pos.get("holdSide", "").lower(),
                 "quantity": total,
-                "entry_price": float(pos.get("averageOpenPrice", 0)),
-                "unrealized_pnl": float(pos.get("unrealizedPL", 0)),
-                "leverage": int(pos.get("leverage", 1)),
+                "entry_price": entry_price,
+                "unrealized_pnl": float(pos.get("unrealizedPL", 0) or 0),
+                "leverage": int(pos.get("leverage", 1) or 1),
+                "mark_price": float(pos.get("markPrice", 0) or 0),
+                "break_even_price": float(pos.get("breakEvenPrice", 0) or 0),
+                # Data de abertura: cTime (criação) ou openTime; aceita ms ou segundos
+                "ctime": pos.get("cTime") or pos.get("openTime") or pos.get("ctime"),
             })
 
     return positions
 
 
-def _fetch_copy_trading_positions(credentials: Dict[str, str]) -> List[Dict]:
-    """Fetches positions from Copy Trading endpoint."""
-    positions = []
-    try:
-        endpoint = "/api/v2/copy/spot-trader/order-current-track"
-        result = _bitget_request(credentials, "GET", endpoint)
-        if result.get("code") == "00000":
-            tracking_list = result.get("data", {}).get("trackingList", [])
-            for order in tracking_list:
-                symbol = order.get("symbol", "")
-                qty = float(order.get("buyFillSize", 0))
-                if qty > 0:
-                    positions.append({
-                        "symbol": symbol.replace("USDT", ""),
-                        "exchange_symbol": symbol,
-                        "side": "long",
-                        "quantity": qty,
-                        "entry_price": float(order.get("buyPrice", 0)),
-                        "order_id": order.get("orderId"),
-                        "source": "copy_trading",
-                    })
-    except Exception:
-        pass
-    return positions
-
-
-def _fetch_spot_assets(credentials: Dict[str, str]) -> List[Dict]:
-    """Fetches positions from Spot Account Assets endpoint."""
-    positions = []
-    try:
-        endpoint = "/api/v2/spot/account/assets"
-        result = _bitget_request(credentials, "GET", endpoint)
-        if result.get("code") == "00000":
-            assets = result.get("data", [])
-            for asset in assets:
-                coin = asset.get("coin", "")
-                available = float(asset.get("available", 0))
-                frozen = float(asset.get("frozen", 0))
-                total = available + frozen
-                if coin in ["USDT", "USDC", "BUSD"] or total < 0.0001:
-                    continue
-                positions.append({
-                    "symbol": coin,
-                    "exchange_symbol": f"{coin}USDT",
-                    "side": "long",
-                    "quantity": total,
-                    "entry_price": 0,
-                    "source": "assets",
-                })
-    except Exception:
-        pass
-    return positions
-
-
 def fetch_spot_positions(credentials: Dict[str, str]) -> List[Dict]:
     """
-    Fetches spot positions from Bitget.
-    OPTIMIZED: Runs endpoints in parallel for ~2x faster fetching.
+    Fetches open spot positions from Bitget Copy Trading.
+
+    Uses GET /api/v2/copy/spot-trader/order-current-track
+    Paginates with idLessThan to fetch all open positions.
 
     Returns list of positions with:
-        - symbol: Trading pair
-        - quantity: Amount held
+        - symbol: Coin name (e.g., "BTC")
+        - exchange_symbol: Trading pair (e.g., "BTCUSDT")
+        - side: Always "long" for spot
+        - quantity: Filled buy quantity (buyFillSize)
+        - entry_price: Buy price (buyPrice)
+        - ctime: Buy timestamp in ms (buyTime) — used as data_entrada
+        - unrealized_pnl: Unrealized PnL
+        - tracking_no: Unique tracking order number
     """
-    # Run both endpoints in parallel
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        future_copy = executor.submit(_fetch_copy_trading_positions, credentials)
-        future_assets = executor.submit(_fetch_spot_assets, credentials)
+    all_positions = []
+    end_id = None
+    max_pages = 10  # Safety limit
 
-        copy_positions = future_copy.result()
-        asset_positions = future_assets.result()
+    for _ in range(max_pages):
+        endpoint = "/api/v2/copy/spot-trader/order-current-track?limit=50"
+        if end_id:
+            endpoint += f"&idLessThan={end_id}"
 
-    # Prefer Copy Trading positions (have entry_price), fall back to assets
-    if copy_positions:
-        return copy_positions
-    return asset_positions
+        result = _bitget_request(credentials, "GET", endpoint)
+
+        if result.get("code") != "00000":
+            raise Exception(f"Bitget order-current-track error: {result.get('msg', 'Unknown')}")
+
+        data = result.get("data", {})
+        tracking_list = data.get("trackingList", [])
+
+        if not tracking_list:
+            break
+
+        for order in tracking_list:
+            symbol = order.get("symbol", "")
+            qty = float(order.get("buyFillSize", 0) or 0)
+            if qty > 0:
+                all_positions.append({
+                    "symbol": symbol.replace("USDT", ""),
+                    "exchange_symbol": symbol,
+                    "side": "long",
+                    "quantity": qty,
+                    "entry_price": float(order.get("buyPrice", 0) or 0),
+                    "ctime": order.get("buyTime"),  # timestamp ms — data real de compra
+                    "unrealized_pnl": float(order.get("unrealizedPL", 0) or 0),
+                    "tracking_no": order.get("trackingNo"),
+                })
+
+        # Pagination: use endId for next page
+        new_end_id = data.get("endId")
+        if not new_end_id or new_end_id == end_id or len(tracking_list) < 50:
+            break
+        end_id = new_end_id
+
+    return all_positions
 
 
 def _batch_load_quantities(repo, posicao_ids: List[int]) -> Dict[int, float]:
@@ -377,6 +470,417 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
                 print(f"  [{ativo}] Quantidade: {current_qty} -> {new_qty}")
             else:
                 print(f"  [{ativo}] Sincronizado (qty={new_qty})")
+
+    return resultado
+
+
+def fetch_perpetual_history(credentials: Dict[str, str], limit: int = 100) -> List[Dict]:
+    """
+    Fetches closed perpetual positions from Bitget (last 3 months).
+
+    Uses GET /api/v2/mix/position/history-position
+
+    Returns list of closed positions with:
+        - symbol, exchange_symbol, side, open_price, close_price,
+          pnl, quantity, open_time, close_time
+    """
+    endpoint = f"/api/v2/mix/position/history-position?productType=USDT-FUTURES&limit={limit}"
+    result = _bitget_request(credentials, "GET", endpoint)
+
+    if result.get("code") != "00000":
+        raise Exception(f"Bitget history-position error: {result.get('msg', 'Unknown')}")
+
+    positions = []
+    data_obj = result.get("data", {})
+    items = data_obj.get("list", []) if isinstance(data_obj, dict) else []
+
+    for pos in items:
+        symbol_raw = pos.get("symbol", "")
+        positions.append({
+            "symbol": symbol_raw.replace("USDT", ""),
+            "exchange_symbol": symbol_raw,
+            "side": pos.get("holdSide", "").lower(),
+            "open_price": float(pos.get("openAvgPrice", 0)),
+            "close_price": float(pos.get("closeAvgPrice", 0)),
+            "pnl": float(pos.get("netProfit", 0)),
+            "quantity": float(pos.get("closeTotalPos", 0)),
+            "open_time": pos.get("cTime"),   # timestamp ms
+            "close_time": pos.get("uTime"),  # timestamp ms
+        })
+
+    return positions
+
+
+def fetch_spot_copy_history(credentials: Dict[str, str], limit: int = 100) -> List[Dict]:
+    """
+    Fetches closed spot copy-trading positions from Bitget.
+
+    Uses GET /api/v2/copy/spot-trader/order-history-track
+    Paginates with idLessThan to fetch all history.
+
+    Returns list of closed positions with:
+        - symbol, exchange_symbol, side, open_price, close_price,
+          quantity, open_time, close_time, pnl, tracking_no
+    """
+    all_history = []
+    end_id = None
+    max_pages = 10  # Safety limit
+    page_limit = min(limit, 100)
+
+    for _ in range(max_pages):
+        endpoint = f"/api/v2/copy/spot-trader/order-history-track?limit={page_limit}"
+        if end_id:
+            endpoint += f"&idLessThan={end_id}"
+
+        result = _bitget_request(credentials, "GET", endpoint)
+
+        if result.get("code") != "00000":
+            raise Exception(f"Bitget order-history-track error: {result.get('msg', 'Unknown')}")
+
+        data = result.get("data", {})
+        tracking_list = data.get("trackingList", [])
+
+        if not tracking_list:
+            break
+
+        for order in tracking_list:
+            symbol_raw = order.get("symbol", "")
+            all_history.append({
+                "symbol": symbol_raw.replace("USDT", ""),
+                "exchange_symbol": symbol_raw,
+                "side": "long",  # Spot copy is always long
+                "open_price": float(order.get("buyPrice", 0) or 0),
+                "close_price": float(order.get("sellPrice", 0) or 0),
+                "quantity": float(order.get("fillSize", 0) or 0),
+                "open_time": order.get("buyTime"),    # timestamp ms
+                "close_time": order.get("sellTime"),  # timestamp ms
+                "pnl": float(order.get("netProfit", 0) or 0),
+                "tracking_no": order.get("trackingNo"),
+            })
+
+        # Pagination
+        new_end_id = data.get("endId")
+        if not new_end_id or new_end_id == end_id or len(tracking_list) < page_limit:
+            break
+        end_id = new_end_id
+
+        if len(all_history) >= limit:
+            break
+
+    return all_history
+
+
+def _timestamp_to_date_str(ts) -> Optional[str]:
+    """Converte timestamp da API (ms ou segundos) para YYYY-MM-DD. Retorna None se inválido."""
+    from datetime import datetime
+    if ts is None:
+        return None
+    try:
+        t = int(ts)
+        if t > 1e12:  # em ms
+            t = t // 1000
+        return datetime.utcfromtimestamp(t).strftime("%Y-%m-%d")
+    except (ValueError, TypeError, OSError):
+        return None
+
+
+def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
+    """
+    Full position lifecycle sync with Bitget exchange:
+      - OPEN: positions on exchange but not in DB -> create
+      - CLOSE: positions in DB but not on exchange -> close with price/date from history
+      - UPDATE: positions in both -> update quantities/PnL (existing behavior)
+
+    Args:
+        repo: SQLiteRepo instance
+        produto_id: Product ID to sync
+        verbose: Print progress info
+
+    Returns:
+        Dict with summary: {opened, closed, synced, skipped, errors}
+    """
+    from domain.posicao import Posicao
+    from datetime import datetime
+
+    resultado = {
+        "opened": 0,
+        "closed": 0,
+        "synced": 0,
+        "skipped": 0,
+        "errors": []
+    }
+
+    # Load product info
+    produto = repo.carregar_produto(produto_id)
+    if not produto:
+        resultado["errors"].append(f"Produto {produto_id} não encontrado")
+        return resultado
+
+    produto_nome = produto["nome"]
+    produto_tipo = produto.get("tipo", "")
+
+    # Get credentials (suffix no .env = nome normalizado: ex. "Soros Spot 2" -> BITGET_*_SOROS_SPOT_2)
+    credentials = get_bitget_credentials(produto_nome)
+    if not credentials:
+        suffix = _normalize_product_name(produto_nome)
+        if verbose:
+            print(f"  [AUTO-SYNC] Sem credenciais Bitget para '{produto_nome}' (suffix esperado no .env: {suffix}) — pulando")
+        resultado["skipped"] += 1
+        resultado["errors"].append(
+            f"Credenciais Bitget não encontradas. Verifique no .env: BITGET_API_KEY_{suffix}, BITGET_SECRET_KEY_{suffix}, BITGET_PASSPHRASE_{suffix}. "
+            "Nome do produto no BD deve bater com o suffix (ex: 'Soros Spot 2' -> SOROS_SPOT_2). Reinicie o servidor após alterar o .env."
+        )
+        return resultado
+
+    is_perpetuo = "perpétuo" in produto_tipo.lower() or "perpetuo" in produto_tipo.lower()
+    is_spot = "spot" in produto_tipo.lower()
+
+    if not is_perpetuo and not is_spot:
+        if verbose:
+            print(f"  [AUTO-SYNC] Tipo '{produto_tipo}' não suportado para sync")
+        return resultado
+
+    # --- Fetch exchange positions (open) ---
+    try:
+        if is_perpetuo:
+            exchange_positions = fetch_perpetual_positions(credentials)
+        else:
+            exchange_positions = fetch_spot_positions(credentials)
+    except Exception as e:
+        resultado["errors"].append(f"Erro ao buscar posições: {str(e)}")
+        if verbose:
+            print(f"  [AUTO-SYNC] Erro ao buscar posições na exchange: {e}")
+        return resultado
+
+    if verbose:
+        print(f"  [AUTO-SYNC] {produto_nome}: {len(exchange_positions)} posições na exchange")
+
+    # Exchange lookup: exchange_symbol.upper() + side -> position data
+    exchange_lookup = {}
+    for pos in exchange_positions:
+        key = (pos["exchange_symbol"].upper(), pos["side"])
+        exchange_lookup[key] = pos
+
+    # --- Load DB open positions ---
+    import pandas as pd
+    df_posicoes = repo.carregar_posicoes_abertas(produto_id)
+
+    db_lookup = {}  # exchange_symbol.upper() + side -> db row
+    db_positions_list = []
+    if not df_posicoes.empty:
+        for _, db_pos in df_posicoes.iterrows():
+            ex_sym = db_pos.get("exchange_symbol")
+            side = db_pos.get("side", "long")
+            if ex_sym and not pd.isna(ex_sym):
+                key = (str(ex_sym).upper(), side)
+                db_lookup[key] = db_pos
+            db_positions_list.append(db_pos)
+
+    # ===== 1. OPEN: on exchange but not in DB =====
+    for key, ex_pos in exchange_lookup.items():
+        if key not in db_lookup:
+            ativo = ex_pos["symbol"]
+            side = ex_pos["side"]
+            entry_price = ex_pos.get("entry_price", 0)
+            # Sempre formato ATIVOUSDT (ex.: SOLUSDT)
+            exchange_symbol = (ex_pos.get("exchange_symbol") or f"{ativo}USDT").upper()
+            # Data de abertura: direto da API (ctime=buyTime para spot, cTime para perpétuos)
+            data_entrada = _timestamp_to_date_str(ex_pos.get("ctime"))
+            if not data_entrada:
+                data_entrada = datetime.now().strftime("%Y-%m-%d")
+
+            try:
+                # Evita duplicata: reconsulta posições abertas antes de criar. Só considera
+                # a mesma posição se (exchange_symbol, side) e data_entrada forem iguais.
+                skip_create = False
+                df_recheck = repo.carregar_posicoes_abertas(produto_id)
+                if not df_recheck.empty:
+                    for _, row in df_recheck.iterrows():
+                        ex_sym = row.get("exchange_symbol")
+                        s = row.get("side", "long")
+                        data_entrada_db = row.get("data_entrada")
+                        if data_entrada_db is not None and hasattr(data_entrada_db, "strftime"):
+                            data_entrada_db = data_entrada_db.strftime("%Y-%m-%d")
+                        elif data_entrada_db is not None:
+                            data_entrada_db = str(data_entrada_db)[:10]
+                        if (ex_sym and not pd.isna(ex_sym)
+                                and (str(ex_sym).upper(), s) == key
+                                and data_entrada_db == data_entrada):
+                            posicao_id = row["id"]
+                            # Tabela posicoes: exchange_symbol sempre; preco_entrada se a corretora enviar > 0
+                            exchange_symbol = (ex_pos.get("exchange_symbol") or f"{ativo}USDT").upper()
+                            pos_up = {"exchange_symbol": exchange_symbol}
+                            if entry_price and entry_price > 0:
+                                pos_up["preco_entrada"] = entry_price
+                            repo.atualizar_posicao(posicao_id, **pos_up)
+                            qty = ex_pos.get("quantity", 0) or 0
+                            attr_updates = {"quantidade": qty}
+                            if entry_price:
+                                attr_updates["preco_entrada_exchange"] = entry_price
+                                if qty:
+                                    attr_updates["preco_entrada_total"] = qty * entry_price
+                            if ex_pos.get("unrealized_pnl") is not None:
+                                attr_updates["pnl_exchange"] = ex_pos["unrealized_pnl"]
+                            repo.salvar_atributos_posicao(posicao_id, produto_id, **attr_updates)
+                            resultado["synced"] += 1
+                            skip_create = True
+                            if verbose:
+                                print(f"  [AUTO-SYNC] Já existe {ativo} ({data_entrada}) — atualizado (evitou duplicata)")
+                            break
+                if skip_create:
+                    continue
+
+                posicao = Posicao(
+                    ativo=ativo,
+                    side=side,
+                    data_entrada=data_entrada,
+                    preco_entrada=entry_price,
+                    exchange_symbol=exchange_symbol,
+                )
+                posicao_id = repo.salvar_posicao(produto_id, posicao)
+                resultado["opened"] += 1
+
+                # Save quantity and other attributes (upsert — creates record if not exists)
+                attr_kwargs = {}
+                qty = ex_pos.get("quantity", 0) or 0
+                if qty:
+                    attr_kwargs["quantidade"] = qty
+                if entry_price:
+                    attr_kwargs["preco_entrada_exchange"] = entry_price
+                    # preco_entrada_total = quantidade * preco_entrada
+                    if qty:
+                        attr_kwargs["preco_entrada_total"] = qty * entry_price
+                unrealized_pnl = ex_pos.get("unrealized_pnl")
+                if unrealized_pnl is not None:
+                    attr_kwargs["pnl_exchange"] = unrealized_pnl
+                leverage = ex_pos.get("leverage")
+                if leverage and leverage != 1:
+                    attr_kwargs["leverage"] = leverage
+                if attr_kwargs:
+                    try:
+                        repo.salvar_atributos_posicao(posicao_id, produto_id, **attr_kwargs)
+                    except Exception as e2:
+                        if verbose:
+                            print(f"  [AUTO-SYNC] Aviso: não salvou atributos de {ativo}: {e2}")
+
+                if verbose:
+                    print(f"  [AUTO-SYNC] ABERTA: {ativo} {side} @ ${entry_price:.4f} qty={qty} ({exchange_symbol})")
+            except Exception as e:
+                resultado["errors"].append(f"Erro ao abrir {ativo}: {str(e)}")
+                if verbose:
+                    print(f"  [AUTO-SYNC] Erro ao criar posição {ativo}: {e}")
+
+    # ===== 2. CLOSE: in DB but not on exchange =====
+    # Lazy load history cache (perpétuos ou spot copy history)
+    history_cache = None
+
+    for key, db_pos in db_lookup.items():
+        if key not in exchange_lookup:
+            posicao_id = db_pos["id"]
+            ativo = db_pos["ativo"]
+            side = db_pos.get("side", "long")
+            exchange_symbol = db_pos.get("exchange_symbol", "")
+
+            if verbose:
+                print(f"  [AUTO-SYNC] {ativo} não está mais na exchange — buscando dados de fechamento...")
+
+            close_price = None
+            close_date = None
+
+            # Fetch history for close details (lazy load, one call for all)
+            try:
+                if history_cache is None:
+                    if is_perpetuo:
+                        history_cache = fetch_perpetual_history(credentials)
+                    elif is_spot:
+                        history_cache = fetch_spot_copy_history(credentials)
+                    else:
+                        history_cache = []
+                    time.sleep(0.1)
+
+                # Find matching closed position in history
+                for hist in history_cache:
+                    if (hist["exchange_symbol"].upper() == str(exchange_symbol).upper()
+                            and hist["side"] == side):
+                        close_price = hist["close_price"]
+                        close_date = _timestamp_to_date_str(hist.get("close_time"))
+                        break
+            except Exception as e:
+                if verbose:
+                    print(f"  [AUTO-SYNC] Aviso: falha ao buscar histórico: {e}")
+
+            # Data de fechamento: sempre da API Bitget quando disponível; hoje só como fallback
+            if not close_date:
+                close_date = datetime.now().strftime("%Y-%m-%d")
+
+            updates = {
+                "status": "closed",
+                "data_saida": close_date,
+            }
+            if close_price and close_price > 0:
+                updates["preco_saida"] = close_price
+
+            try:
+                repo.atualizar_posicao(posicao_id, **updates)
+                resultado["closed"] += 1
+                price_str = f"@ ${close_price:.4f}" if close_price else "(sem preço)"
+                if verbose:
+                    print(f"  [AUTO-SYNC] FECHADA: {ativo} {side} {price_str} em {close_date}")
+            except Exception as e:
+                resultado["errors"].append(f"Erro ao fechar {ativo}: {str(e)}")
+                if verbose:
+                    print(f"  [AUTO-SYNC] Erro ao fechar {ativo}: {e}")
+
+    # ===== 3. UPDATE: in both -> sync quantidade, preco_entrada, exchange_symbol, PnL =====
+    if not df_posicoes.empty:
+        posicao_ids = df_posicoes['id'].tolist()
+        qty_map = _batch_load_quantities(repo, posicao_ids)
+
+        for key, db_pos in db_lookup.items():
+            if key in exchange_lookup:
+                posicao_id = db_pos["id"]
+                ativo = db_pos["ativo"]
+                ex_pos = exchange_lookup[key]
+
+                # Sempre ATIVOUSDT (ex.: SOLUSDT)
+                exchange_symbol = (ex_pos.get("exchange_symbol") or f"{ativo}USDT").upper()
+
+                new_qty = ex_pos["quantity"]
+                entry_price = ex_pos.get("entry_price", 0) or 0
+                unrealized_pnl = ex_pos.get("unrealized_pnl")
+
+                attr_updates = {"quantidade": new_qty}
+
+                if entry_price:
+                    attr_updates["preco_entrada_exchange"] = entry_price
+                    # preco_entrada_total = quantidade * preco_entrada
+                    attr_updates["preco_entrada_total"] = new_qty * entry_price
+
+                if unrealized_pnl is not None:
+                    attr_updates["pnl_exchange"] = unrealized_pnl
+
+                leverage = ex_pos.get("leverage")
+                if leverage and leverage != 1:
+                    attr_updates["leverage"] = leverage
+
+                try:
+                    # Tabela posicoes: preco_entrada, exchange_symbol e data_entrada (da API)
+                    pos_updates = {"exchange_symbol": exchange_symbol}
+                    if entry_price > 0:
+                        pos_updates["preco_entrada"] = entry_price
+                    # data_entrada direto da API (ctime=buyTime para spot, cTime para perpétuos)
+                    data_entrada_api = _timestamp_to_date_str(ex_pos.get("ctime"))
+                    if data_entrada_api:
+                        pos_updates["data_entrada"] = data_entrada_api
+                    repo.atualizar_posicao(posicao_id, **pos_updates)
+                    # Upsert atributos (cria registro se não existir)
+                    repo.salvar_atributos_posicao(posicao_id, produto_id, **attr_updates)
+                    resultado["synced"] += 1
+                except Exception as e:
+                    resultado["errors"].append(f"Erro ao atualizar {ativo}: {str(e)}")
+
+    if verbose and (resultado["opened"] or resultado["closed"] or resultado["synced"]):
+        print(f"  [AUTO-SYNC] Resumo: {resultado['opened']} abertas, {resultado['closed']} fechadas, {resultado['synced']} atualizadas")
 
     return resultado
 

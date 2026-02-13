@@ -633,7 +633,7 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
 
             # Verificar se já foi notificado (último stop = -1 indica breach já registrado)
             ultimo_stop = repo.obter_ultimo_stop(posicao_id)
-            ja_notificado = (ultimo_stop is not None and ultimo_stop == -1)
+            ja_notificado = (ultimo_stop is not None and float(ultimo_stop) == -1.0)
 
             if not ja_notificado:
                 # Salvar -1 para indicar que stop foi atingido (marca como notificado)

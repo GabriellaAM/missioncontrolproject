@@ -45,7 +45,7 @@ def _sqlite_path_from_url(url: str) -> Path:
 class _SqliteCursorWrapper:
     """Cursor que traduz placeholders %s (PostgreSQL) para ? (SQLite).
     Expõe todos os atributos DBAPI2 necessários (description, rowcount, etc.)
-    para compatibilidade com pd.read_sql_query."""
+    para compatibilidade com pd.read_sql_query e com 'with cursor:'."""
     def __init__(self, cursor):
         self._cur = cursor
     def execute(self, sql, params=None):
@@ -65,6 +65,8 @@ class _SqliteCursorWrapper:
         return self._cur.fetchmany(size) if size else self._cur.fetchmany()
     def close(self): self._cur.close()
     def __iter__(self): return iter(self._cur)
+    def __enter__(self): return self
+    def __exit__(self, *args): self.close(); return False
     @property
     def description(self): return self._cur.description
     @property

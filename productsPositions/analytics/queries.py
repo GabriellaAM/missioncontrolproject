@@ -5,7 +5,13 @@ from concurrent.futures import ThreadPoolExecutor
 from storage.sqlite_repo import SQLiteRepo, get_repo
 from services.valor_diario_service import ValorDiarioService
 from services.atr_stop_service import atualizar_stops_posicoes_abertas
-from services.bitget_service import sync_positions_with_exchange, get_bitget_credentials
+from services.bitget_service import (
+    sync_positions_with_exchange,
+    auto_sync_positions,
+    get_bitget_credentials,
+    fetch_bitget_tickers_perpetuals,
+    fetch_bitget_tickers_spot,
+)
 
 # Queries usando PostgreSQL (psycopg2)
 
@@ -190,6 +196,9 @@ def posicoes_abertas(produto_id=None):
                         p.*,
                         a.quantidade,
                         a.preco_entrada_total,
+                        a.preco_entrada_exchange,
+                        a.pnl_exchange,
+                        a.leverage,
                         a.perfil,
                         a.motivo,
                         a.alvo1,
@@ -231,7 +240,7 @@ def posicoes_abertas(produto_id=None):
             # Run both in parallel
             with ThreadPoolExecutor(max_workers=2) as executor:
                 future_prices = executor.submit(_batch_load_prices, coingecko_ids)
-                future_bitget = executor.submit(sync_positions_with_exchange, repo, produto_id, False)
+                future_bitget = executor.submit(auto_sync_positions, repo, produto_id, False)
 
                 price_map = future_prices.result()
                 future_bitget.result()
@@ -248,6 +257,9 @@ def posicoes_abertas(produto_id=None):
                     p.*,
                     a.quantidade,
                     a.preco_entrada_total,
+                    a.preco_entrada_exchange,
+                    a.pnl_exchange,
+                    a.leverage,
                     a.perfil,
                     a.motivo,
                     a.alvo1,
@@ -265,19 +277,40 @@ def posicoes_abertas(produto_id=None):
             price_map = _batch_load_prices(df['coingecko_id'].tolist())
         df['preco_atual'] = df['coingecko_id'].map(price_map)
 
-        # Sobrescrever preco_atual com dados da Bitget quando disponíveis
-        # Para perpétuos: preco_atual = entry + (pnl / qty) para LONG, entry - (pnl / qty) para SHORT
-        if 'pnl_exchange' in df.columns and 'preco_entrada_exchange' in df.columns:
-            for idx, row in df.iterrows():
-                pnl = row.get('pnl_exchange')
-                entry = row.get('preco_entrada_exchange')
-                qty = row.get('quantidade')
-                if pd.notna(pnl) and pd.notna(entry) and pd.notna(qty) and qty != 0:
-                    side = str(row.get('side', 'long')).lower()
-                    if side == 'short':
-                        df.at[idx, 'preco_atual'] = entry - (pnl / qty)
-                    else:
-                        df.at[idx, 'preco_atual'] = entry + (pnl / qty)
+        # Perpétuos: preço em tempo real da Bitget (mark price) — endpoint público, sem API key
+        if tipo_perpetuos:
+            tickers = fetch_bitget_tickers_perpetuals()
+            if tickers and 'exchange_symbol' in df.columns:
+                for idx, row in df.iterrows():
+                    ex_sym = row.get('exchange_symbol')
+                    if pd.notna(ex_sym) and ex_sym:
+                        sym = str(ex_sym).strip().upper()
+                        if sym in tickers and tickers[sym] > 0:
+                            df.at[idx, 'preco_atual'] = tickers[sym]
+            # Fallback: CoinGecko ou derivar de entry ± (pnl/qty) quando Bitget não retornar o par
+            if 'pnl_exchange' in df.columns and 'preco_entrada_exchange' in df.columns:
+                for idx, row in df.iterrows():
+                    if pd.isna(df.at[idx, 'preco_atual']) or df.at[idx, 'preco_atual'] is None or df.at[idx, 'preco_atual'] == 0:
+                        pnl = row.get('pnl_exchange')
+                        entry = row.get('preco_entrada_exchange')
+                        qty = row.get('quantidade')
+                        if pd.notna(pnl) and pd.notna(entry) and pd.notna(qty) and qty != 0:
+                            side = str(row.get('side', 'long')).lower()
+                            if side == 'short':
+                                df.at[idx, 'preco_atual'] = entry - (pnl / qty)
+                            else:
+                                df.at[idx, 'preco_atual'] = entry + (pnl / qty)
+
+        # Spot: preço em tempo real da Bitget (last price) — endpoint público, sem API key
+        if tipo_spot:
+            tickers_spot = fetch_bitget_tickers_spot()
+            if tickers_spot and 'exchange_symbol' in df.columns:
+                for idx, row in df.iterrows():
+                    ex_sym = row.get('exchange_symbol')
+                    if pd.notna(ex_sym) and ex_sym:
+                        sym = str(ex_sym).strip().upper()
+                        if sym in tickers_spot and tickers_spot[sym] > 0:
+                            df.at[idx, 'preco_atual'] = tickers_spot[sym]
 
         # Para produtos Spot, calcular preco_atual_total (quantidade * preco_atual)
         if tipo_spot:
@@ -488,6 +521,9 @@ def posicoes_fechadas(produto_id=None):
                         p.*,
                         a.quantidade,
                         a.preco_entrada_total,
+                        a.preco_entrada_exchange,
+                        a.pnl_exchange,
+                        a.leverage,
                         a.perfil,
                         a.motivo,
                         a.alvo1,
