@@ -630,25 +630,34 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
 
         if breached:
             resultado['breached'] += 1
-            # Salvar -1 para indicar que stop foi atingido
-            repo.adicionar_stop_posicao(posicao_id, hoje, -1)
-            if verbose:
-                print(f"  [{ativo}] STOP ATINGIDO!")
-            # Enviar notificação por e-mail
-            try:
-                produto_id_pos = pos.get('produto_id')
-                produto_info = repo.carregar_produto(produto_id_pos) if produto_id_pos else None
-                nome_produto = produto_info['nome'] if produto_info else "Desconhecido"
-                notificar_stop_atingido(
-                    ativo=ativo,
-                    side=side,
-                    preco_entrada=pos.get('preco_entrada'),
-                    produto_nome=nome_produto,
-                    data_entrada=data_entrada
-                )
-            except Exception as e:
+
+            # Verificar se já foi notificado (último stop = -1 indica breach já registrado)
+            ultimo_stop = repo.obter_ultimo_stop(posicao_id)
+            ja_notificado = (ultimo_stop is not None and ultimo_stop == -1)
+
+            if not ja_notificado:
+                # Salvar -1 para indicar que stop foi atingido (marca como notificado)
+                repo.adicionar_stop_posicao(posicao_id, hoje, -1)
                 if verbose:
-                    print(f"  [{ativo}] Erro ao enviar e-mail: {e}")
+                    print(f"  [{ativo}] STOP ATINGIDO! Enviando notificação...")
+                # Enviar notificação via Telegram
+                try:
+                    produto_id_pos = pos.get('produto_id')
+                    produto_info = repo.carregar_produto(produto_id_pos) if produto_id_pos else None
+                    nome_produto = produto_info['nome'] if produto_info else "Desconhecido"
+                    notificar_stop_atingido(
+                        ativo=ativo,
+                        side=side,
+                        preco_entrada=pos.get('preco_entrada'),
+                        produto_nome=nome_produto,
+                        data_entrada=data_entrada
+                    )
+                except Exception as e:
+                    if verbose:
+                        print(f"  [{ativo}] Erro ao enviar notificação: {e}")
+            else:
+                if verbose:
+                    print(f"  [{ativo}] STOP ATINGIDO (já notificado anteriormente - pulando notificação)")
             continue
 
         if stop is not None:
