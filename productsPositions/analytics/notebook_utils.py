@@ -14,13 +14,24 @@ from storage.sqlite_repo import get_repo
 
 
 def _formatar_stop_valor(x):
-    """Formata valor de stop: exibe todas as casas decimais significativas (sem arredondar para 2)."""
+    """Formata valor de stop: decimais conforme magnitude, sem zeros à direita."""
     if pd.isna(x) or x is None:
         return "—"
     if isinstance(x, (int, float)):
         if x == -1:
             return "STOP ATINGIDO"
-        s = f"{x:,.10f}".rstrip('0').rstrip('.')
+        abs_x = abs(x)
+        if abs_x >= 100:
+            decimais = 2
+        elif abs_x >= 1:
+            decimais = 2
+        elif abs_x >= 0.01:
+            decimais = 4
+        elif abs_x >= 0.0001:
+            decimais = 6
+        else:
+            decimais = 8
+        s = f"{x:,.{decimais}f}".rstrip('0').rstrip('.')
         return "$" + s
     return str(x)
 
