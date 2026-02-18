@@ -297,9 +297,9 @@ def posicoes_abertas(produto_id=None):
             cache_key = produto_id or 'all'
             last_update = _atr_update_cache.get(cache_key, 0)
             if time.time() - last_update > _ATR_CACHE_TTL:
-                atualizar_stops_posicoes_abertas(repo, produto_id, verbose=False)
+                resultado_atr = atualizar_stops_posicoes_abertas(repo, produto_id, verbose=False)
                 _atr_update_cache[cache_key] = time.time()
-                print(f"[ATR] Stops ATR atualizados para produto {cache_key}", flush=True)
+                print(f"[ATR] Produto {cache_key}: updated={resultado_atr['updated']}, skipped={resultado_atr['skipped']}, unchanged={resultado_atr['unchanged']}, breached={resultado_atr['breached']}, errors={resultado_atr['errors']}", flush=True)
             else:
                 mins_restantes = int((_ATR_CACHE_TTL - (time.time() - last_update)) / 60)
                 print(f"[ATR] Cache ativo para produto {cache_key}, próximo update em ~{mins_restantes}min", flush=True)

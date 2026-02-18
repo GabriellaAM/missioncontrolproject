@@ -80,6 +80,7 @@ def buscar_ohlc_api(coingecko_id: str, days: int = 30) -> Optional[pd.DataFrame]
     """
     api_key = os.getenv('GECKO_API_KEY')
     if not api_key:
+        print(f"[OHLC] CoinGecko: GECKO_API_KEY não configurado", flush=True)
         return None
 
     try:
@@ -119,7 +120,8 @@ def buscar_ohlc_api(coingecko_id: str, days: int = 30) -> Optional[pd.DataFrame]
 
         return df
 
-    except Exception:
+    except Exception as e:
+        print(f"[OHLC] CoinGecko falhou para {coingecko_id}: {e}", flush=True)
         return None
 
 
@@ -268,7 +270,8 @@ def buscar_ohlc_bitget(exchange_symbol: str, days: int = 90, product_type: str =
 
         return df
 
-    except Exception:
+    except Exception as e:
+        print(f"[OHLC] Bitget falhou para {exchange_symbol}: {e}", flush=True)
         return None
 
 
@@ -624,8 +627,7 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
 
         if erro:
             resultado['errors'].append(f"{ativo}: {erro}")
-            if verbose:
-                print(f"  [{ativo}] Erro: {erro}")
+            print(f"  [{ativo}] Erro ATR: {erro}", flush=True)
             continue
 
         if breached:
