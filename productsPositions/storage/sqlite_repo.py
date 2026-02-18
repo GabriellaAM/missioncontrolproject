@@ -1,5 +1,6 @@
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 import sqlite3
 import warnings
 import pandas as pd
@@ -169,11 +170,21 @@ class SQLiteRepo:
             print("[SQLiteRepo] SUPABASE_DB_URL não configurado; usando banco local:", _DEFAULT_SQLITE_PATH, flush=True)
         self._sqlite_conn = None  # conexão única reutilizada em modo SQLite (apenas na thread que a criou)
         self._sqlite_conn_thread_id = None
+        self._pg_pool = None  # connection pool (apenas PostgreSQL)
         if self._use_sqlite:
             print(f"[SQLiteRepo INIT] Modo: SQLite | Path: {self.db_url}", flush=True)
         else:
             host_info = re.search(r'@([^/]+)', self.db_url)
             print(f"[SQLiteRepo INIT] Modo: PostgreSQL | Host: {host_info.group(1) if host_info else '?'}", flush=True)
+            # Pool de conexões para reduzir latência (reutiliza conexões em vez de abrir/fechar a cada request)
+            hostaddr = _resolver_ipv4_do_host(self.db_url)
+            pool_kw = {'connect_timeout': 3}
+            if hostaddr:
+                pool_kw['hostaddr'] = hostaddr
+            self._pg_pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=2, maxconn=10,
+                dsn=self.db_url, **pool_kw
+            )
             self._inicializar_banco()
     
     @contextmanager
@@ -211,7 +222,8 @@ class SQLiteRepo:
             finally:
                 conn.close()
             return
-        conn = connect_pg(self.db_url)
+        # PostgreSQL: obter conexão do pool (evita abrir/fechar a cada request)
+        conn = self._pg_pool.getconn()
         try:
             yield conn
             conn.commit()
@@ -219,7 +231,7 @@ class SQLiteRepo:
             conn.rollback()
             raise
         finally:
-            conn.close()
+            self._pg_pool.putconn(conn)
 
     def connection(self):
         """Context manager para uso externo (ex: analytics). Em SQLite reutiliza a mesma conexão."""

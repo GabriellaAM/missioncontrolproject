@@ -7,7 +7,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 import json
+import gzip
 import urllib.parse
 from datetime import datetime, date
 import io
@@ -3534,6 +3536,9 @@ def preencher_precos_posicoes(repo, produto_id, tipo='ambos'):
 class DashboardHandler(BaseHTTPRequestHandler):
     """Handler para requisicoes HTTP do dashboard"""
 
+    # Tamanho minimo para usar GZIP (respostas muito pequenas ficam maiores comprimidas)
+    _GZIP_MIN_SIZE = 256
+
     def _set_headers(self, status=200, content_type='text/html'):
         self.send_response(status)
         self.send_header('Content-type', content_type)
@@ -3542,13 +3547,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
 
-    def _send_json(self, data, status=200):
-        self._set_headers(status, 'application/json')
-        self.wfile.write(json.dumps(data, ensure_ascii=False, default=str).encode('utf-8'))
+    def _send_body(self, content_type, data_bytes, status=200, cache_control=None):
+        """Envia resposta com body, opcionalmente comprimida (GZIP) e com Cache-Control."""
+        accept_encoding = (self.headers.get('Accept-Encoding') or '').lower()
+        use_gzip = 'gzip' in accept_encoding and len(data_bytes) >= self._GZIP_MIN_SIZE
+        if use_gzip:
+            body = gzip.compress(data_bytes, compresslevel=6)
+        else:
+            body = data_bytes
+
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        if cache_control:
+            self.send_header('Cache-Control', cache_control)
+        if use_gzip:
+            self.send_header('Content-Encoding', 'gzip')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_json(self, data, status=200, cache_control='private, max-age=0'):
+        body = json.dumps(data, ensure_ascii=False, default=str).encode('utf-8')
+        self._send_body('application/json', body, status=status, cache_control=cache_control)
 
     def _send_html(self, html, status=200):
-        self._set_headers(status, 'text/html; charset=utf-8')
-        self.wfile.write(html.encode('utf-8'))
+        body = html.encode('utf-8')
+        self._send_body('text/html; charset=utf-8', body, status=status, cache_control='private, max-age=0')
 
     def _send_excel(self, buffer, filename):
         """Envia arquivo Excel para download"""
@@ -4154,7 +4181,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Health check (sem conexao ao banco - para Render/cloud)
         if path == '/health':
-            self._send_json({'status': 'ok', 'timestamp': datetime.now().isoformat()})
+            self._send_json(
+                {'status': 'ok', 'timestamp': datetime.now().isoformat()},
+                cache_control='public, max-age=30'
+            )
             return
 
         try:
@@ -5054,9 +5084,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {args[0]}")
 
 
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTPServer que atende cada requisicao em uma thread (melhor para deploy com multiplas requisicoes)."""
+    daemon_threads = True
+
+
+def iniciar_servidor_background(host='127.0.0.1', porta=0, silent=False):
+    """
+    Inicia o servidor do dashboard em uma thread (para uso com Gunicorn/WSGI).
+    Retorna a porta efetiva (útil quando porta=0).
+    """
+    servidor = ThreadedHTTPServer((host, porta), DashboardHandler)
+    porta_efetiva = servidor.server_address[1]
+    if not silent:
+        print(f"[Dashboard] Servidor em background em {host}:{porta_efetiva}", flush=True)
+    import threading
+    t = threading.Thread(target=servidor.serve_forever, daemon=True)
+    t.start()
+    return porta_efetiva
+
+
 def iniciar_servidor(porta=8080, host='localhost'):
     """Inicia o servidor do dashboard"""
-    servidor = HTTPServer((host, porta), DashboardHandler)
+    servidor = ThreadedHTTPServer((host, porta), DashboardHandler)
 
     # Detectar qual banco está em uso (PostgreSQL ou SQLite fallback)
     try:
