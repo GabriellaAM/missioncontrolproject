@@ -25,6 +25,7 @@ from analytics.notebook_utils import (
     display_carteira,
     display_alocacoes,
 )
+from analytics.queries import invalidar_cache_atr
 from services.atr_stop_service import atualizar_stops_posicoes_abertas, calcular_stop_para_posicao
 from services.bitget_service import sync_positions_with_exchange, auto_sync_positions
 from services.notificacao_service import notificar_stop_atingido
@@ -3756,38 +3757,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     atr_data_inicio=atr_data_inicio
                 )
 
+                # Invalidar cache ATR para que a próxima carga recalcule stops (incl. esta posição)
+                posicao = repo.carregar_posicao(posicao_id)
+                produto_id_atr = posicao.get('produto_id') if posicao else None
+                if produto_id_atr is not None:
+                    invalidar_cache_atr(produto_id_atr)
+                    print(f"[ATR] Cache invalidado para produto {produto_id_atr} após config ATR posição {posicao_id}", flush=True)
+
                 # Se ATR foi configurado, calcular e salvar o stop imediatamente
-                mensagem = 'ATR configurado e stop calculado!'
-                if atr_multiplier is not None:
-                    # Buscar dados da posição
-                    posicao = repo.carregar_posicao(posicao_id)
-                    if posicao and posicao.get('coingecko_id'):
-                        # Usar atr_data_inicio se disponível, senão data_entrada
-                        data_calculo = atr_data_inicio or posicao['data_entrada']
+                mensagem = 'ATR configurado!'
+                if atr_multiplier is not None and posicao and posicao.get('coingecko_id'):
+                    # Usar atr_data_inicio se disponível, senão data_entrada
+                    data_calculo = atr_data_inicio or posicao.get('data_entrada')
+                    if hasattr(data_calculo, 'strftime'):
+                        data_calculo = data_calculo.strftime('%Y-%m-%d')
+                    else:
+                        data_calculo = str(data_calculo)[:10] if data_calculo else None
 
-                        # Obter exchange_symbol para usar dados da Bitget (CoinGecko pode não ter OHLC)
-                        exchange_symbol = posicao.get('exchange_symbol')
-                        if exchange_symbol and str(exchange_symbol).lower() in ('none', 'nan', ''):
-                            exchange_symbol = None
+                    exchange_symbol = posicao.get('exchange_symbol')
+                    if exchange_symbol and str(exchange_symbol).lower() in ('none', 'nan', ''):
+                        exchange_symbol = None
 
-                        # Detectar tipo de produto (spot vs perpetuos)
-                        product_type = 'perpetuos'  # Default
-                        produto_info = repo.carregar_produto(posicao.get('produto_id'))
-                        if produto_info and produto_info.get('tipo'):
-                            tipo_str = str(produto_info['tipo']).lower()
-                            if 'spot' in tipo_str:
-                                product_type = 'spot'
+                    product_type = 'perpetuos'
+                    produto_info = repo.carregar_produto(posicao.get('produto_id'))
+                    if produto_info and produto_info.get('tipo'):
+                        tipo_str = str(produto_info['tipo']).lower()
+                        if 'spot' in tipo_str:
+                            product_type = 'spot'
 
-                        stop, breached, erro = calcular_stop_para_posicao(
-                            coingecko_id=posicao['coingecko_id'],
-                            side=posicao['side'],
-                            data_entrada=data_calculo,
-                            atr_period=atr_period,
-                            atr_multiplier=atr_multiplier,
-                            exchange_symbol=exchange_symbol,
-                            product_type=product_type
-                        )
-                        if breached:
+                    stop, breached, erro = calcular_stop_para_posicao(
+                        coingecko_id=posicao['coingecko_id'],
+                        side=posicao['side'],
+                        data_entrada=data_calculo,
+                        atr_period=atr_period,
+                        atr_multiplier=atr_multiplier,
+                        exchange_symbol=exchange_symbol,
+                        product_type=product_type
+                    )
+                    if erro:
+                        print(f"[ATR] Posição {posicao_id} ({posicao.get('ativo')}): {erro}", flush=True)
+                        mensagem = 'ATR configurado. O stop será calculado na próxima atualização automática.'
+                    if breached:
                             # Verificar se já foi notificado (último stop = -1 indica breach já registrado)
                             ultimo_stop = repo.obter_ultimo_stop(posicao_id)
                             ja_notificado = (ultimo_stop is not None and float(ultimo_stop) == -1.0)
@@ -3815,6 +3825,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         elif stop is not None:
                             hoje = dt_date.today().strftime('%Y-%m-%d')
                             repo.adicionar_stop_posicao(posicao_id, hoje, stop)
+                            mensagem = 'ATR configurado e stop calculado!'
+                            print(f"[ATR] Stop salvo para posição {posicao_id} ({posicao.get('ativo')}): {stop}", flush=True)
 
                 self._send_json({'sucesso': True, 'mensagem': mensagem})
             except Exception as e:

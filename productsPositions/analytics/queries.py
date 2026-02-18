@@ -22,6 +22,14 @@ _bitget_sync_cache = {}   # produto_id -> timestamp do último Bitget sync
 _ATR_CACHE_TTL = 3600     # 1 hora entre updates ATR
 _BITGET_SYNC_TTL = 300    # 5 minutos entre Bitget syncs
 
+
+def invalidar_cache_atr(produto_id=None):
+    """Invalida o cache de ATR para forçar recálculo na próxima carga (ex.: após configurar ATR numa posição)."""
+    if produto_id is not None:
+        _atr_update_cache.pop(produto_id, None)
+    else:
+        _atr_update_cache.clear()
+
 # ============================================================
 # HELPER FUNCTIONS FOR BATCH LOADING (Performance Optimization)
 # ============================================================
