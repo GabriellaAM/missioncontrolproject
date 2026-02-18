@@ -1,5 +1,6 @@
 import pandas as pd
 import psycopg2
+import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from storage.sqlite_repo import SQLiteRepo, get_repo
@@ -14,6 +15,12 @@ from services.bitget_service import (
 )
 
 # Queries usando PostgreSQL (psycopg2)
+
+# Cache temporal para operações caras (evita chamadas API repetidas a cada page load)
+_atr_update_cache = {}    # produto_id -> timestamp do último ATR update
+_bitget_sync_cache = {}   # produto_id -> timestamp do último Bitget sync
+_ATR_CACHE_TTL = 3600     # 1 hora entre updates ATR
+_BITGET_SYNC_TTL = 300    # 5 minutos entre Bitget syncs
 
 # ============================================================
 # HELPER FUNCTIONS FOR BATCH LOADING (Performance Optimization)
@@ -242,15 +249,21 @@ def posicoes_abertas(produto_id=None):
             """
             df = pd.read_sql_query(query, conn)
 
-    # ATR stop updates: only run if there are positions with atr_multiplier configured
-    # Optimized to ~0.05s per position (was 0.15s before numpy optimization)
+    # ATR stop updates: run apenas se TTL expirou (evita chamadas API caras a cada page load)
     if not df.empty and 'atr_multiplier' in df.columns:
         has_atr = df['atr_multiplier'].notna().any()
         if has_atr:
-            atualizar_stops_posicoes_abertas(repo, produto_id, verbose=False)
+            cache_key = produto_id or 'all'
+            last_update = _atr_update_cache.get(cache_key, 0)
+            if time.time() - last_update > _ATR_CACHE_TTL:
+                atualizar_stops_posicoes_abertas(repo, produto_id, verbose=False)
+                _atr_update_cache[cache_key] = time.time()
+                print(f"[ATR] Stops ATR atualizados para produto {cache_key}", flush=True)
+            else:
+                mins_restantes = int((_ATR_CACHE_TTL - (time.time() - last_update)) / 60)
+                print(f"[ATR] Cache ativo para produto {cache_key}, próximo update em ~{mins_restantes}min", flush=True)
 
     # OPTIMIZED: Run Bitget sync and CoinGecko price fetch in PARALLEL
-    # This saves ~1s by overlapping network latencies
     price_map = {}
     bitget_ran = False
 
@@ -259,17 +272,20 @@ def posicoes_abertas(produto_id=None):
         produto_info = repo.carregar_produto(produto_id)
         has_bitget = produto_info and get_bitget_credentials(produto_info['nome'])
 
-        if has_bitget:
-            # Run both in parallel
+        # Bitget sync com cache temporal (evita sync a cada page load)
+        sync_cache_key = produto_id
+        last_sync = _bitget_sync_cache.get(sync_cache_key, 0)
+        should_sync = has_bitget and (time.time() - last_sync > _BITGET_SYNC_TTL)
+
+        if should_sync:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 future_prices = executor.submit(_batch_load_prices, coingecko_ids)
                 future_bitget = executor.submit(auto_sync_positions, repo, produto_id, False)
-
                 price_map = future_prices.result()
                 future_bitget.result()
                 bitget_ran = True
+                _bitget_sync_cache[sync_cache_key] = time.time()
         else:
-            # Just fetch prices (no Bitget)
             price_map = _batch_load_prices(coingecko_ids)
 
     # Reload positions after Bitget sync to get updated quantities

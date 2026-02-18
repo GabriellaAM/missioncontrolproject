@@ -4163,25 +4163,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     cursor = conn.cursor()
                     cursor.execute("SELECT COUNT(*) FROM stops")
                     total = cursor.fetchone()[0]
-                    cursor.execute("SELECT s.posicao_id, s.data, s.valor, p.ativo FROM stops s LEFT JOIN posicoes p ON s.posicao_id = p.id ORDER BY s.data DESC LIMIT 20")
-                    rows = cursor.fetchall()
-                    stops_list = [{'posicao_id': r[0], 'data': r[1], 'valor': r[2], 'ativo': r[3]} for r in rows]
                     info = {
                         'db_tipo': 'SQLite' if repo._use_sqlite else 'PostgreSQL',
                         'total_stops': total,
-                        'ultimos_20': stops_list,
                     }
                     if produto_id:
+                        # Posições abertas deste produto
                         cursor.execute("""
-                            SELECT s.posicao_id, s.data, s.valor, p.ativo 
-                            FROM stops s LEFT JOIN posicoes p ON s.posicao_id = p.id 
-                            WHERE p.produto_id = %s ORDER BY s.data DESC LIMIT 20
+                            SELECT id, ativo, side, status FROM posicoes 
+                            WHERE produto_id = %s AND status = 'open' ORDER BY ativo
                         """, (produto_id,))
-                        rows_prod = cursor.fetchall()
-                        info['stops_produto'] = [{'posicao_id': r[0], 'data': r[1], 'valor': r[2], 'ativo': r[3]} for r in rows_prod]
+                        pos_abertas = cursor.fetchall()
+                        pos_ids = [r[0] for r in pos_abertas]
+                        info['posicoes_abertas'] = [{'id': r[0], 'ativo': r[1], 'side': r[2]} for r in pos_abertas]
+
+                        # Stops para essas posições (query exata do _batch_load_stops)
+                        if pos_ids:
+                            placeholders = ','.join(['%s'] * len(pos_ids))
+                            cursor.execute(f"""
+                                SELECT posicao_id, valor
+                                FROM stops s1
+                                WHERE posicao_id IN ({placeholders})
+                                AND data = (SELECT MAX(s2.data) FROM stops s2 WHERE s2.posicao_id = s1.posicao_id)
+                            """, pos_ids)
+                            batch_result = cursor.fetchall()
+                            info['batch_load_result'] = [{'posicao_id': r[0], 'valor': r[1], 'tipo_id': str(type(r[0])), 'tipo_val': str(type(r[1]))} for r in batch_result]
+
+                            # Verificar quais posições NÃO têm stop
+                            ids_com_stop = {r[0] for r in batch_result}
+                            info['posicoes_sem_stop'] = [pid for pid in pos_ids if pid not in ids_com_stop]
+
+                            # Todos os stops dessas posições (para ver se existem)
+                            cursor.execute(f"""
+                                SELECT posicao_id, data, valor FROM stops 
+                                WHERE posicao_id IN ({placeholders}) ORDER BY posicao_id, data DESC
+                            """, pos_ids)
+                            all_stops = cursor.fetchall()
+                            info['todos_stops_posicoes'] = [{'posicao_id': r[0], 'data': r[1], 'valor': r[2]} for r in all_stops]
+                        else:
+                            info['batch_load_result'] = []
+                            info['posicoes_sem_stop'] = []
+                    else:
+                        cursor.execute("SELECT s.posicao_id, s.data, s.valor, p.ativo FROM stops s LEFT JOIN posicoes p ON s.posicao_id = p.id ORDER BY s.data DESC LIMIT 20")
+                        rows = cursor.fetchall()
+                        info['ultimos_20'] = [{'posicao_id': r[0], 'data': r[1], 'valor': r[2], 'ativo': r[3]} for r in rows]
                 self._send_json(info)
             except Exception as e:
-                self._send_json({'erro': str(e), 'db_tipo': 'SQLite' if repo._use_sqlite else 'PostgreSQL'}, 500)
+                import traceback
+                self._send_json({'erro': str(e), 'traceback': traceback.format_exc(), 'db_tipo': 'SQLite' if repo._use_sqlite else 'PostgreSQL'}, 500)
             return
 
         # API: Tabela de alocações (pivot: datas x ativos) para tela estilo planilha
