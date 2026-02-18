@@ -4200,6 +4200,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             """, pos_ids)
                             all_stops = cursor.fetchall()
                             info['todos_stops_posicoes'] = [{'posicao_id': r[0], 'data': r[1], 'valor': r[2]} for r in all_stops]
+                            # Último stop por ativo no produto (fallback: qualquer posição)
+                            ativos_abertas = [r[1] for r in pos_abertas]
+                            if ativos_abertas:
+                                ph = ','.join(['%s'] * len(ativos_abertas))
+                                cursor.execute(f"""
+                                    SELECT DISTINCT ON (p.ativo) p.ativo, p.id as posicao_id, s.data, s.valor
+                                    FROM stops s JOIN posicoes p ON p.id = s.posicao_id
+                                    WHERE p.produto_id = %s AND p.ativo IN ({ph})
+                                    ORDER BY p.ativo, s.data DESC
+                                """, [produto_id] + ativos_abertas)
+                                por_ativo = cursor.fetchall()
+                                info['ultimo_stop_por_ativo'] = [{'ativo': r[0], 'posicao_id': r[1], 'data': r[2], 'valor': r[3]} for r in por_ativo]
                         else:
                             info['batch_load_result'] = []
                             info['posicoes_sem_stop'] = []

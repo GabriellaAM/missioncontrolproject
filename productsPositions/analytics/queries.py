@@ -73,6 +73,39 @@ def _batch_load_stops(repo, posicao_ids: list) -> dict:
         return {}
 
 
+def _batch_load_stops_por_ativo(repo, produto_id: int, ativos: list) -> dict:
+    """
+    Fallback: último stop por ativo no produto (qualquer posição, aberta ou fechada).
+    Usado quando a posição aberta atual não tem stop mas existe stop de outra posição
+    do mesmo ativo (ex.: posição fechada/reaberta com outro id).
+    Retorna dict ativo -> valor (float).
+    """
+    if not produto_id or not ativos:
+        return {}
+    ativos_uniq = list(dict.fromkeys([str(a).strip().upper() for a in ativos if a and pd.notna(a)]))
+    if not ativos_uniq:
+        return {}
+    placeholders = ','.join(['%s'] * len(ativos_uniq))
+    # DISTINCT ON (p.ativo): uma linha por ativo, a de data mais recente
+    query = f"""
+        SELECT DISTINCT ON (p.ativo) p.ativo, s.valor
+        FROM stops s
+        JOIN posicoes p ON p.id = s.posicao_id
+        WHERE p.produto_id = %s AND p.ativo IN ({placeholders})
+        ORDER BY p.ativo, s.data DESC
+    """
+    params = [produto_id] + ativos_uniq
+    try:
+        with repo.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            return {str(row[0]).strip().upper(): float(row[1]) for row in rows}
+    except Exception as e:
+        print(f"[STOPS FALLBACK] Erro ao carregar stops por ativo: {e}", flush=True)
+        return {}
+
+
 def _batch_load_prices(coingecko_ids: list) -> dict:
     """
     Batch load current prices for unique coingecko_ids.
@@ -367,10 +400,22 @@ def posicoes_abertas(produto_id=None):
         # OPTIMIZED: Batch load stops in single query
         posicao_ids = df['id'].tolist()
         stops_map = _batch_load_stops(repo, posicao_ids)
-        # Mapear usando int explícito para garantir match de tipos
-        df['stop_atual'] = df['id'].apply(lambda x: stops_map.get(int(x)))
+        # Fallback: se a posição não tem stop, usar último stop do mesmo ativo no produto (ex.: GPS reaberta)
+        ativos_sem_stop = df.loc[df['id'].apply(lambda x: stops_map.get(int(x)) is None), 'ativo'].tolist() if 'ativo' in df.columns else []
+        stops_por_ativo = _batch_load_stops_por_ativo(repo, produto_id, ativos_sem_stop) if produto_id and ativos_sem_stop else {}
+        def _stop_val(row):
+            pid, ativo = row.get('id'), row.get('ativo')
+            val = stops_map.get(int(pid)) if pd.notna(pid) else None
+            if val is None and ativo is not None and pd.notna(ativo):
+                val = stops_por_ativo.get(str(ativo).strip().upper())
+            return val
+        df['stop_atual'] = df.apply(_stop_val, axis=1)
         n_com_stop = df['stop_atual'].notna().sum()
-        print(f"[STOPS MAP] {n_com_stop}/{len(df)} posições com stop | IDs tipo={type(posicao_ids[0]) if posicao_ids else '?'} | stops_map keys tipo={type(list(stops_map.keys())[0]) if stops_map else '?'}", flush=True)
+        n_fallback = sum(1 for _, r in df.iterrows() if stops_map.get(int(r['id'])) is None and stops_por_ativo.get(str(r.get('ativo', '')).strip().upper()) is not None)
+        if n_fallback:
+            print(f"[STOPS MAP] {n_com_stop}/{len(df)} posições com stop (incl. {n_fallback} por fallback por ativo)", flush=True)
+        else:
+            print(f"[STOPS MAP] {n_com_stop}/{len(df)} posições com stop | IDs tipo={type(posicao_ids[0]) if posicao_ids else '?'} | stops_map keys tipo={type(list(stops_map.keys())[0]) if stops_map else '?'}", flush=True)
 
         # Se for o produto Crypto Signals, calcular RR e PnL
         if produto_id == 4970919917 or (produto_id is None and 'alvo2' in df.columns):
@@ -378,9 +423,7 @@ def posicoes_abertas(produto_id=None):
             pnls = []
             
             for _, row in df.iterrows():
-                posicao_id = row.get('id')
-                stop_atual = stops_map.get(int(posicao_id)) if pd.notna(posicao_id) else None
-                
+                stop_atual = row.get('stop_atual')  # já inclui fallback por ativo
                 preco_atual = row.get('preco_atual')
                 alvo2 = row.get('alvo2') if 'alvo2' in df.columns else None
                 # RR: |(alvo2/preco_atual - 1)| / |(stop_atual/preco_atual - 1)|
