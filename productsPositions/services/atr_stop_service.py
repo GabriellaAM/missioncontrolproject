@@ -516,11 +516,11 @@ def calcular_stop_para_posicao(
         df = buscar_ohlc_bitget(exchange_symbol, days=180, product_type=product_type)
 
     # Fallback to CoinGecko if Bitget fails or not configured
-    if df is None or df.empty:
+    if (df is None or df.empty) and coingecko_id:
         df = ler_ohlc_com_fallback(coingecko_id, data_entrada)
 
     if df is None or df.empty:
-        return None, False, f"Dados não encontrados para {coingecko_id}"
+        return None, False, f"Dados OHLC não encontrados para {exchange_symbol or coingecko_id}"
 
     # Calculate stop
     stop, breached = calcular_trailing_stop(
@@ -589,19 +589,18 @@ def atualizar_stops_posicoes_abertas(repo, produto_id: Optional[int] = None, ver
                 print(f"  [{ativo}] Sem atr_multiplier - pulando")
             continue
 
-        if not coingecko_id:
-            resultado['errors'].append(f"{ativo}: sem coingecko_id")
-            if verbose:
-                print(f"  [{ativo}] Erro: sem coingecko_id")
+        # Get exchange_symbol for Bitget data (antes da validação de coingecko_id)
+        exchange_symbol = pos.get('exchange_symbol')
+        if exchange_symbol and pd.isna(exchange_symbol):
+            exchange_symbol = None
+
+        if not coingecko_id and not exchange_symbol:
+            resultado['errors'].append(f"{ativo}: sem coingecko_id e sem exchange_symbol")
+            print(f"  [{ativo}] Erro ATR: sem coingecko_id e sem exchange_symbol", flush=True)
             continue
 
         # Usar atr_data_inicio se disponível, senão data_entrada
         data_calculo = atr_data_inicio if (atr_data_inicio and not pd.isna(atr_data_inicio)) else data_entrada
-
-        # Get exchange_symbol for Bitget data
-        exchange_symbol = pos.get('exchange_symbol')
-        if exchange_symbol and pd.isna(exchange_symbol):
-            exchange_symbol = None
 
         # Detect product type from produto_tipo field
         produto_tipo = pos.get('produto_tipo', '')
