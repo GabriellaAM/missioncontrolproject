@@ -3797,36 +3797,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if erro:
                         print(f"[ATR] Posição {posicao_id} ({posicao.get('ativo')}): {erro}", flush=True)
                         mensagem = 'ATR configurado. O stop será calculado na próxima atualização automática.'
-                    if breached:
-                            # Verificar se já foi notificado (último stop = -1 indica breach já registrado)
-                            ultimo_stop = repo.obter_ultimo_stop(posicao_id)
-                            ja_notificado = (ultimo_stop is not None and float(ultimo_stop) == -1.0)
-
-                            if not ja_notificado:
-                                # Salvar -1 para indicar que stop foi atingido (marca como notificado)
-                                hoje = dt_date.today().strftime('%Y-%m-%d')
-                                repo.adicionar_stop_posicao(posicao_id, hoje, -1)  # -1 indica breached
-                                # Enviar notificação por Telegram
-                                try:
-                                    nome_produto = produto_info['nome'] if produto_info else "Desconhecido"
-                                    notificar_stop_atingido(
-                                        ativo=posicao['ativo'],
-                                        side=posicao['side'],
-                                        preco_entrada=posicao.get('preco_entrada'),
-                                        produto_nome=nome_produto,
-                                        data_entrada=posicao.get('data_entrada')
-                                    )
-                                    print(f"[Dashboard] Notificação de stop enviada para {posicao['ativo']}")
-                                except Exception as e:
-                                    print(f"[Dashboard] Erro ao enviar notificação de stop: {e}")
-                            else:
-                                print(f"[Dashboard] Stop já notificado para {posicao['ativo']} — pulando notificação")
-                            mensagem = 'ATR configurado - STOP ATINGIDO!'
-                        elif stop is not None:
+                    elif breached:
+                        ultimo_stop = repo.obter_ultimo_stop(posicao_id)
+                        ja_notificado = (ultimo_stop is not None and float(ultimo_stop) == -1.0)
+                        if not ja_notificado:
                             hoje = dt_date.today().strftime('%Y-%m-%d')
-                            repo.adicionar_stop_posicao(posicao_id, hoje, stop)
-                            mensagem = 'ATR configurado e stop calculado!'
-                            print(f"[ATR] Stop salvo para posição {posicao_id} ({posicao.get('ativo')}): {stop}", flush=True)
+                            repo.adicionar_stop_posicao(posicao_id, hoje, -1)
+                            try:
+                                nome_produto = produto_info['nome'] if produto_info else "Desconhecido"
+                                notificar_stop_atingido(
+                                    ativo=posicao['ativo'],
+                                    side=posicao['side'],
+                                    preco_entrada=posicao.get('preco_entrada'),
+                                    produto_nome=nome_produto,
+                                    data_entrada=posicao.get('data_entrada')
+                                )
+                                print(f"[Dashboard] Notificação de stop enviada para {posicao['ativo']}", flush=True)
+                            except Exception as e:
+                                print(f"[Dashboard] Erro ao enviar notificação de stop: {e}", flush=True)
+                        else:
+                            print(f"[Dashboard] Stop já notificado para {posicao['ativo']} — pulando notificação", flush=True)
+                        mensagem = 'ATR configurado - STOP ATINGIDO!'
+                    elif stop is not None:
+                        hoje = dt_date.today().strftime('%Y-%m-%d')
+                        repo.adicionar_stop_posicao(posicao_id, hoje, stop)
+                        mensagem = 'ATR configurado e stop calculado!'
+                        print(f"[ATR] Stop salvo para posição {posicao_id} ({posicao.get('ativo')}): {stop}", flush=True)
 
                 self._send_json({'sucesso': True, 'mensagem': mensagem})
             except Exception as e:
