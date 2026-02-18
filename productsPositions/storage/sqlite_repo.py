@@ -169,7 +169,11 @@ class SQLiteRepo:
             print("[SQLiteRepo] SUPABASE_DB_URL não configurado; usando banco local:", _DEFAULT_SQLITE_PATH)
         self._sqlite_conn = None  # conexão única reutilizada em modo SQLite (apenas na thread que a criou)
         self._sqlite_conn_thread_id = None
-        if not self._use_sqlite:
+        if self._use_sqlite:
+            print(f"[SQLiteRepo INIT] Modo: SQLite | Path: {self.db_url}")
+        else:
+            host_info = re.search(r'@([^/]+)', self.db_url)
+            print(f"[SQLiteRepo INIT] Modo: PostgreSQL | Host: {host_info.group(1) if host_info else '?'}")
             self._inicializar_banco()
     
     @contextmanager
@@ -1266,6 +1270,8 @@ class SQLiteRepo:
                 INSERT INTO stops (posicao_id, data, valor)
                 VALUES (%s, %s, %s)
             """, (posicao_id, data, float(valor)))
+            db_tipo = "SQLite" if self._use_sqlite else "PostgreSQL"
+            print(f"[STOP SAVE] posicao_id={posicao_id}, data={data}, valor={valor} | DB: {db_tipo}")
         
         return posicao_id
     

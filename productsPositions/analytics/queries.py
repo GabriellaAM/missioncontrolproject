@@ -37,10 +37,29 @@ def _batch_load_stops(repo, posicao_ids: list) -> dict:
         )
     """
 
-    with repo.connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(query, posicao_ids)
-        return {row[0]: row[1] for row in cursor.fetchall()}
+    try:
+        with repo.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, posicao_ids)
+            rows = cursor.fetchall()
+            result = {row[0]: row[1] for row in rows}
+            if not result:
+                print(f"[STOPS DEBUG] Nenhum stop encontrado para posicao_ids={posicao_ids}")
+                cursor.execute("SELECT COUNT(*) FROM stops")
+                total = cursor.fetchone()[0]
+                print(f"[STOPS DEBUG] Total de stops na tabela: {total}")
+                if total > 0:
+                    cursor.execute("SELECT posicao_id, data, valor FROM stops ORDER BY data DESC LIMIT 5")
+                    sample = cursor.fetchall()
+                    print(f"[STOPS DEBUG] Últimos 5 stops: {sample}")
+            else:
+                print(f"[STOPS DEBUG] Stops carregados: {len(result)} de {len(posicao_ids)} posições")
+            return result
+    except Exception as e:
+        print(f"[STOPS ERROR] Erro ao carregar stops: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
 
 
 def _batch_load_prices(coingecko_ids: list) -> dict:
@@ -329,6 +348,8 @@ def posicoes_abertas(produto_id=None):
         posicao_ids = df['id'].tolist()
         stops_map = _batch_load_stops(repo, posicao_ids)
         df['stop_atual'] = df['id'].map(stops_map)
+        n_com_stop = df['stop_atual'].notna().sum()
+        print(f"[STOPS MAP] {n_com_stop}/{len(df)} posições com stop | IDs: {posicao_ids[:5]}... | stops_map keys: {list(stops_map.keys())[:5]}...")
 
         # Se for o produto Crypto Signals, calcular RR e PnL
         if produto_id == 4970919917 or (produto_id is None and 'alvo2' in df.columns):

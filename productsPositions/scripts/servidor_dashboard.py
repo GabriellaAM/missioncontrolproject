@@ -120,6 +120,9 @@ def aplicar_visualizacao(df, visualizacao):
     if colunas_config:
         colunas_disponiveis = [c for c in colunas_config if c in df.columns]
         if colunas_disponiveis:
+            # Garantir que stop_atual apareça mesmo se não estiver na config da visualização
+            if 'stop_atual' in df.columns and 'stop_atual' not in colunas_disponiveis:
+                colunas_disponiveis.append('stop_atual')
             df = df[colunas_disponiveis]
 
     # Aplicar filtros (exceto status que ja foi aplicado)
@@ -4150,6 +4153,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
             repo = get_repo()
         except Exception as e:
             self._send_json({'erro': f'Falha na conexao com banco: {str(e)}'}, 500)
+            return
+
+        # API: Debug stops (temporário para diagnóstico)
+        if path == '/api/debug/stops':
+            try:
+                produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
+                with repo.connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM stops")
+                    total = cursor.fetchone()[0]
+                    cursor.execute("SELECT s.posicao_id, s.data, s.valor, p.ativo FROM stops s LEFT JOIN posicoes p ON s.posicao_id = p.id ORDER BY s.data DESC LIMIT 20")
+                    rows = cursor.fetchall()
+                    stops_list = [{'posicao_id': r[0], 'data': r[1], 'valor': r[2], 'ativo': r[3]} for r in rows]
+                    info = {
+                        'db_tipo': 'SQLite' if repo._use_sqlite else 'PostgreSQL',
+                        'total_stops': total,
+                        'ultimos_20': stops_list,
+                    }
+                    if produto_id:
+                        cursor.execute("""
+                            SELECT s.posicao_id, s.data, s.valor, p.ativo 
+                            FROM stops s LEFT JOIN posicoes p ON s.posicao_id = p.id 
+                            WHERE p.produto_id = %s ORDER BY s.data DESC LIMIT 20
+                        """, (produto_id,))
+                        rows_prod = cursor.fetchall()
+                        info['stops_produto'] = [{'posicao_id': r[0], 'data': r[1], 'valor': r[2], 'ativo': r[3]} for r in rows_prod]
+                self._send_json(info)
+            except Exception as e:
+                self._send_json({'erro': str(e), 'db_tipo': 'SQLite' if repo._use_sqlite else 'PostgreSQL'}, 500)
             return
 
         # API: Tabela de alocações (pivot: datas x ativos) para tela estilo planilha
