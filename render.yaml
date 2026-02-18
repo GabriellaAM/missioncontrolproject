@@ -3,11 +3,13 @@ services:
     name: missioncontrol-dashboard
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python productsPositions/scripts/servidor_dashboard.py
+    startCommand: python -u productsPositions/scripts/servidor_dashboard.py
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: SUPABASE_DB_URL
         sync: false
       - key: GECKO_API_KEY

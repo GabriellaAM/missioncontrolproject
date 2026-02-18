@@ -162,18 +162,18 @@ class SQLiteRepo:
                 global _FALLBACK_PRINTED
                 if not _FALLBACK_PRINTED:
                     _FALLBACK_PRINTED = True
-                    print("[SQLiteRepo] Supabase inacessível; usando banco local:", _DEFAULT_SQLITE_PATH)
+                    print("[SQLiteRepo] Supabase inacessível; usando banco local:", _DEFAULT_SQLITE_PATH, flush=True)
         if not self.db_url:
             self.db_url = "sqlite:///" + str(_DEFAULT_SQLITE_PATH.resolve())
             self._use_sqlite = True
-            print("[SQLiteRepo] SUPABASE_DB_URL não configurado; usando banco local:", _DEFAULT_SQLITE_PATH)
+            print("[SQLiteRepo] SUPABASE_DB_URL não configurado; usando banco local:", _DEFAULT_SQLITE_PATH, flush=True)
         self._sqlite_conn = None  # conexão única reutilizada em modo SQLite (apenas na thread que a criou)
         self._sqlite_conn_thread_id = None
         if self._use_sqlite:
-            print(f"[SQLiteRepo INIT] Modo: SQLite | Path: {self.db_url}")
+            print(f"[SQLiteRepo INIT] Modo: SQLite | Path: {self.db_url}", flush=True)
         else:
             host_info = re.search(r'@([^/]+)', self.db_url)
-            print(f"[SQLiteRepo INIT] Modo: PostgreSQL | Host: {host_info.group(1) if host_info else '?'}")
+            print(f"[SQLiteRepo INIT] Modo: PostgreSQL | Host: {host_info.group(1) if host_info else '?'}", flush=True)
             self._inicializar_banco()
     
     @contextmanager
@@ -1271,7 +1271,7 @@ class SQLiteRepo:
                 VALUES (%s, %s, %s)
             """, (posicao_id, data, float(valor)))
             db_tipo = "SQLite" if self._use_sqlite else "PostgreSQL"
-            print(f"[STOP SAVE] posicao_id={posicao_id}, data={data}, valor={valor} | DB: {db_tipo}")
+            print(f"[STOP SAVE] posicao_id={posicao_id}, data={data}, valor={valor} | DB: {db_tipo}", flush=True)
         
         return posicao_id
     

@@ -22,12 +22,15 @@ from services.bitget_service import (
 def _batch_load_stops(repo, posicao_ids: list) -> dict:
     """
     Batch load latest stop for each position in a single query.
-    Returns dict mapping posicao_id -> stop_valor
+    Returns dict mapping posicao_id (int) -> stop_valor (float)
     """
     if not posicao_ids:
         return {}
 
-    placeholders = ','.join(['%s' for _ in posicao_ids])
+    # Forçar int nativo para evitar problemas com numpy.int64 ou Decimal
+    ids_int = [int(x) for x in posicao_ids]
+
+    placeholders = ','.join(['%s' for _ in ids_int])
     query = f"""
         SELECT posicao_id, valor
         FROM stops s1
@@ -40,23 +43,24 @@ def _batch_load_stops(repo, posicao_ids: list) -> dict:
     try:
         with repo.connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query, posicao_ids)
+            cursor.execute(query, ids_int)
             rows = cursor.fetchall()
-            result = {row[0]: row[1] for row in rows}
+            # Forçar int nas chaves e float nos valores
+            result = {int(row[0]): float(row[1]) for row in rows}
             if not result:
-                print(f"[STOPS DEBUG] Nenhum stop encontrado para posicao_ids={posicao_ids}")
+                print(f"[STOPS DEBUG] Nenhum stop encontrado para {len(ids_int)} posições: {ids_int[:5]}...", flush=True)
                 cursor.execute("SELECT COUNT(*) FROM stops")
                 total = cursor.fetchone()[0]
-                print(f"[STOPS DEBUG] Total de stops na tabela: {total}")
+                print(f"[STOPS DEBUG] Total de stops na tabela: {total}", flush=True)
                 if total > 0:
                     cursor.execute("SELECT posicao_id, data, valor FROM stops ORDER BY data DESC LIMIT 5")
                     sample = cursor.fetchall()
-                    print(f"[STOPS DEBUG] Últimos 5 stops: {sample}")
+                    print(f"[STOPS DEBUG] Últimos 5 stops: {sample}", flush=True)
             else:
-                print(f"[STOPS DEBUG] Stops carregados: {len(result)} de {len(posicao_ids)} posições")
+                print(f"[STOPS DEBUG] Stops carregados: {len(result)} de {len(ids_int)} posições", flush=True)
             return result
     except Exception as e:
-        print(f"[STOPS ERROR] Erro ao carregar stops: {e}")
+        print(f"[STOPS ERROR] Erro ao carregar stops: {e}", flush=True)
         import traceback
         traceback.print_exc()
         return {}
@@ -347,9 +351,10 @@ def posicoes_abertas(produto_id=None):
         # OPTIMIZED: Batch load stops in single query
         posicao_ids = df['id'].tolist()
         stops_map = _batch_load_stops(repo, posicao_ids)
-        df['stop_atual'] = df['id'].map(stops_map)
+        # Mapear usando int explícito para garantir match de tipos
+        df['stop_atual'] = df['id'].apply(lambda x: stops_map.get(int(x)))
         n_com_stop = df['stop_atual'].notna().sum()
-        print(f"[STOPS MAP] {n_com_stop}/{len(df)} posições com stop | IDs: {posicao_ids[:5]}... | stops_map keys: {list(stops_map.keys())[:5]}...")
+        print(f"[STOPS MAP] {n_com_stop}/{len(df)} posições com stop | IDs tipo={type(posicao_ids[0]) if posicao_ids else '?'} | stops_map keys tipo={type(list(stops_map.keys())[0]) if stops_map else '?'}", flush=True)
 
         # Se for o produto Crypto Signals, calcular RR e PnL
         if produto_id == 4970919917 or (produto_id is None and 'alvo2' in df.columns):
@@ -358,7 +363,7 @@ def posicoes_abertas(produto_id=None):
             
             for _, row in df.iterrows():
                 posicao_id = row.get('id')
-                stop_atual = stops_map.get(posicao_id) if posicao_id else None
+                stop_atual = stops_map.get(int(posicao_id)) if pd.notna(posicao_id) else None
                 
                 preco_atual = row.get('preco_atual')
                 alvo2 = row.get('alvo2') if 'alvo2' in df.columns else None
@@ -575,7 +580,7 @@ def posicoes_fechadas(produto_id=None):
         # OPTIMIZED: Batch load stops in single query
         posicao_ids = df['id'].tolist()
         stops_map = _batch_load_stops(repo, posicao_ids)
-        df['stop_atual'] = df['id'].map(stops_map)
+        df['stop_atual'] = df['id'].apply(lambda x: stops_map.get(int(x)))
         
         # Para produtos Spot, calcular preco_saida_total (quantidade * preco_saida)
         if tipo_spot:

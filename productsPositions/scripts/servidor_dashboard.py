@@ -4473,9 +4473,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             # Para produtos de alocação livre, reconciliar posições com alocações
                             reconciliar_posicoes_com_alocacoes(repo, produto_id)
 
-                            # Atualizar dados automaticamente em paralelo
-                            atualizar_dados_produto(repo, produto_id)
-
+                            # posicoes_abertas() já faz Bitget sync + ATR stops internamente
                             df = obter_dados_para_visualizacao(produto_id, viz)
                             df_viz = aplicar_visualizacao(df, viz)
                             self._send_html(get_visualizacao_html(produto, viz, df_viz))
@@ -4492,10 +4490,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     # Para produtos de alocação livre, reconciliar posições com alocações
                     reconciliar_posicoes_com_alocacoes(repo, produto_id)
 
-                    # Atualizar dados automaticamente em paralelo (apenas para abertas)
-                    if tipo == 'abertas':
-                        atualizar_dados_produto(repo, produto_id)
-
+                    # posicoes_abertas() já faz Bitget sync + ATR stops internamente
                     visualizacoes = repo.listar_visualizacoes(produto_id)
 
                     if tipo == 'abertas':
@@ -4512,9 +4507,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # Para produtos de alocação livre, reconciliar posições com alocações
                 reconciliar_posicoes_com_alocacoes(repo, produto_id)
 
-                # Atualizar dados automaticamente (Bitget sync + ATR stops) em paralelo
-                atualizar_dados_produto(repo, produto_id)
-
+                # posicoes_abertas() já faz Bitget sync + ATR stops internamente
                 visualizacoes = repo.listar_visualizacoes(produto_id)
                 self._send_html(get_produto_html(produto, visualizacoes, repo))
                 return
