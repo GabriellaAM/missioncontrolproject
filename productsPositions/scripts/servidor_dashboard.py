@@ -3573,7 +3573,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Encoding', 'gzip')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if not getattr(self, '_suppress_body', False):
+            self.wfile.write(body)
 
     def _send_json(self, data, status=200, cache_control='private, max-age=0'):
         body = json.dumps(data, ensure_ascii=False, default=str).encode('utf-8')
@@ -3590,10 +3591,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
-        self.wfile.write(buffer.getvalue())
+        if not getattr(self, '_suppress_body', False):
+            self.wfile.write(buffer.getvalue())
 
     def do_OPTIONS(self):
         self._set_headers(200)
+
+    def do_HEAD(self):
+        """HEAD = mesma resposta que GET, sem body (evita 501 para Render e crons que usam HEAD)."""
+        self._suppress_body = True
+        try:
+            self.do_GET()
+        finally:
+            self._suppress_body = False
 
     def do_POST(self):
         """Handle POST requests"""
