@@ -12,6 +12,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from analytics.queries import *
 from storage.sqlite_repo import get_repo
 
+
+def _formatar_stop_valor(x):
+    """Formata valor de stop: exibe todas as casas decimais significativas (sem arredondar para 2)."""
+    if pd.isna(x) or x is None:
+        return "—"
+    if isinstance(x, (int, float)):
+        if x == -1:
+            return "STOP ATINGIDO"
+        s = f"{x:,.10f}".rstrip('0').rstrip('.')
+        return "$" + s
+    return str(x)
+
+
 def display_produtos():
     """
     Exibe todos os produtos disponíveis em formato de tabela
@@ -93,34 +106,24 @@ def display_posicoes_abertas(produto_id=None, formatar=True, filtrar_colunas=Tru
             df['alvo1'] = df.apply(lambda row: _formatar_valor_com_percent(row, 'alvo1'), axis=1)
         if 'alvo2' in df.columns and 'preco_atual' in df.columns:
             df['alvo2'] = df.apply(lambda row: _formatar_valor_com_percent(row, 'alvo2'), axis=1)
-        # Formatar stop_atual (para todos os produtos)
+        # Formatar stop_atual (para todos os produtos) — exibir casas decimais sem arredondar
         if 'stop_atual' in df.columns:
             if 'preco_atual' in df.columns:
-                # Para Crypto Signals, usar formatação com porcentagem
                 if produto_id == 4970919917:
-                    df['stop_atual'] = df.apply(lambda row: _formatar_valor_com_percent(row, 'stop_atual'), axis=1)
+                    def _stop_com_percent(row):
+                        v, p = row.get('stop_atual'), row.get('preco_atual')
+                        if pd.isna(p) or p == 0 or pd.isna(v):
+                            return _formatar_stop_valor(v)
+                        try:
+                            pct = ((v / p) - 1) * 100
+                            return f"{_formatar_stop_valor(v)} ({pct:.2f}%)"
+                        except Exception:
+                            return _formatar_stop_valor(v)
+                    df['stop_atual'] = df.apply(_stop_com_percent, axis=1)
                 else:
-                    # Para outros produtos, apenas valor monetário ou "—"
-                    def _formatar_stop_atual(x):
-                        if pd.isna(x) or x is None:
-                            return "—"
-                        if isinstance(x, (int, float)):
-                            if x == -1:
-                                return "STOP ATINGIDO"
-                            return f"${x:,.2f}"
-                        return str(x)
-                    df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
+                    df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_valor)
             else:
-                # Se não houver preco_atual, formatar apenas como monetário
-                def _formatar_stop_atual(x):
-                    if pd.isna(x) or x is None:
-                        return "—"
-                    if isinstance(x, (int, float)):
-                        if x == -1:
-                            return "STOP ATINGIDO"
-                        return f"${x:,.2f}"
-                    return str(x)
-                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_valor)
 
         # Formatar alocação (percentual) se existir
         if 'alocacao' in df.columns:
@@ -356,16 +359,8 @@ def display_posicoes_abertas(produto_id=None, formatar=True, filtrar_colunas=Tru
         if stop_atual_col is not None:
             df['stop_atual'] = stop_atual_col
             # Formatar stop_atual se ainda não foi formatado
-            if df['stop_atual'].dtype != 'object':  # Se ainda não foi formatado
-                def _formatar_stop_atual(x):
-                    if pd.isna(x) or x is None:
-                        return "—"
-                    if isinstance(x, (int, float)):
-                        if x == -1:
-                            return "STOP ATINGIDO"
-                        return f"${x:,.2f}"
-                    return str(x)
-                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
+            if df['stop_atual'].dtype != 'object':
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_valor)
 
         return df
 
@@ -653,15 +648,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
         
         # Formatar stop_atual (para todos os produtos)
         if 'stop_atual' in df.columns:
-            def _formatar_stop_atual_fechadas(x):
-                if pd.isna(x) or x is None:
-                    return "—"
-                if isinstance(x, (int, float)):
-                    if x == -1:
-                        return "STOP ATINGIDO"
-                    return f"${x:,.2f}"
-                return str(x)
-            df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual_fechadas)
+            df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_valor)
 
     # Ordenar pela data de entrada (mais antiga -> mais nova), se existir
     if 'data_entrada' in df.columns:
@@ -747,15 +734,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
             df['stop_atual'] = stop_atual_col
             # Formatar se ainda não foi formatado
             if df['stop_atual'].dtype != 'object':
-                def _formatar_stop_atual(x):
-                    if pd.isna(x) or x is None:
-                        return "—"
-                    if isinstance(x, (int, float)):
-                        if x == -1:
-                            return "STOP ATINGIDO"
-                        return f"${x:,.2f}"
-                    return str(x)
-                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_valor)
 
         return df
 
@@ -789,15 +768,7 @@ def display_posicoes_fechadas(produto_id=None, formatar=True, filtrar_colunas=Tr
             df['stop_atual'] = stop_atual_col
             # Formatar se ainda não foi formatado
             if df['stop_atual'].dtype != 'object':
-                def _formatar_stop_atual(x):
-                    if pd.isna(x) or x is None:
-                        return "—"
-                    if isinstance(x, (int, float)):
-                        if x == -1:
-                            return "STOP ATINGIDO"
-                        return f"${x:,.2f}"
-                    return str(x)
-                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_valor)
 
         return df
 
@@ -1140,15 +1111,7 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
         
         # Formatar stop_atual (para todos os produtos)
         if 'stop_atual' in df.columns:
-            def _formatar_stop_atual_historico(x):
-                if pd.isna(x) or x is None:
-                    return "—"
-                if isinstance(x, (int, float)):
-                    if x == -1:
-                        return "STOP ATINGIDO"
-                    return f"${x:,.2f}"
-                return str(x)
-            df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual_historico)
+            df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_valor)
 
         # Formatar PnL: se for USDT, exibir "—"
         if 'pnl' in df.columns and 'ativo' in df.columns:
@@ -1268,15 +1231,7 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
             df['stop_atual'] = stop_atual_col
             # Formatar se ainda não foi formatado
             if df['stop_atual'].dtype != 'object':
-                def _formatar_stop_atual(x):
-                    if pd.isna(x) or x is None:
-                        return "—"
-                    if isinstance(x, (int, float)):
-                        if x == -1:
-                            return "STOP ATINGIDO"
-                        return f"${x:,.2f}"
-                    return str(x)
-                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_valor)
 
         # Substituir quaisquer NaN remanescentes por "—"
         df = df.fillna("—")
@@ -1313,15 +1268,7 @@ def display_historico_posicoes(produto_id=None, formatar=True, filtrar_colunas=T
             df['stop_atual'] = stop_atual_col
             # Formatar se ainda não foi formatado
             if df['stop_atual'].dtype != 'object':
-                def _formatar_stop_atual(x):
-                    if pd.isna(x) or x is None:
-                        return "—"
-                    if isinstance(x, (int, float)):
-                        if x == -1:
-                            return "STOP ATINGIDO"
-                        return f"${x:,.2f}"
-                    return str(x)
-                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_atual)
+                df['stop_atual'] = df['stop_atual'].apply(_formatar_stop_valor)
 
         # Substituir quaisquer NaN remanescentes por "—"
         df = df.fillna("—")
