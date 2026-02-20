@@ -52,9 +52,9 @@ class CarteiraTurma:
 class TurmasService:
     """Serviço para gerenciar turmas e rentabilidade."""
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None, db_url: Optional[str] = None):
         load_dotenv(Path(__file__).parent.parent.parent / '.env')
-        self.db_url = os.getenv('SUPABASE_DB_URL')
+        self.db_url = db_url if db_url is not None else os.getenv('SUPABASE_DB_URL')
 
     def _get_connection(self):
         conn = connect_pg(self.db_url)
@@ -304,14 +304,14 @@ class TurmasService:
                 FROM turmas t
                 JOIN produtos p ON t.produto_id = p.id
                 WHERE t.produto_id = %s
-                ORDER BY t.data_inicio DESC
+                ORDER BY t.data_inicio ASC
             """, (produto_id,))
         else:
             cursor.execute("""
                 SELECT t.*, p.nome as produto_nome
                 FROM turmas t
                 JOIN produtos p ON t.produto_id = p.id
-                ORDER BY t.data_inicio DESC
+                ORDER BY t.data_inicio ASC
             """)
 
         columns = [desc[0] for desc in cursor.description]
@@ -526,13 +526,16 @@ class TurmasService:
                 ct.ativo_atual,
                 p.ativo,
                 p.coingecko_id,
+                p.exchange_symbol,
                 p.side,
+                p.id as posicao_id,
                 p.data_entrada as data_entrada_original,
                 p.preco_entrada as preco_entrada_original,
                 p.data_saida,
                 p.preco_saida,
                 p.status as status_posicao,
-                pap.quantidade
+                pap.quantidade,
+                pap.preco_entrada_total
             FROM carteira_turma ct
             JOIN trades_turma tt ON ct.trade_id = tt.id
             JOIN posicoes p ON tt.posicao_id = p.id

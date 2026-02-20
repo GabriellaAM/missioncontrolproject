@@ -94,13 +94,14 @@ def _batch_load_stops_por_ativo(repo, produto_id: int, ativos: list) -> dict:
     if not ativos_uniq:
         return {}
     placeholders = ','.join(['%s'] * len(ativos_uniq))
-    # DISTINCT ON (p.ativo): uma linha por ativo, a de data mais recente
     query = f"""
-        SELECT DISTINCT ON (p.ativo) p.ativo, s.valor
-        FROM stops s
-        JOIN posicoes p ON p.id = s.posicao_id
-        WHERE p.produto_id = %s AND p.ativo IN ({placeholders})
-        ORDER BY p.ativo, s.data DESC
+        SELECT ativo, valor FROM (
+            SELECT p.ativo, s.valor,
+                   ROW_NUMBER() OVER (PARTITION BY p.ativo ORDER BY s.data DESC) as rn
+            FROM stops s
+            JOIN posicoes p ON p.id = s.posicao_id
+            WHERE p.produto_id = %s AND p.ativo IN ({placeholders})
+        ) sub WHERE rn = 1
     """
     params = [produto_id] + ativos_uniq
     try:
@@ -321,7 +322,7 @@ def posicoes_abertas(produto_id=None):
         if should_sync:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 future_prices = executor.submit(_batch_load_prices, coingecko_ids)
-                future_bitget = executor.submit(auto_sync_positions, repo, produto_id, False)
+                future_bitget = executor.submit(auto_sync_positions, repo, produto_id, True)
                 price_map = future_prices.result()
                 future_bitget.result()
                 bitget_ran = True

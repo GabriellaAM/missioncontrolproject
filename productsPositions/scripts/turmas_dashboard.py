@@ -5,7 +5,9 @@ Este módulo contém os templates HTML e funções de renderização
 para as páginas de gestão de turmas e rentabilidade.
 """
 
+import json
 from datetime import datetime
+from decimal import Decimal
 
 
 def _get_shared_components():
@@ -1768,5 +1770,1017 @@ def get_comparar_turmas_html(turmas, comparacao):
             }});
         }}
     </script>
+</body>
+</html>"""
+
+
+def _json_serializer(obj):
+    """Serializa tipos especiais para JSON (Decimal, date, etc)."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if hasattr(obj, 'isoformat'):
+        return obj.isoformat()
+    return str(obj)
+
+
+def get_produto_dashboard_html(produto, turmas, resumo, carteira):
+    """Dashboard rico do produto com abas por turma, gráficos e tabelas interativas."""
+    get_navbar, _, get_base_styles = _get_shared_components()
+
+    timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    produto_id = produto['id']
+    nome = produto['nome']
+    tipo = produto.get('tipo', 'Outro')
+
+    turma_ativa = turmas[0] if turmas else {}
+    turma_ativa_id = turma_ativa.get('id', 0)
+
+    rentab = resumo.get('rentabilidade_acumulada_pct', 0) or 0
+    valor_total = resumo.get('valor_total', 0) or 0
+    capital_alocado = resumo.get('capital_alocado', 0) or 0
+    capital_em_caixa = resumo.get('capital_em_caixa', 0) or 0
+    capital_base = resumo.get('capital_base', 1500) or 1500
+    trades_ativos = resumo.get('trades_ativos', 0) or 0
+    trades_fechados = resumo.get('trades_fechados', 0) or 0
+
+    rentab_class = 'positive' if rentab >= 0 else 'negative'
+    rentab_str = f"+{rentab:.2f}%" if rentab >= 0 else f"{rentab:.2f}%"
+
+    turma_tabs_html = ""
+    for turma in turmas:
+        active = 'active' if turma['id'] == turma_ativa_id else ''
+        turma_tabs_html += f'<button class="turma-tab {active}" data-turma-id="{turma["id"]}" onclick="switchTurma({turma["id"]}, this)">{turma.get("nome", "N/A")}</button>'
+
+    turmas_json = json.dumps([
+        {'id': t['id'], 'nome': t.get('nome', ''), 'data_inicio': str(t.get('data_inicio', ''))[:10]}
+        for t in turmas
+    ], default=_json_serializer, ensure_ascii=False)
+    data_inicio_turma = str(turma_ativa.get('data_inicio', ''))[:10]
+
+    carteira_json = json.dumps(carteira, default=_json_serializer, ensure_ascii=False)
+    resumo_safe = {
+        'rentabilidade_acumulada_pct': rentab,
+        'valor_total': valor_total,
+        'capital_alocado': capital_alocado,
+        'capital_em_caixa': capital_em_caixa,
+        'capital_base': capital_base,
+        'trades_ativos': trades_ativos,
+        'trades_fechados': trades_fechados,
+    }
+    resumo_json = json.dumps(resumo_safe, default=_json_serializer)
+
+    tipo_lower = tipo.lower()
+    if 'spot' in tipo_lower:
+        tipo_badge_class = 'tipo-spot'
+    elif 'perp' in tipo_lower:
+        tipo_badge_class = 'tipo-perp'
+    else:
+        tipo_badge_class = 'tipo-outro'
+
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{nome} - Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        {get_base_styles()}
+
+        .dash-header {{
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            padding: 20px 30px;
+            border-bottom: 2px solid #4ecca3;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }}
+        .dash-header h1 {{ color: #4ecca3; font-size: 1.8em; letter-spacing: 1px; margin: 0; }}
+        .dash-header .tipo-badge {{
+            padding: 4px 14px; border-radius: 20px; font-size: 0.8em; font-weight: bold;
+        }}
+        .tipo-spot {{ background: #4ecca3; color: #1a1a2e; }}
+        .tipo-perp {{ background: #ff6b6b; color: #fff; }}
+        .tipo-outro {{ background: #ffd93d; color: #1a1a2e; }}
+        .dash-header .date-badge {{
+            margin-left: auto;
+            background: rgba(78, 204, 163, 0.15);
+            color: #4ecca3;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            border: 1px solid rgba(78, 204, 163, 0.3);
+        }}
+
+        .turma-tabs-bar {{
+            display: flex; gap: 0; padding: 0 30px;
+            background: rgba(0,0,0,0.15);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            flex-wrap: wrap;
+        }}
+        .turma-tab {{
+            padding: 12px 24px; background: transparent; color: #888;
+            border: none; border-bottom: 3px solid transparent;
+            font-size: 1em; cursor: pointer; transition: all 0.3s; font-family: inherit;
+        }}
+        .turma-tab:hover {{ color: #ccc; background: rgba(78, 204, 163, 0.05); }}
+        .turma-tab.active {{ color: #4ecca3; border-bottom-color: #4ecca3; font-weight: 600; }}
+
+        .dash-content {{ padding: 25px 30px; }}
+
+        .summary-row {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }}
+        .summary-card {{
+            background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
+            border-radius: 10px; padding: 20px; text-align: center;
+            border: 1px solid rgba(255,255,255,0.05);
+        }}
+        .summary-card .s-value {{ font-size: 1.5em; font-weight: bold; color: #fff; margin-bottom: 5px; }}
+        .summary-card .s-value.positive {{ color: #4ecca3; }}
+        .summary-card .s-value.negative {{ color: #e74c3c; }}
+        .summary-card .s-label {{ color: #888; font-size: 0.85em; }}
+
+        .dash-section {{
+            background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
+            border-radius: 10px; padding: 25px; margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.05);
+        }}
+        .dash-section h3 {{ color: #4ecca3; margin-bottom: 18px; font-size: 1.2em; }}
+
+        .chart-box {{ position: relative; height: 350px; width: 100%; }}
+
+        .sub-tabs {{ display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }}
+        .sub-tab {{
+            padding: 8px 18px; background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1); border-radius: 6px;
+            color: #888; cursor: pointer; transition: all 0.3s; font-size: 0.9em;
+            font-family: inherit;
+        }}
+        .sub-tab:hover {{ border-color: #4ecca3; color: #4ecca3; }}
+        .sub-tab.active {{ background: rgba(78, 204, 163, 0.2); border-color: #4ecca3; color: #4ecca3; }}
+        .sub-content {{ display: none; }}
+        .sub-content.active {{ display: block; }}
+
+        .dtable {{ width: 100%; border-collapse: collapse; font-size: 0.88em; }}
+        .dtable th, .dtable td {{
+            padding: 10px 12px; text-align: right;
+            border-bottom: 1px solid rgba(255,255,255,0.07); white-space: nowrap;
+        }}
+        .dtable th {{
+            background: #0d1025; color: #4ecca3; font-weight: 600;
+            position: sticky; top: 0; z-index: 2;
+            cursor: pointer; user-select: none; transition: color 0.2s;
+        }}
+        .dtable th:hover {{ color: #fff; }}
+        .dtable th .sort-arrow {{ display: inline-block; margin-left: 4px; font-size: 0.7em; opacity: 0.4; }}
+        .dtable th.sorted .sort-arrow {{ opacity: 1; }}
+        .dtable th:first-child, .dtable td:first-child {{ text-align: left; }}
+        .dtable tr:hover {{ background: rgba(78, 204, 163, 0.06); }}
+
+        .tbl-scroll {{ max-height: 400px; overflow-y: auto; border-radius: 8px; }}
+        .tbl-scroll::-webkit-scrollbar {{ width: 6px; }}
+        .tbl-scroll::-webkit-scrollbar-track {{ background: rgba(0,0,0,0.2); }}
+        .tbl-scroll::-webkit-scrollbar-thumb {{ background: #4ecca3; border-radius: 3px; }}
+
+        .bdg {{ display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.8em; font-weight: 600; }}
+        .bdg-long {{ background: rgba(78, 204, 163, 0.2); color: #4ecca3; }}
+        .bdg-short {{ background: rgba(231, 76, 60, 0.2); color: #e74c3c; }}
+        .bdg-open {{ background: rgba(52, 152, 219, 0.2); color: #3498db; }}
+        .bdg-closed {{ background: rgba(149, 165, 166, 0.2); color: #95a5a6; }}
+        .pnl-pos {{ color: #4ecca3; font-weight: 600; }}
+        .pnl-neg {{ color: #e74c3c; font-weight: 600; }}
+
+
+        /* --- Gear menu (config) --- */
+        .gear-menu-wrapper {{ position: relative; display: inline-flex; align-items: center; }}
+        .gear-btn {{
+            background: none; border: none; cursor: pointer; padding: 6px;
+            border-radius: 8px; transition: background 0.2s, transform 0.3s; display:flex; align-items:center;
+        }}
+        .gear-btn:hover {{ background: rgba(78,204,163,0.12); }}
+        .gear-btn.open {{ transform: rotate(90deg); }}
+        .gear-btn svg {{ width: 22px; height: 22px; fill: #888; transition: fill 0.2s; }}
+        .gear-btn:hover svg, .gear-btn.open svg {{ fill: #4ecca3; }}
+        .gear-panel {{
+            display: none; position: absolute; right: 0; top: calc(100% + 8px);
+            background: #16213e; border: 1px solid rgba(78,204,163,0.35); border-radius: 12px;
+            min-width: 260px; z-index: 200; box-shadow: 0 8px 28px rgba(0,0,0,.55);
+            padding: 6px 0; max-height: 80vh; overflow-y: auto;
+        }}
+        .gear-panel.open {{ display: block; }}
+        .gear-panel-group {{ padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }}
+        .gear-panel-group:last-child {{ border-bottom: none; }}
+        .gear-panel-title {{
+            font-size: 0.7em; text-transform: uppercase; letter-spacing: 1.2px;
+            color: #555; padding: 6px 18px 4px; font-weight: 700;
+        }}
+        .gear-panel a, .gear-panel button.gear-item {{
+            display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 18px;
+            color: #ccc; text-decoration: none; font-size: 0.85em; border: none;
+            background: none; cursor: pointer; text-align: left; transition: background 0.15s, color 0.15s;
+        }}
+        .gear-panel a:hover, .gear-panel button.gear-item:hover {{ background: rgba(78,204,163,0.1); color: #4ecca3; }}
+        .gear-panel .gear-icon {{ width: 16px; text-align: center; font-size: 1em; flex-shrink: 0; }}
+        .gear-panel .gear-accent {{ color: #4ecca3; }}
+
+        .loading-overlay {{ text-align: center; padding: 60px 20px; color: #888; }}
+        .loading-overlay .spinner {{
+            border: 3px solid #2a2a4a; border-top: 3px solid #4ecca3;
+            border-radius: 50%; width: 30px; height: 30px;
+            animation: spn 0.8s linear infinite; margin: 0 auto 15px;
+        }}
+        @keyframes spn {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+        .empty-msg {{ text-align: center; color: #666; padding: 40px; font-style: italic; }}
+    </style>
+</head>
+<body>
+    {get_navbar()}
+
+    <div class="dash-header">
+        <div><h1>{nome}</h1></div>
+        <span class="tipo-badge {tipo_badge_class}">{tipo}</span>
+        <div style="margin-left:auto; display:flex; align-items:center; gap:10px;">
+            <span id="statusMsg" style="color:#888; font-size:0.85em;"></span>
+            <div class="date-badge">Atualizado: {timestamp}</div>
+            <div class="gear-menu-wrapper" id="gearWrapper">
+                <button class="gear-btn" id="gearBtn" onclick="toggleGearMenu()" title="Configura&ccedil;&otilde;es">
+                    <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.63-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z"/></svg>
+                </button>
+                <div class="gear-panel" id="gearPanel">
+                    <div class="gear-panel-group">
+                        <div class="gear-panel-title">Pre&ccedil;os</div>
+                        <button class="gear-item" onclick="atualizarCotacoes(); toggleGearMenu();">
+                            <span class="gear-icon">&#8635;</span> Atualizar Pre&ccedil;os
+                        </button>
+                        <button class="gear-item" onclick="preencherPrecos({produto_id},'entrada'); toggleGearMenu();">
+                            <span class="gear-icon">&#8594;</span> Preencher <span class="gear-accent">Entrada</span>
+                        </button>
+                        <button class="gear-item" onclick="preencherPrecos({produto_id},'saida'); toggleGearMenu();">
+                            <span class="gear-icon">&#8592;</span> Preencher <span class="gear-accent">Sa&iacute;da</span>
+                        </button>
+                        <button class="gear-item" onclick="preencherPrecos({produto_id},'ambos'); toggleGearMenu();">
+                            <span class="gear-icon">&#8596;</span> Preencher <span class="gear-accent">Todos</span>
+                        </button>
+                    </div>
+                    <div class="gear-panel-group">
+                        <div class="gear-panel-title">Posi&ccedil;&otilde;es</div>
+                        <a href="/posicao/nova?produto_id={produto_id}"><span class="gear-icon gear-accent">+</span> Nova Posi&ccedil;&atilde;o</a>
+                        <a href="/posicoes/editar?produto_id={produto_id}"><span class="gear-icon">&#9998;</span> Editar Posi&ccedil;&atilde;o</a>
+                        <a href="/posicao/fechar?produto_id={produto_id}"><span class="gear-icon">&#10006;</span> Fechar Posi&ccedil;&atilde;o</a>
+                    </div>
+                    <div class="gear-panel-group">
+                        <div class="gear-panel-title">Aloca&ccedil;&atilde;o &amp; Turmas</div>
+                        <a href="/alocacao/nova?produto_id={produto_id}"><span class="gear-icon gear-accent">+</span> Nova Aloca&ccedil;&atilde;o</a>
+                        <a href="/turmas/nova"><span class="gear-icon gear-accent">+</span> Nova Turma</a>
+                    </div>
+                    <div class="gear-panel-group">
+                        <div class="gear-panel-title">Produto</div>
+                        <a href="/produto/{produto_id}/editar"><span class="gear-icon">&#9998;</span> Editar Produto</a>
+                        <a href="/produto/{produto_id}/visualizacoes"><span class="gear-icon">&#128065;</span> Visualiza&ccedil;&otilde;es</a>
+                        <a href="/produto/{produto_id}/atributos"><span class="gear-icon">&#9776;</span> Atributos</a>
+                        <a href="/atr/config?produto_id={produto_id}"><span class="gear-icon">&#9632;</span> ATR Stop</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="turma-tabs-bar" id="turmaTabs">
+        {turma_tabs_html if turma_tabs_html else '<span style="padding:12px;color:#666;">Nenhuma turma cadastrada</span>'}
+    </div>
+
+    <div class="dash-content">
+        <div class="summary-row" id="summaryCards">
+            <div class="summary-card">
+                <div class="s-value {rentab_class}" id="card-rentab">{rentab_str}</div>
+                <div class="s-label">Rentabilidade Acumulada</div>
+            </div>
+            <div class="summary-card">
+                <div class="s-value" id="card-valor">R$ {valor_total:,.2f}</div>
+                <div class="s-label">Valor Total</div>
+            </div>
+            <div class="summary-card">
+                <div class="s-value" id="card-alocado">R$ {capital_alocado:,.2f}</div>
+                <div class="s-label">Capital Alocado</div>
+            </div>
+            <div class="summary-card">
+                <div class="s-value" id="card-caixa">R$ {capital_em_caixa:,.2f}</div>
+                <div class="s-label">Capital em Caixa</div>
+            </div>
+            <div class="summary-card">
+                <div class="s-value" id="card-base">R$ {capital_base:,.2f}</div>
+                <div class="s-label">Capital Base</div>
+            </div>
+            <div class="summary-card">
+                <div class="s-value" id="card-trades">{trades_ativos} / {trades_fechados}</div>
+                <div class="s-label">Ativos / Fechados</div>
+            </div>
+        </div>
+
+        <div class="dash-section" id="sectionChart">
+            <h3 id="chartTitle">Rentabilidade Acumulada</h3>
+            <div class="chart-toggles" style="display:flex; gap:16px; margin-bottom:10px; align-items:center; flex-wrap:wrap;">
+                <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#e0e0e0; font-size:13px;">
+                    <input type="checkbox" id="toggleTurma" checked style="accent-color:#4ecca3; width:15px; height:15px; cursor:pointer;">
+                    <span style="display:inline-block; width:14px; height:3px; background:#4ecca3; border-radius:2px;"></span>
+                    <span id="toggleTurmaLabel">{turma_ativa.get('nome', 'Turma')}</span>
+                </label>
+                <label style="display:flex; align-items:center; gap:5px; cursor:pointer; color:#e0e0e0; font-size:13px;">
+                    <input type="checkbox" id="toggleBTC" checked style="accent-color:#f7931a; width:15px; height:15px; cursor:pointer;">
+                    <span style="display:inline-block; width:14px; height:0; border-top:2px dashed #f7931a;"></span>
+                    Bitcoin (BTC)
+                </label>
+                <span style="color:#555; font-size:13px;">|</span>
+                <label style="display:flex; align-items:center; gap:5px; color:#e0e0e0; font-size:13px;">
+                    <span style="color:#888;">Comparar com:</span>
+                    <select id="selectCompareTurma" style="background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:2px 6px; font-size:12px; cursor:pointer;">
+                        <option value="">Nenhuma</option>
+                    </select>
+                </label>
+            </div>
+            <div id="chartLoading" class="loading-overlay"><div class="spinner"></div>Carregando gr&aacute;fico...</div>
+            <div class="chart-box" id="chartWrapper" style="display:none;">
+                <canvas id="chartRent"></canvas>
+            </div>
+        </div>
+
+        <div class="dash-section">
+            <h3>PnL dos ativos em aberto</h3>
+            <div class="chart-box" style="height:280px;">
+                <canvas id="chartPnlAbertas"></canvas>
+            </div>
+        </div>
+
+        <div class="dash-section" id="sectionPositions">
+            <h3>Posi&ccedil;&otilde;es</h3>
+            <div class="sub-tabs" id="posTabs">
+                <button class="sub-tab active" onclick="switchPosTab('abertas', this)">Abertas (<span id="countAbertas">{trades_ativos}</span>)</button>
+                <button class="sub-tab" onclick="switchPosTab('fechadas', this)">Fechadas (<span id="countFechadas">{trades_fechados}</span>)</button>
+                <button class="sub-tab" onclick="switchPosTab('historico', this)">Hist&oacute;rico (<span id="countHistorico">{trades_ativos + trades_fechados}</span>)</button>
+            </div>
+
+            <div id="tab-abertas" class="sub-content active">
+                <div class="tbl-scroll"><table class="dtable" id="tblAbertas">
+                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Data Entrada</th><th>Pre&ccedil;o Entrada</th><th>Qtd</th><th>Entrada Total</th><th>Pre&ccedil;o Atual</th><th>Atual Total</th><th>Stop</th><th>PnL%</th></tr></thead>
+                    <tbody id="tbAbertas"></tbody>
+                </table></div>
+            </div>
+            <div id="tab-fechadas" class="sub-content">
+                <div class="tbl-scroll"><table class="dtable" id="tblFechadas">
+                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Data Entrada</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada</th><th>Entrada Total</th><th>Pre&ccedil;o Sa&iacute;da</th><th>Sa&iacute;da Total</th><th>Stop</th><th>PnL%</th></tr></thead>
+                    <tbody id="tbFechadas"></tbody>
+                </table></div>
+            </div>
+            <div id="tab-historico" class="sub-content">
+                <div class="tbl-scroll"><table class="dtable" id="tblHistorico">
+                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Status</th><th>Data Entrada</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada</th><th>Entrada Total</th><th>Pre&ccedil;o Sa&iacute;da/Atual</th><th>Sa&iacute;da Total</th><th>Stop</th><th>PnL%</th></tr></thead>
+                    <tbody id="tbHistorico"></tbody>
+                </table></div>
+            </div>
+        </div>
+
+        <div class="dash-section">
+            <h3>Evolu&ccedil;&atilde;o da Aloca&ccedil;&atilde;o</h3>
+            <div class="chart-box" style="height:320px;">
+                <canvas id="chartAllocTimeline"></canvas>
+            </div>
+        </div>
+
+    </div>
+
+<script>
+var TURMA_ID = {turma_ativa_id};
+var PRODUTO_ID = {produto_id};
+var RESUMO = {resumo_json};
+var CARTEIRA = {carteira_json};
+var TURMAS = {turmas_json};
+var DATA_INICIO_TURMA = '{data_inicio_turma}';
+var rentChart = null;
+var pnlAbertasChart = null;
+var allocTimelineChart = null;
+
+// Gear menu toggle
+function toggleGearMenu() {{
+    var btn = document.getElementById('gearBtn');
+    var panel = document.getElementById('gearPanel');
+    btn.classList.toggle('open');
+    panel.classList.toggle('open');
+}}
+document.addEventListener('click', function(e) {{
+    var wrap = document.getElementById('gearWrapper');
+    if (wrap && !wrap.contains(e.target)) {{
+        document.getElementById('gearBtn').classList.remove('open');
+        document.getElementById('gearPanel').classList.remove('open');
+    }}
+}});
+var btcSerie = null;
+var compareSerie = null;
+var compareTurmaId = null;
+var currentTurmaSerie = null;
+
+function fmtPrice(v) {{
+    if (v == null) return '\\u2014';
+    if (Math.abs(v) >= 1) return v.toLocaleString('en-US', {{minimumFractionDigits:4, maximumFractionDigits:4}});
+    var digits = Math.max(4, -Math.floor(Math.log10(Math.abs(v))) + 3);
+    return v.toLocaleString('en-US', {{minimumFractionDigits:digits, maximumFractionDigits:digits}});
+}}
+function fmtPnl(p) {{
+    if (p == null) return '\\u2014';
+    var cls = p >= 0 ? 'pnl-pos' : 'pnl-neg';
+    return '<span class="'+cls+'">'+(p>=0?'+':'')+p.toFixed(2)+'%</span>';
+}}
+function sideBdg(s) {{
+    if (!s) return '\\u2014';
+    return s.toLowerCase()==='long' ? '<span class="bdg bdg-long">LONG</span>' : '<span class="bdg bdg-short">SHORT</span>';
+}}
+function origemBdg(o) {{
+    return o==='nativo' ? '<span style="color:#4ecca3;">Nativo</span>' : '<span style="color:#f39c12;">Replicado</span>';
+}}
+function statusBdg(a) {{
+    return a ? '<span class="bdg bdg-open">Aberto</span>' : '<span class="bdg bdg-closed">Fechado</span>';
+}}
+function fmtDate(d) {{ return d || '\\u2014'; }}
+function fmtQty(q) {{ return q!=null ? Number(q).toLocaleString('en-US',{{maximumFractionDigits:4}}) : '\\u2014'; }}
+
+function updateCards(r) {{
+    var rentab = r.rentabilidade_acumulada_pct||0;
+    var el = document.getElementById('card-rentab');
+    el.textContent = (rentab>=0?'+':'')+rentab.toFixed(2)+'%';
+    el.className = 's-value '+(rentab>=0?'positive':'negative');
+    document.getElementById('card-valor').textContent = 'R$ '+(r.valor_total||0).toLocaleString('pt-BR',{{minimumFractionDigits:2,maximumFractionDigits:2}});
+    document.getElementById('card-alocado').textContent = 'R$ '+(r.capital_alocado||0).toLocaleString('pt-BR',{{minimumFractionDigits:2,maximumFractionDigits:2}});
+    document.getElementById('card-caixa').textContent = 'R$ '+(r.capital_em_caixa||0).toLocaleString('pt-BR',{{minimumFractionDigits:2,maximumFractionDigits:2}});
+    document.getElementById('card-base').textContent = 'R$ '+(r.capital_base||1500).toLocaleString('pt-BR',{{minimumFractionDigits:2,maximumFractionDigits:2}});
+    document.getElementById('card-trades').textContent = (r.trades_ativos||0)+' / '+(r.trades_fechados||0);
+    document.getElementById('countAbertas').textContent = r.trades_ativos||0;
+    document.getElementById('countFechadas').textContent = r.trades_fechados||0;
+    document.getElementById('countHistorico').textContent = (r.trades_ativos||0)+(r.trades_fechados||0);
+}}
+
+function fmtStop(v) {{ if(v==null||v==undefined) return '\\u2014'; return '$ '+fmtPrice(v); }}
+function fmtTotal(v) {{
+    if(v==null||v===undefined) return '\\u2014';
+    return '$ '+v.toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}});
+}}
+function rowOpen(t) {{
+    return '<tr><td>'+t.ativo+'</td><td>'+sideBdg(t.side)+'</td><td>'+origemBdg(t.origem)+'</td><td>'+fmtDate(t.data_insercao)+'</td><td>$ '+fmtPrice(t.preco_entrada_turma)+'</td><td>'+fmtQty(t.quantidade)+'</td><td>'+fmtTotal(t.preco_entrada_total)+'</td><td>$ '+fmtPrice(t.preco_atual)+'</td><td>'+fmtTotal(t.preco_saida_total)+'</td><td>'+fmtStop(t.stop_atual)+'</td><td>'+fmtPnl(t.pnl_pct)+'</td></tr>';
+}}
+function rowClosed(t) {{
+    return '<tr><td>'+t.ativo+'</td><td>'+sideBdg(t.side)+'</td><td>'+origemBdg(t.origem)+'</td><td>'+fmtDate(t.data_insercao)+'</td><td>'+fmtDate(t.data_remocao)+'</td><td>'+(t.dias!=null?t.dias:'\\u2014')+'</td><td>$ '+fmtPrice(t.preco_entrada_turma)+'</td><td>'+fmtTotal(t.preco_entrada_total)+'</td><td>$ '+fmtPrice(t.preco_atual)+'</td><td>'+fmtTotal(t.preco_saida_total)+'</td><td>'+fmtStop(t.stop_atual)+'</td><td>'+fmtPnl(t.pnl_pct)+'</td></tr>';
+}}
+function rowHist(t) {{
+    return '<tr><td>'+t.ativo+'</td><td>'+sideBdg(t.side)+'</td><td>'+origemBdg(t.origem)+'</td><td>'+statusBdg(isTradeOpen(t))+'</td><td>'+fmtDate(t.data_insercao)+'</td><td>'+fmtDate(t.data_remocao)+'</td><td>'+(t.dias!=null?t.dias:'\\u2014')+'</td><td>$ '+fmtPrice(t.preco_entrada_turma)+'</td><td>'+fmtTotal(t.preco_entrada_total)+'</td><td>$ '+fmtPrice(t.preco_atual)+'</td><td>'+fmtTotal(t.preco_saida_total)+'</td><td>'+fmtStop(t.stop_atual)+'</td><td>'+fmtPnl(t.pnl_pct)+'</td></tr>';
+}}
+
+var sortSt = {{}};
+function setupSort(tbl, data, cols, renderRow) {{
+    var key = tbl.id;
+    var ths = tbl.querySelectorAll('thead th');
+    ths.forEach(function(th, idx) {{
+        if (!th.querySelector('.sort-arrow')) th.innerHTML = th.textContent+' <span class="sort-arrow">\\u25B2</span>';
+        th.onclick = function() {{
+            var prev = sortSt[key]; var dir = 'asc';
+            if (prev && prev.col===idx) dir = prev.dir==='asc'?'desc':'asc';
+            sortSt[key] = {{col:idx, dir:dir}};
+            ths.forEach(function(h){{h.classList.remove('sorted');h.querySelector('.sort-arrow').textContent='\\u25B2';}});
+            th.classList.add('sorted');
+            th.querySelector('.sort-arrow').textContent = dir==='asc'?'\\u25B2':'\\u25BC';
+            var c=cols[idx];
+            var sorted=[...data].sort(function(a,b){{
+                var va=c.v(a),vb=c.v(b);
+                if(c.t==='text'){{va=(va||'').toLowerCase();vb=(vb||'').toLowerCase();}}
+                else if(c.t==='date'){{va=va||'0';vb=vb||'0';}}
+                else{{va=typeof va==='number'&&!isNaN(va)?va:-Infinity;vb=typeof vb==='number'&&!isNaN(vb)?vb:-Infinity;}}
+                var cmp=va<vb?-1:va>vb?1:0;
+                return dir==='asc'?cmp:-cmp;
+            }});
+            tbl.querySelector('tbody').innerHTML=sorted.map(renderRow).join('');
+        }};
+    }});
+}}
+
+function isTradeOpen(t) {{
+    if(t.data_remocao || t.data_saida) return false;
+    if(String(t.status_posicao||'').toLowerCase() === 'closed') return false;
+    return true;
+}}
+function renderAbertas(cart) {{
+    var open=cart.filter(function(t){{return isTradeOpen(t);}}).sort(function(a,b){{return(b.data_insercao||'').localeCompare(a.data_insercao||'');}});
+    var tb=document.getElementById('tbAbertas');
+    document.getElementById('countAbertas').textContent = open.length;
+    if(!open.length){{tb.innerHTML='<tr><td colspan="11" class="empty-msg">Nenhuma posi\\u00e7\\u00e3o aberta</td></tr>';return;}}
+    tb.innerHTML=open.map(rowOpen).join('');
+    setupSort(document.getElementById('tblAbertas'),open,[
+        {{t:'text',v:function(r){{return r.ativo;}}}},{{t:'text',v:function(r){{return r.side;}}}},{{t:'text',v:function(r){{return r.origem;}}}},
+        {{t:'date',v:function(r){{return r.data_insercao;}}}},{{t:'num',v:function(r){{return r.preco_entrada_turma;}}}},
+        {{t:'num',v:function(r){{return r.quantidade;}}}},{{t:'num',v:function(r){{return r.preco_entrada_total;}}}},
+        {{t:'num',v:function(r){{return r.preco_atual;}}}},{{t:'num',v:function(r){{return r.preco_saida_total;}}}},
+        {{t:'num',v:function(r){{return r.stop_atual;}}}},{{t:'num',v:function(r){{return r.pnl_pct;}}}}
+    ],rowOpen);
+}}
+function renderFechadas(cart) {{
+    var closed=cart.filter(function(t){{return !isTradeOpen(t);}}).sort(function(a,b){{return(b.data_insercao||'').localeCompare(a.data_insercao||'');}});
+    var tb=document.getElementById('tbFechadas');
+    document.getElementById('countFechadas').textContent = closed.length;
+    document.getElementById('countHistorico').textContent = cart.length;
+    if(!closed.length){{tb.innerHTML='<tr><td colspan="12" class="empty-msg">Nenhum trade fechado</td></tr>';return;}}
+    tb.innerHTML=closed.map(rowClosed).join('');
+    setupSort(document.getElementById('tblFechadas'),closed,[
+        {{t:'text',v:function(r){{return r.ativo;}}}},{{t:'text',v:function(r){{return r.side;}}}},{{t:'text',v:function(r){{return r.origem;}}}},
+        {{t:'date',v:function(r){{return r.data_insercao;}}}},{{t:'date',v:function(r){{return r.data_remocao;}}}},{{t:'num',v:function(r){{return r.dias;}}}},
+        {{t:'num',v:function(r){{return r.preco_entrada_turma;}}}},{{t:'num',v:function(r){{return r.preco_entrada_total;}}}},
+        {{t:'num',v:function(r){{return r.preco_atual;}}}},{{t:'num',v:function(r){{return r.preco_saida_total;}}}},
+        {{t:'num',v:function(r){{return r.stop_atual;}}}},{{t:'num',v:function(r){{return r.pnl_pct;}}}}
+    ],rowClosed);
+}}
+function renderHistorico(cart) {{
+    var all=[...cart].sort(function(a,b){{return(b.data_insercao||'').localeCompare(a.data_insercao||'');}});
+    var tb=document.getElementById('tbHistorico');
+    if(!all.length){{tb.innerHTML='<tr><td colspan="13" class="empty-msg">Nenhum trade</td></tr>';return;}}
+    tb.innerHTML=all.map(rowHist).join('');
+    setupSort(document.getElementById('tblHistorico'),all,[
+        {{t:'text',v:function(r){{return r.ativo;}}}},{{t:'text',v:function(r){{return r.side;}}}},{{t:'text',v:function(r){{return r.origem;}}}},
+        {{t:'text',v:function(r){{return isTradeOpen(r)?'a':'z';}}}},{{t:'date',v:function(r){{return r.data_insercao;}}}},
+        {{t:'date',v:function(r){{return r.data_remocao;}}}},{{t:'num',v:function(r){{return r.dias;}}}},
+        {{t:'num',v:function(r){{return r.preco_entrada_turma;}}}},{{t:'num',v:function(r){{return r.preco_entrada_total;}}}},
+        {{t:'num',v:function(r){{return r.preco_atual;}}}},{{t:'num',v:function(r){{return r.preco_saida_total;}}}},
+        {{t:'num',v:function(r){{return r.stop_atual;}}}},{{t:'num',v:function(r){{return r.pnl_pct;}}}}
+    ],rowHist);
+}}
+
+function renderPnlAbertasChart(cart) {{
+    var open = cart.filter(function(t){{ return isTradeOpen(t); }});
+    if(pnlAbertasChart) pnlAbertasChart.destroy();
+    var ctx = document.getElementById('chartPnlAbertas');
+    if(!ctx) return;
+    ctx = ctx.getContext('2d');
+    if(!open.length) {{
+        pnlAbertasChart = new Chart(ctx, {{ type: 'bar', data: {{ labels: [], datasets: [] }}, options: {{ responsive: true, maintainAspectRatio: false, plugins: {{ legend: {{ display: false }}, tooltip: {{ enabled: false }} }}, scales: {{ x: {{ display: false }}, y: {{ display: false }} }} }} }});
+        return;
+    }}
+    var labels = open.map(function(t){{ return t.ativo + ' (' + (t.side||'LONG').toUpperCase() + ')'; }});
+    var values = open.map(function(t){{ return t.pnl_pct != null ? t.pnl_pct : 0; }});
+    var colors = values.map(function(v){{ return v >= 0 ? '#4ecca3' : '#e74c3c'; }});
+    pnlAbertasChart = new Chart(ctx, {{
+        type: 'bar',
+        data: {{
+            labels: labels,
+            datasets: [{{
+                label: 'PnL %',
+                data: values,
+                backgroundColor: colors,
+                borderColor: colors,
+                borderWidth: 1,
+                borderRadius: 4
+            }}]
+        }},
+        options: {{
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {{
+                legend: {{ display: false }},
+                tooltip: {{
+                    backgroundColor: 'rgba(26,26,46,0.95)',
+                    titleColor: '#4ecca3',
+                    bodyColor: '#e0e0e0',
+                    callbacks: {{ label: function(c){{ return (c.raw >= 0 ? '+' : '') + c.raw.toFixed(2) + '%'; }} }}
+                }}
+            }},
+            scales: {{
+                x: {{
+                    ticks: {{ color: '#e0e0e0', font: {{ size: 11 }}, maxRotation: 45 }},
+                    grid: {{ color: 'rgba(255,255,255,0.05)' }},
+                    title: {{ display: true, text: 'Ativos', color: '#888' }}
+                }},
+                y: {{
+                    ticks: {{ color: '#666', callback: function(v){{ return v + '%'; }} }},
+                    grid: {{ color: 'rgba(255,255,255,0.05)' }},
+                    title: {{ display: true, text: 'PnL %', color: '#888' }}
+                }}
+            }}
+        }}
+    }});
+}}
+
+var ALLOC_COLORS = ['#4ecca3','#e74c3c','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22','#2ecc71','#e84393','#00cec9','#fd79a8','#6c5ce7','#ffeaa7','#dfe6e9','#fab1a0','#a29bfe'];
+
+function renderAllocTimeline(cart) {{
+    var entries = cart.filter(function(t){{
+        if(!t.data_insercao) return false;
+        if(String(t.status_posicao||'').toLowerCase() === 'closed' && !t.data_remocao && !t.data_saida) return false;
+        return true;
+    }});
+    if(!entries.length) return;
+
+    var dateSet = {{}};
+    var today = new Date().toISOString().slice(0,10);
+    entries.forEach(function(t){{
+        var start = t.data_insercao;
+        var end = t.data_remocao || t.data_saida || today;
+        dateSet[start] = 1;
+        dateSet[end] = 1;
+    }});
+    if(DATA_INICIO_TURMA) dateSet[DATA_INICIO_TURMA] = 1;
+    dateSet[today] = 1;
+    var allDates = Object.keys(dateSet).sort();
+
+    var minDate = allDates[0];
+    var maxDate = allDates[allDates.length-1];
+    var dates = [];
+    var d = new Date(minDate + 'T00:00:00');
+    var dMax = new Date(maxDate + 'T00:00:00');
+    while(d <= dMax) {{
+        dates.push(d.toISOString().slice(0,10));
+        d.setDate(d.getDate() + 1);
+    }}
+
+    var assetMap = {{}};
+    entries.forEach(function(t){{
+        var key = t.ativo + '_' + (t.side||'long').toLowerCase();
+        if(!assetMap[key]) assetMap[key] = [];
+        assetMap[key].push(t);
+    }});
+
+    var assetKeys = Object.keys(assetMap).sort();
+
+    var rawByAsset = {{}};
+    assetKeys.forEach(function(key){{
+        var trades = assetMap[key];
+        rawByAsset[key] = dates.map(function(day){{
+            var total = 0;
+            trades.forEach(function(t){{
+                var start = t.data_insercao;
+                var end = t.data_remocao || t.data_saida || today;
+                if(day >= start && day <= end) {{
+                    var qty = t.quantidade || 0;
+                    var pe = t.preco_entrada_turma || 0;
+                    total += qty * pe;
+                }}
+            }});
+            return total;
+        }});
+    }});
+
+    var dailyTotals = dates.map(function(_, i){{
+        var s = 0;
+        assetKeys.forEach(function(key){{ s += rawByAsset[key][i]; }});
+        return s;
+    }});
+
+    var datasets = [];
+    assetKeys.forEach(function(key, idx){{
+        var parts = key.split('_');
+        var ativo = parts[0];
+        var side = parts[1] || 'long';
+        var color = ALLOC_COLORS[idx % ALLOC_COLORS.length];
+        var data = dates.map(function(_, i){{
+            var t = dailyTotals[i];
+            return t > 0 ? Math.round((rawByAsset[key][i] / t) * 10000) / 100 : 0;
+        }});
+        datasets.push({{
+            label: ativo + ' (' + side.toUpperCase() + ')',
+            data: data,
+            _rawData: rawByAsset[key],
+            backgroundColor: color + 'AA',
+            borderColor: color,
+            borderWidth: 1,
+            fill: true,
+            tension: 0.3,
+            pointRadius: 0,
+            pointHoverRadius: 3
+        }});
+    }});
+
+    if(allocTimelineChart) allocTimelineChart.destroy();
+    allocTimelineChart = new Chart(document.getElementById('chartAllocTimeline').getContext('2d'), {{
+        type: 'line',
+        data: {{ labels: dates, datasets: datasets }},
+        options: {{
+            responsive: true, maintainAspectRatio: false,
+            interaction: {{ mode: 'index', intersect: false }},
+            scales: {{
+                x: {{
+                    stacked: true,
+                    ticks: {{ color: '#666', maxTicksLimit: 12, maxRotation: 0 }},
+                    grid: {{ color: 'rgba(255,255,255,0.05)' }}
+                }},
+                y: {{
+                    stacked: true,
+                    max: 100,
+                    ticks: {{ color: '#666', callback: function(v){{ return v + '%'; }} }},
+                    grid: {{ color: 'rgba(255,255,255,0.05)' }},
+                    title: {{ display: true, text: 'Aloca\u00e7\u00e3o (%)', color: '#888' }}
+                }}
+            }},
+            plugins: {{
+                legend: {{
+                    position: 'bottom',
+                    labels: {{ color: '#e0e0e0', padding: 10, usePointStyle: true, pointStyle: 'rectRounded', font: {{ size: 11 }},
+                        generateLabels: function(chart) {{
+                            return chart.data.datasets.map(function(ds, i) {{
+                                return {{
+                                    text: ds.label,
+                                    fillStyle: ds.hidden ? '#555' : ds.backgroundColor,
+                                    strokeStyle: ds.borderColor,
+                                    lineWidth: 1,
+                                    hidden: false,
+                                    datasetIndex: i,
+                                    fontColor: ds.hidden ? '#666' : '#e0e0e0',
+                                    pointStyle: 'rectRounded'
+                                }};
+                            }});
+                        }}
+                    }},
+                    onClick: function(e, item, legend) {{
+                        var idx = item.datasetIndex;
+                        var ds = legend.chart.data.datasets[idx];
+                        ds.hidden = !ds.hidden;
+                        legend.chart.update();
+                    }}
+                }},
+                tooltip: {{
+                    backgroundColor: 'rgba(26,26,46,0.95)',
+                    titleColor: '#4ecca3',
+                    bodyColor: '#e0e0e0',
+                    callbacks: {{
+                        label: function(ctx) {{
+                            if(ctx.raw === 0) return null;
+                            var raw = ctx.dataset._rawData ? ctx.dataset._rawData[ctx.dataIndex] : 0;
+                            var dollar = raw ? '$ ' + raw.toLocaleString('en-US', {{minimumFractionDigits:2, maximumFractionDigits:2}}) : '';
+                            return ctx.dataset.label + ': ' + ctx.raw.toFixed(1) + '%' + (dollar ? ' (' + dollar + ')' : '');
+                        }}
+                    }}
+                }}
+            }}
+        }}
+    }});
+}}
+
+function buildRentDatasets(serie, btc, compare) {{
+    var datasets = [];
+    var ctx = document.getElementById('chartRent').getContext('2d');
+    var gradient = ctx.createLinearGradient(0,0,0,350);
+    gradient.addColorStop(0,'rgba(78,204,163,0.3)');
+    gradient.addColorStop(1,'rgba(78,204,163,0.0)');
+    var labels = serie.map(function(s){{return s.dia;}});
+    var data = serie.map(function(s){{return s.rentabilidade_acumulada_pct;}});
+    var lastVal = data[data.length-1]||0;
+    var turmaInfo = TURMAS.find(function(t){{return t.id === TURMA_ID;}});
+    var turmaLabel = turmaInfo ? turmaInfo.nome : 'Turma';
+    datasets.push({{
+        label: turmaLabel,
+        data: data,
+        borderColor: lastVal>=0 ? '#4ecca3' : '#e74c3c',
+        backgroundColor: gradient,
+        fill: true, tension: 0.3, pointRadius: 0,
+        pointHoverRadius: 5, borderWidth: 2,
+        hidden: !document.getElementById('toggleTurma').checked
+    }});
+    if (btc && btc.length > 0) {{
+        var btcMap = {{}};
+        btc.forEach(function(s){{btcMap[s.dia]=s.rentabilidade_acumulada_pct;}});
+        var btcData = labels.map(function(d){{return btcMap[d] !== undefined ? btcMap[d] : null;}});
+        datasets.push({{
+            label: 'Bitcoin (BTC)',
+            data: btcData,
+            borderColor: '#f7931a',
+            backgroundColor: 'transparent',
+            fill: false, tension: 0.3, pointRadius: 0,
+            pointHoverRadius: 5, borderWidth: 2,
+            borderDash: [6, 3], spanGaps: true,
+            hidden: !document.getElementById('toggleBTC').checked
+        }});
+    }}
+    if (compare && compare.length > 0) {{
+        var cmpMap = {{}};
+        compare.forEach(function(s){{cmpMap[s.dia]=s.rentabilidade_acumulada_pct;}});
+        var cmpData = labels.map(function(d){{return cmpMap[d] !== undefined ? cmpMap[d] : null;}});
+        var cmpInfo = TURMAS.find(function(t){{return t.id === compareTurmaId;}});
+        var cmpLabel = cmpInfo ? cmpInfo.nome : 'Comparação';
+        datasets.push({{
+            label: cmpLabel,
+            data: cmpData,
+            borderColor: '#e056fd',
+            backgroundColor: 'transparent',
+            fill: false, tension: 0.3, pointRadius: 0,
+            pointHoverRadius: 5, borderWidth: 2,
+            borderDash: [3, 3], spanGaps: true
+        }});
+    }}
+    return {{labels: labels, datasets: datasets}};
+}}
+
+function renderRentChart(serie) {{
+    document.getElementById('chartLoading').style.display='none';
+    document.getElementById('chartWrapper').style.display='block';
+    currentTurmaSerie = serie;
+    var built = buildRentDatasets(serie, btcSerie, compareSerie);
+    if(rentChart) rentChart.destroy();
+    rentChart=new Chart(document.getElementById('chartRent').getContext('2d'),{{
+        type:'line',
+        data: built,
+        options:{{
+            responsive:true, maintainAspectRatio:false,
+            interaction:{{mode:'index', intersect:false}},
+            plugins:{{
+                legend:{{display:false}},
+                tooltip:{{
+                    backgroundColor:'rgba(26,26,46,0.95)', titleColor:'#4ecca3',
+                    bodyColor:'#e0e0e0', borderColor:'#4ecca3', borderWidth:1,
+                    callbacks:{{label:function(c){{
+                        if(c.raw==null)return null;
+                        return c.dataset.label+': '+(c.raw>=0?'+':'')+c.raw.toFixed(2)+'%';
+                    }}}}
+                }}
+            }},
+            scales:{{
+                x:{{ticks:{{color:'#666',maxTicksLimit:12,maxRotation:0}},grid:{{color:'rgba(255,255,255,0.05)'}}}},
+                y:{{ticks:{{color:'#666',callback:function(v){{return v+'%';}}}},grid:{{color:'rgba(255,255,255,0.05)'}},
+                   title:{{display:true,text:'Rentabilidade Acumulada (%)',color:'#888'}}}}
+            }}
+        }}
+    }});
+}}
+
+function rebuildChart() {{
+    if(!currentTurmaSerie) return;
+    renderRentChart(currentTurmaSerie);
+}}
+
+function fetchBtcBenchmark(dataInicio) {{
+    fetch('/api/benchmark/btc?data_inicio='+dataInicio)
+        .then(function(r){{return r.json();}})
+        .then(function(data){{
+            if(Array.isArray(data)) btcSerie = data;
+            else btcSerie = null;
+            rebuildChart();
+        }})
+        .catch(function(){{ btcSerie = null; }});
+}}
+
+function populateCompareSelect() {{
+    var sel = document.getElementById('selectCompareTurma');
+    sel.innerHTML = '<option value="">Nenhuma</option>';
+    TURMAS.forEach(function(t){{
+        if(t.id !== TURMA_ID) {{
+            var opt = document.createElement('option');
+            opt.value = t.id;
+            opt.textContent = t.nome;
+            if(compareTurmaId && t.id === compareTurmaId) opt.selected = true;
+            sel.appendChild(opt);
+        }}
+    }});
+}}
+
+function switchPosTab(tab, btn) {{
+    document.querySelectorAll('#sectionPositions .sub-tab').forEach(function(b){{b.classList.remove('active');}});
+    document.querySelectorAll('#sectionPositions .sub-content').forEach(function(c){{c.classList.remove('active');}});
+    btn.classList.add('active');
+    document.getElementById('tab-'+tab).classList.add('active');
+}}
+
+async function switchTurma(turmaId, btn) {{
+    if(turmaId===TURMA_ID) return;
+    TURMA_ID=turmaId;
+    compareSerie = null;
+    compareTurmaId = null;
+    document.querySelectorAll('.turma-tab').forEach(function(t){{t.classList.remove('active');}});
+    btn.classList.add('active');
+    document.getElementById('chartLoading').style.display='block';
+    document.getElementById('chartLoading').innerHTML='<div class="spinner"></div>Carregando...';
+    document.getElementById('chartWrapper').style.display='none';
+    var turmaInfo = TURMAS.find(function(t){{return t.id === turmaId;}});
+    if(turmaInfo) {{
+        DATA_INICIO_TURMA = turmaInfo.data_inicio;
+        document.getElementById('toggleTurmaLabel').textContent = turmaInfo.nome;
+    }}
+    populateCompareSelect();
+    try {{
+        var results=await Promise.all([
+            fetch('/api/turma/'+turmaId+'/dashboard-data'),
+            fetch('/api/turma/'+turmaId+'/rentabilidade')
+        ]);
+        var dashData=await results[0].json();
+        var serieData=await results[1].json();
+        if(dashData.erro){{console.error(dashData.erro);return;}}
+        RESUMO=dashData.resumo;
+        CARTEIRA=dashData.carteira;
+        updateCards(RESUMO);
+        renderPnlAbertasChart(CARTEIRA);
+        renderAbertas(CARTEIRA);
+        renderFechadas(CARTEIRA);
+        renderHistorico(CARTEIRA);
+        renderAllocTimeline(CARTEIRA);
+        if(Array.isArray(serieData)&&serieData.length>0){{
+            renderRentChart(serieData);
+            fetchBtcBenchmark(DATA_INICIO_TURMA);
+        }}
+        else{{document.getElementById('chartLoading').innerHTML='<span style="color:#666;">Sem dados de rentabilidade</span>';document.getElementById('chartLoading').style.display='block';}}
+    }} catch(err) {{
+        console.error('Erro:',err);
+        document.getElementById('chartLoading').innerHTML='<span style="color:#e74c3c;">Erro: '+err.message+'</span>';
+        document.getElementById('chartLoading').style.display='block';
+    }}
+}}
+
+// Atualizar Cotações (turma/rentabilidade)
+async function atualizarCotacoes() {{
+    var btn=document.getElementById('btnAtualizar');
+    var status=document.getElementById('statusMsg');
+    btn.disabled=true; btn.textContent='Atualizando...';
+    status.textContent='Buscando pre\\u00e7os...'; status.style.color='#f39c12';
+    try {{
+        var response=await fetch('/api/cotacoes/atualizar');
+        var data=await response.json();
+        if(data.sucesso){{
+            status.textContent='\\u2713 '+data.dias_preenchidos+' dias preenchidos';
+            status.style.color='#4ecca3';
+            setTimeout(function(){{window.location.reload();}},1500);
+        }} else {{
+            status.textContent='\\u2717 '+data.erro; status.style.color='#e74c3c';
+        }}
+    }} catch(err) {{
+        status.textContent='\\u2717 '+err.message; status.style.color='#e74c3c';
+    }}
+    btn.disabled=false; btn.textContent='Atualizar Pre\\u00e7os';
+}}
+
+// Preencher Preços (produto/posições)
+document.addEventListener('click',function(e){{
+    document.querySelectorAll('.dropdown-precos-menu.show').forEach(function(m){{
+        if(!m.parentElement.contains(e.target)) m.classList.remove('show');
+    }});
+}});
+function preencherPrecos(produtoId, tipo) {{
+    document.querySelectorAll('.dropdown-precos-menu.show').forEach(function(m){{m.classList.remove('show');}});
+    var nomes={{entrada:'pre\\u00e7os de entrada',saida:'pre\\u00e7os de sa\\u00edda',ambos:'todos os pre\\u00e7os'}};
+    if(!confirm('Preencher '+nomes[tipo]+' faltantes?')) return false;
+    var status=document.getElementById('statusMsg');
+    status.textContent='Preenchendo '+nomes[tipo]+'...'; status.style.color='#f39c12';
+    fetch('/api/posicoes/preencher-precos?produto_id='+produtoId+'&tipo='+tipo)
+        .then(function(r){{return r.json();}})
+        .then(function(res){{
+            if(res.sucesso){{status.textContent='\\u2713 '+res.mensagem;status.style.color='#4ecca3';}}
+            else{{status.textContent='\\u2717 '+(res.erro||'Falha');status.style.color='#e74c3c';}}
+            setTimeout(function(){{status.textContent='';}},8000);
+        }})
+        .catch(function(e){{
+            status.textContent='\\u2717 '+e.message;status.style.color='#e74c3c';
+            setTimeout(function(){{status.textContent='';}},8000);
+        }});
+    return false;
+}}
+
+document.addEventListener('DOMContentLoaded', function() {{
+    renderPnlAbertasChart(CARTEIRA);
+    renderAbertas(CARTEIRA);
+    renderFechadas(CARTEIRA);
+    renderHistorico(CARTEIRA);
+    renderAllocTimeline(CARTEIRA);
+    populateCompareSelect();
+
+    document.getElementById('toggleTurma').addEventListener('change', function(){{ rebuildChart(); }});
+    document.getElementById('toggleBTC').addEventListener('change', function(){{ rebuildChart(); }});
+    document.getElementById('selectCompareTurma').addEventListener('change', function(){{
+        var val = this.value;
+        if(!val) {{
+            compareSerie = null;
+            compareTurmaId = null;
+            rebuildChart();
+            return;
+        }}
+        compareTurmaId = parseInt(val);
+        fetch('/api/turma/'+compareTurmaId+'/rentabilidade')
+            .then(function(r){{return r.json();}})
+            .then(function(data){{
+                if(Array.isArray(data)) compareSerie = data;
+                else compareSerie = null;
+                rebuildChart();
+            }})
+            .catch(function(){{ compareSerie = null; rebuildChart(); }});
+    }});
+
+    if(TURMA_ID){{
+        fetch('/api/turma/'+TURMA_ID+'/rentabilidade')
+            .then(function(r){{return r.json();}})
+            .then(function(data){{
+                if(Array.isArray(data)&&data.length>0){{
+                    renderRentChart(data);
+                    fetchBtcBenchmark(DATA_INICIO_TURMA);
+                }}
+                else{{document.getElementById('chartLoading').innerHTML='<span style="color:#666;">Sem dados de rentabilidade</span>';}}
+            }})
+            .catch(function(err){{
+                document.getElementById('chartLoading').innerHTML='<span style="color:#e74c3c;">Erro: '+err.message+'</span>';
+            }});
+    }} else {{
+        document.getElementById('chartLoading').innerHTML='<span style="color:#666;">Nenhuma turma selecionada</span>';
+    }}
+}});
+</script>
 </body>
 </html>"""

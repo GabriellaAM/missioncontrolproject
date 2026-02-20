@@ -35,7 +35,7 @@ from analytics.notebook_utils import (
 )
 from analytics.queries import invalidar_cache_atr
 from services.atr_stop_service import atualizar_stops_posicoes_abertas, calcular_stop_para_posicao
-from services.bitget_service import sync_positions_with_exchange, auto_sync_positions
+from services.bitget_service import sync_positions_with_exchange, auto_sync_positions, fetch_bitget_tickers_perpetuals, fetch_bitget_tickers_spot
 from services.notificacao_service import notificar_stop_atingido
 from services.turmas_service import TurmasService
 from services.rentabilidade_service import RentabilidadeService
@@ -46,8 +46,160 @@ from turmas_dashboard import (
     get_turma_detalhes_html,
     get_rentabilidade_chart_html,
     get_comparar_turmas_html,
-    get_rentabilidade_historica_html
+    get_rentabilidade_historica_html,
+    get_produto_dashboard_html
 )
+
+
+def _enrich_carteira_trades(carteira, precos_atuais=None, repo=None):
+    """Enriquece trades da carteira com campos computados (dias, PnL, preço atual, stop)."""
+    hoje = date.today()
+    hoje_str = hoje.isoformat()
+
+    # Batch load stops para todas as posições da carteira
+    stops_map = {}
+    if repo:
+        posicao_ids = [int(t['posicao_id']) for t in carteira if t.get('posicao_id')]
+        if posicao_ids:
+            from analytics.queries import _batch_load_stops, _batch_load_stops_por_ativo
+            stops_map = _batch_load_stops(repo, posicao_ids)
+
+    for trade in carteira:
+        data_insercao = trade.get('data_insercao', '')
+        data_remocao = trade.get('data_remocao')
+        data_saida = trade.get('data_saida')
+        # Normalizar datas (podem vir como date do DB)
+        if hasattr(data_insercao, 'isoformat'):
+            data_insercao = data_insercao.isoformat()[:10]
+        if hasattr(data_remocao, 'isoformat'):
+            data_remocao = data_remocao.isoformat()[:10]
+        if hasattr(data_saida, 'isoformat'):
+            data_saida = data_saida.isoformat()[:10]
+        status = (trade.get('status_posicao') or '').strip().lower()
+        # Fechado se tiver data de saída/remocão OU status 'closed' (fonte da verdade: posicoes.status)
+        is_closed = bool(data_remocao or data_saida or status == 'closed')
+        data_fim = data_remocao or data_saida
+
+        if not is_closed:
+            try:
+                d_ins = datetime.strptime(data_insercao, '%Y-%m-%d').date()
+                trade['dias'] = (hoje - d_ins).days
+            except Exception:
+                trade['dias'] = 0
+        else:
+            try:
+                d_ins = datetime.strptime(data_insercao, '%Y-%m-%d').date()
+                d_end = datetime.strptime(data_fim or hoje_str, '%Y-%m-%d').date()
+                trade['dias'] = (d_end - d_ins).days
+            except Exception:
+                trade['dias'] = 0
+
+        # Preço de entrada: sistema antigo usa posicoes.preco_entrada; fallback preco_entrada_turma
+        preco_entrada_orig = trade.get('preco_entrada_original')
+        preco_entrada_turma = trade.get('preco_entrada_turma', 0) or 0
+        preco_entrada = (float(preco_entrada_orig) if preco_entrada_orig is not None else None) or preco_entrada_turma
+        side = (trade.get('side') or '').upper()
+        quantidade = trade.get('quantidade')
+
+        pos_id = trade.get('posicao_id')
+        trade['stop_atual'] = stops_map.get(int(pos_id)) if pos_id else None
+
+        # preco_entrada_total = quantidade * preco_entrada (mesmo critério do sistema antigo)
+        trade['preco_entrada_total'] = (quantidade * preco_entrada) if quantidade and preco_entrada else None
+
+        if not is_closed:
+            key = _price_key(trade)
+            preco_atual = precos_atuais.get(key) if key and precos_atuais else None
+            trade['preco_atual'] = preco_atual if preco_atual else preco_entrada
+        else:
+            trade['preco_atual'] = trade.get('preco_saida') or preco_entrada
+
+        # preco_saida_total = quantidade * preco_atual (ou preco_saida)
+        trade['preco_saida_total'] = (quantidade * trade['preco_atual']) if quantidade and trade['preco_atual'] else None
+
+        # PnL%: mesma mecânica do sistema antigo (queries.py perpétuos)
+        # ((preco_saida_total / preco_entrada_total) - 1) * 100, invertido para SHORT
+        pet = trade.get('preco_entrada_total')
+        pst = trade.get('preco_saida_total')
+        if pet and pst and pet != 0:
+            pnl = ((pst / pet) - 1.0) * 100.0
+            if side == 'SHORT':
+                pnl = -pnl
+            trade['pnl_pct'] = pnl
+        elif preco_entrada and preco_entrada != 0 and trade['preco_atual']:
+            pnl = ((trade['preco_atual'] / preco_entrada) - 1.0) * 100.0
+            if side == 'SHORT':
+                pnl = -pnl
+            trade['pnl_pct'] = pnl
+        else:
+            trade['pnl_pct'] = 0.0
+
+    return carteira
+
+
+def _price_key(trade):
+    """Chave de lookup: coingecko_id ou exchange_symbol (para posições sem coingecko_id)."""
+    return trade.get('coingecko_id') or (trade.get('exchange_symbol') or '').strip().upper() or None
+
+
+def _fetch_precos_batch(carteira, tipo_produto=None, db_url=None):
+    """
+    Busca preços atuais em batch para trades ativos da carteira.
+    Fonte principal: Bitget (sempre primeiro quando há exchange_symbol).
+    Fallback: CoinGecko (apenas para ativos que a Bitget não cobriu).
+    Indexa por _price_key (coingecko_id ou exchange_symbol).
+    """
+    trades_ativos = [t for t in carteira if t.get('ativo_atual')]
+    if not trades_ativos:
+        return {}
+
+    precos = {}
+    tipo_lower = (tipo_produto or '').lower()
+
+    # 1) Bitget primeiro — nunca sobrescrever com CoinGecko depois
+    use_perp = 'perp' in tipo_lower
+    use_spot = 'spot' in tipo_lower
+    if not use_perp and not use_spot:
+        use_perp = use_spot = True  # produto indefinido: tenta os dois
+    if use_perp:
+        try:
+            tickers = fetch_bitget_tickers_perpetuals()
+            for t in trades_ativos:
+                ex_sym = (t.get('exchange_symbol') or '').strip().upper()
+                if ex_sym and ex_sym in tickers and tickers[ex_sym] > 0:
+                    key = _price_key(t)
+                    if key and key not in precos:
+                        precos[key] = tickers[ex_sym]
+        except Exception:
+            pass
+    if use_spot:
+        try:
+            tickers = fetch_bitget_tickers_spot()
+            for t in trades_ativos:
+                ex_sym = (t.get('exchange_symbol') or '').strip().upper()
+                if ex_sym and ex_sym in tickers and tickers[ex_sym] > 0:
+                    key = _price_key(t)
+                    if key and key not in precos:
+                        precos[key] = tickers[ex_sym]
+        except Exception:
+            pass
+
+    # 2) CoinGecko apenas como fallback — só preenche o que ainda não tem preço
+    coingecko_ids_faltando = list(set(
+        t['coingecko_id'] for t in trades_ativos
+        if t.get('coingecko_id') and t['coingecko_id'] not in precos
+    ))
+    if coingecko_ids_faltando:
+        try:
+            cotacoes_service = CotacoesService(db_url=db_url)
+            cg_precos = cotacoes_service.obter_precos_batch_coingecko(coingecko_ids_faltando)
+            for cg_id, preco in cg_precos.items():
+                if cg_id not in precos:
+                    precos[cg_id] = preco
+        except Exception:
+            pass
+
+    return precos
 
 
 def _normalizar_data_entrada(val, fallback_today=True):
@@ -3688,7 +3840,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
                 # Sincronizar com turmas existentes
                 try:
-                    turmas_service = TurmasService()
+                    turmas_service = TurmasService(db_url=repo.db_url)
                     turmas_service.sync_nova_posicao(
                         posicao_id=posicao_id,
                         produto_id=produto_id,
@@ -3744,7 +3896,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
                 # Sincronizar fechamento com turmas
                 try:
-                    turmas_service = TurmasService()
+                    turmas_service = TurmasService(db_url=repo.db_url)
                     turmas_service.sync_posicao_fechada(
                         posicao_id=posicao_id,
                         data_saida=data_saida
@@ -4149,7 +4301,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Use /api/turma/posicoes-elegiveis para listar posições elegíveis
         if path == '/api/turma/criar':
             try:
-                turmas_service = TurmasService()
+                turmas_service = TurmasService(db_url=repo.db_url)
                 produto_id = int(data.get('produto_id'))
                 data_inicio = data.get('data_inicio')
 
@@ -4259,10 +4411,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             if ativos_abertas:
                                 ph = ','.join(['%s'] * len(ativos_abertas))
                                 cursor.execute(f"""
-                                    SELECT DISTINCT ON (p.ativo) p.ativo, p.id as posicao_id, s.data, s.valor
-                                    FROM stops s JOIN posicoes p ON p.id = s.posicao_id
-                                    WHERE p.produto_id = %s AND p.ativo IN ({ph})
-                                    ORDER BY p.ativo, s.data DESC
+                                    SELECT ativo, posicao_id, data, valor FROM (
+                                        SELECT p.ativo, p.id as posicao_id, s.data, s.valor,
+                                               ROW_NUMBER() OVER (PARTITION BY p.ativo ORDER BY s.data DESC) as rn
+                                        FROM stops s JOIN posicoes p ON p.id = s.posicao_id
+                                        WHERE p.produto_id = %s AND p.ativo IN ({ph})
+                                    ) sub WHERE rn = 1
                                 """, [produto_id] + ativos_abertas)
                                 por_ativo = cursor.fetchall()
                                 info['ultimo_stop_por_ativo'] = [{'ativo': r[0], 'posicao_id': r[1], 'data': r[2], 'valor': r[3]} for r in por_ativo]
@@ -4598,11 +4752,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_html(get_visualizacao_html(produto, fake_viz, df))
                     return
 
-                # Pagina do produto (default)
-                # Para produtos de alocação livre, reconciliar posições com alocações
-                reconciliar_posicoes_com_alocacoes(repo, produto_id)
+                # Pagina do produto (default) - Dashboard rico se tiver turmas
+                turmas_produto = []
+                try:
+                    turmas_service = TurmasService(db_url=repo.db_url)
+                    turmas_produto = turmas_service.listar_turmas(produto_id)
+                except Exception as e:
+                    print(f"[DASHBOARD] Erro ao buscar turmas para produto {produto_id}: {e}", flush=True)
 
-                # posicoes_abertas() já faz Bitget sync + ATR stops internamente
+                if turmas_produto:
+                    try:
+                        # Manter TODAS as atualizações automáticas da página clássica:
+                        # 1. Reconciliar posições com alocações (produtos de alocação livre)
+                        reconciliar_posicoes_com_alocacoes(repo, produto_id)
+                        # 2. Bitget sync + ATR stops (usa cache: Bitget 5min, ATR 1h)
+                        try:
+                            display_posicoes_abertas(produto_id, formatar=False, filtrar_colunas=False)
+                        except Exception:
+                            pass
+
+                        rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
+                        primeira_turma_id = turmas_produto[0]['id']
+
+                        carteira = turmas_service.listar_carteira_turma(primeira_turma_id)
+                        precos_atuais = _fetch_precos_batch(carteira, tipo_produto=produto.get('tipo', ''), db_url=repo.db_url)
+                        _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
+                        resumo = rentabilidade_service.resumo_turma(primeira_turma_id)
+
+                        self._send_html(get_produto_dashboard_html(produto, turmas_produto, resumo, carteira))
+                        return
+                    except Exception as e:
+                        print(f"[DASHBOARD] Erro ao montar dashboard rico: {e}", flush=True)
+
+                # Fallback: produto sem turmas (ou erro) - página clássica
+                reconciliar_posicoes_com_alocacoes(repo, produto_id)
                 visualizacoes = repo.listar_visualizacoes(produto_id)
                 self._send_html(get_produto_html(produto, visualizacoes, repo))
                 return
@@ -4619,8 +4802,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Lista de turmas
         if path == '/turmas':
-            turmas_service = TurmasService()
-            rentabilidade_service = RentabilidadeService()
+            turmas_service = TurmasService(db_url=repo.db_url)
+            rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
 
             # OTIMIZAÇÃO: Não chama preencher_historico_faltante() no carregamento
             # Use /api/cotacoes/atualizar para atualizar preços quando necessário
@@ -4642,14 +4825,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Comparar turmas
         if path == '/turmas/comparar':
-            turmas_service = TurmasService()
+            turmas_service = TurmasService(db_url=repo.db_url)
             turmas = turmas_service.listar_turmas()
             self._send_html(get_comparar_turmas_html(turmas, {}))
             return
 
         # Rentabilidade histórica de todas as turmas (página HTML)
         if path == '/turmas/historico':
-            rentabilidade_service = RentabilidadeService()
+            rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
 
             # OTIMIZAÇÃO: Não chama preencher_historico_faltante() no carregamento
             # Use /api/cotacoes/atualizar para atualizar preços quando necessário
@@ -4665,8 +4848,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if len(parts) >= 3:
                 try:
                     turma_id = int(parts[2])
-                    turmas_service = TurmasService()
-                    rentabilidade_service = RentabilidadeService()
+                    turmas_service = TurmasService(db_url=repo.db_url)
+                    rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
 
                     # OTIMIZAÇÃO: Não chama preencher_historico_faltante() no carregamento
                     # Use /api/cotacoes/atualizar para atualizar preços quando necessário
@@ -4687,75 +4870,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if len(parts) >= 4 and parts[3] in ('abertas', 'fechadas', 'historico'):
                         tab_ativa = parts[3]
 
-                    # Detalhes da turma com abas
-                    # Buscar carteira primeiro para popular o cache de preços ANTES de resumo_turma
+                    # Detalhes da turma com abas (usa helpers compartilhados)
+                    produto_turma = repo.carregar_produto(turma.get('produto_id'))
+                    tipo_produto_turma = (produto_turma or {}).get('tipo', '')
                     carteira = turmas_service.listar_carteira_turma(turma_id)
-
-                    from datetime import date as date_type
-                    hoje = date_type.today().isoformat()
-
-                    # Batch API: busca preços atuais e popula cache module-level
-                    # resumo_turma() depois usa o cache em vez de fazer N chamadas individuais
-                    coingecko_ids_ativos = list(set(
-                        t['coingecko_id'] for t in carteira
-                        if t.get('ativo_atual') and t.get('coingecko_id')
-                    ))
-                    precos_atuais = {}
-                    if coingecko_ids_ativos:
-                        try:
-                            cotacoes_service = CotacoesService()
-                            precos_atuais = cotacoes_service.obter_precos_batch_coingecko(coingecko_ids_ativos)
-                        except Exception:
-                            pass
-
+                    precos_atuais = _fetch_precos_batch(carteira, tipo_produto=tipo_produto_turma, db_url=repo.db_url)
+                    _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
                     resumo = rentabilidade_service.resumo_turma(turma_id)
-
-                    for trade in carteira:
-                        # Calcular dias na turma
-                        data_insercao = trade.get('data_insercao', '')
-                        if trade.get('ativo_atual'):
-                            try:
-                                from datetime import datetime as dt
-                                d_ins = dt.strptime(data_insercao, '%Y-%m-%d').date()
-                                trade['dias'] = (date_type.today() - d_ins).days
-                            except Exception:
-                                trade['dias'] = 0
-                        else:
-                            try:
-                                from datetime import datetime as dt
-                                d_ins = dt.strptime(data_insercao, '%Y-%m-%d').date()
-                                d_rem = dt.strptime(trade.get('data_remocao', hoje), '%Y-%m-%d').date()
-                                trade['dias'] = (d_rem - d_ins).days
-                            except Exception:
-                                trade['dias'] = 0
-
-                        preco_entrada = trade.get('preco_entrada_turma', 0) or 0
-                        side = (trade.get('side') or '').upper()
-
-                        if trade.get('ativo_atual'):
-                            # Trade ativo: usar preço atual da API
-                            cg_id = trade.get('coingecko_id')
-                            preco_atual = precos_atuais.get(cg_id) if cg_id else None
-                            trade['preco_atual'] = preco_atual if preco_atual else preco_entrada
-                            # Calcular PnL
-                            if preco_entrada and preco_entrada != 0:
-                                if side == 'SHORT':
-                                    trade['pnl_pct'] = (preco_entrada - trade['preco_atual']) / preco_entrada * 100
-                                else:
-                                    trade['pnl_pct'] = (trade['preco_atual'] - preco_entrada) / preco_entrada * 100
-                            else:
-                                trade['pnl_pct'] = 0.0
-                        else:
-                            # Trade fechado: usar preço de saída
-                            preco_saida = trade.get('preco_saida') or preco_entrada
-                            trade['preco_atual'] = preco_saida
-                            if preco_entrada and preco_entrada != 0:
-                                if side == 'SHORT':
-                                    trade['pnl_pct'] = (preco_entrada - preco_saida) / preco_entrada * 100
-                                else:
-                                    trade['pnl_pct'] = (preco_saida - preco_entrada) / preco_entrada * 100
-                            else:
-                                trade['pnl_pct'] = 0.0
 
                     self._send_html(get_turma_detalhes_html(turma, resumo, carteira, tab_ativa))
                     return
@@ -4764,11 +4885,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_html("<h1>Turma nao encontrada</h1>", 404)
             return
 
+        # API: Dashboard data de uma turma (resumo + carteira enriquecida)
+        if path.startswith('/api/turma/') and path.endswith('/dashboard-data'):
+            try:
+                turma_id = int(path.split('/')[3])
+                turmas_service = TurmasService(db_url=repo.db_url)
+                rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
+
+                turma = turmas_service.obter_turma(turma_id)
+                if not turma:
+                    self._send_json({'erro': 'Turma não encontrada'}, 404)
+                    return
+
+                produto_turma = repo.carregar_produto(turma.get('produto_id'))
+                tipo_produto_turma = (produto_turma or {}).get('tipo', '')
+                carteira = turmas_service.listar_carteira_turma(turma_id)
+                precos_atuais = _fetch_precos_batch(carteira, tipo_produto=tipo_produto_turma, db_url=repo.db_url)
+                _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
+                resumo = rentabilidade_service.resumo_turma(turma_id)
+
+                # Serializar carteira (converter Decimal/date)
+                import decimal as _dec
+                def _clean(obj):
+                    if isinstance(obj, _dec.Decimal):
+                        return float(obj)
+                    if hasattr(obj, 'isoformat'):
+                        return obj.isoformat()
+                    return obj
+
+                carteira_clean = []
+                for t in carteira:
+                    carteira_clean.append({k: _clean(v) for k, v in t.items()})
+
+                resumo_clean = {
+                    'rentabilidade_acumulada_pct': resumo.get('rentabilidade_acumulada_pct', 0),
+                    'valor_total': resumo.get('valor_total', 0),
+                    'capital_alocado': resumo.get('capital_alocado', 0),
+                    'capital_em_caixa': resumo.get('capital_em_caixa', 0),
+                    'capital_base': resumo.get('capital_base', 1500),
+                    'trades_ativos': resumo.get('trades_ativos', 0),
+                    'trades_fechados': resumo.get('trades_fechados', 0),
+                }
+
+                self._send_json({'resumo': resumo_clean, 'carteira': carteira_clean})
+            except Exception as e:
+                self._send_json({'erro': str(e)}, 400)
+            return
+
         # API: Rentabilidade de uma turma (para grafico comparativo)
         if path.startswith('/api/turma/') and path.endswith('/rentabilidade'):
             try:
                 turma_id = int(path.split('/')[3])
-                rentabilidade_service = RentabilidadeService()
+                rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
                 serie = rentabilidade_service.calcular_serie_rentabilidade(turma_id)
                 data = [
                     {
@@ -4783,11 +4951,46 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'erro': str(e)}, 400)
             return
 
+        # API: Série de rentabilidade do BTC (benchmark) a partir de uma data base
+        # GET /api/benchmark/btc?data_inicio=2025-08-15
+        if path == '/api/benchmark/btc':
+            try:
+                data_inicio = query.get('data_inicio', [None])[0]
+                if not data_inicio:
+                    self._send_json({'erro': 'data_inicio é obrigatório'}, 400)
+                    return
+                cotacoes_service = CotacoesService(db_url=repo.db_url)
+                lista_hist = cotacoes_service.obter_historico_coingecko('bitcoin', dias=365)
+                if not lista_hist:
+                    self._send_json([])
+                    return
+                preco_por_data = {}
+                for item in lista_hist:
+                    preco_por_data[item['data']] = item['preco']
+                datas_ordenadas = sorted(preco_por_data.keys())
+                preco_base = None
+                for d in datas_ordenadas:
+                    if d >= data_inicio:
+                        preco_base = preco_por_data[d]
+                        break
+                if preco_base is None or preco_base == 0:
+                    self._send_json([])
+                    return
+                serie_btc = []
+                for d in datas_ordenadas:
+                    if d >= data_inicio:
+                        rent_pct = ((preco_por_data[d] / preco_base) - 1) * 100
+                        serie_btc.append({'dia': d, 'rentabilidade_acumulada_pct': round(rent_pct, 4)})
+                self._send_json(serie_btc)
+            except Exception as e:
+                self._send_json({'erro': str(e)}, 400)
+            return
+
         # API: Rentabilidade histórica de uma turma
         if path.startswith('/api/turma/') and path.endswith('/historico'):
             try:
                 turma_id = int(path.split('/')[3])
-                rentabilidade_service = RentabilidadeService()
+                rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
                 resultado = rentabilidade_service.obter_rentabilidade_historica(turma_id)
                 if 'erro' in resultado:
                     self._send_json({'erro': resultado['erro']}, 404)
@@ -4808,7 +5011,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_json({'erro': 'produto_id e data_inicio são obrigatórios'}, 400)
                     return
 
-                turmas_service = TurmasService()
+                turmas_service = TurmasService(db_url=repo.db_url)
                 posicoes = turmas_service.listar_posicoes_elegiveis(produto_id, data_inicio)
 
                 self._send_json({
@@ -4833,7 +5036,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_json({'erro': 'coingecko_id e data são obrigatórios'}, 400)
                     return
 
-                cotacoes_service = CotacoesService()
+                cotacoes_service = CotacoesService(db_url=repo.db_url)
                 resultado = cotacoes_service.obter_preco_historico_exato(coingecko_id, data)
 
                 if resultado.get('status') in ('ok', 'fallback'):
@@ -4859,7 +5062,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # API: Rentabilidade de todas as turmas
         if path == '/api/rentabilidade/todas':
             try:
-                rentabilidade_service = RentabilidadeService()
+                rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
                 # Parse query params
                 produto_id = None
                 if '?' in self.path:
@@ -4876,7 +5079,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # API: Resumo de rentabilidade de todas as turmas
         if path == '/api/rentabilidade/resumo':
             try:
-                rentabilidade_service = RentabilidadeService()
+                rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
                 # Parse query params
                 produto_id = None
                 if '?' in self.path:
@@ -4893,7 +5096,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # API: Atualizar cotações (preencher histórico faltante)
         if path == '/api/cotacoes/atualizar':
             try:
-                cotacoes_service = CotacoesService()
+                cotacoes_service = CotacoesService(db_url=repo.db_url)
                 # Parse query params
                 turma_id = None
                 if '?' in self.path:
@@ -4987,7 +5190,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # API: Download Excel com rentabilidade histórica
         if path == '/api/rentabilidade/excel':
             try:
-                rentabilidade_service = RentabilidadeService()
+                rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
 
                 # Parse query params
                 produto_id = None
@@ -4998,7 +5201,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         produto_id = int(params['produto_id'])
 
                 # Buscar todas as turmas
-                turmas_service = TurmasService()
+                turmas_service = TurmasService(db_url=repo.db_url)
                 turmas = turmas_service.listar_turmas(produto_id)
 
                 if not turmas:

@@ -47,8 +47,14 @@ class _SqliteCursorWrapper:
     """Cursor que traduz placeholders %s (PostgreSQL) para ? (SQLite).
     Expõe todos os atributos DBAPI2 necessários (description, rowcount, etc.)
     para compatibilidade com pd.read_sql_query e com 'with cursor:'."""
-    def __init__(self, cursor):
+    def __init__(self, cursor, as_dict=False):
         self._cur = cursor
+        self._as_dict = as_dict
+    def _row_to_dict(self, row):
+        if row is None or not self._as_dict or not self._cur.description:
+            return row
+        cols = [d[0] for d in self._cur.description]
+        return dict(zip(cols, row))
     def execute(self, sql, params=None):
         sql = sql.replace("%s", "?")
         if params is not None:
@@ -60,12 +66,29 @@ class _SqliteCursorWrapper:
         sql = sql.replace("%s", "?")
         self._cur.executemany(sql, params_list)
         return self
-    def fetchone(self): return self._cur.fetchone()
-    def fetchall(self): return self._cur.fetchall()
+    def fetchone(self):
+        row = self._cur.fetchone()
+        return self._row_to_dict(row)
+    def fetchall(self):
+        rows = self._cur.fetchall()
+        if self._as_dict and self._cur.description:
+            cols = [d[0] for d in self._cur.description]
+            return [dict(zip(cols, r)) for r in rows]
+        return rows
     def fetchmany(self, size=None):
-        return self._cur.fetchmany(size) if size else self._cur.fetchmany()
+        rows = self._cur.fetchmany(size) if size else self._cur.fetchmany()
+        if self._as_dict and self._cur.description:
+            cols = [d[0] for d in self._cur.description]
+            return [dict(zip(cols, r)) for r in rows]
+        return rows
     def close(self): self._cur.close()
-    def __iter__(self): return iter(self._cur)
+    def __iter__(self):
+        if self._as_dict:
+            return self._dict_iter()
+        return iter(self._cur)
+    def _dict_iter(self):
+        for row in self._cur:
+            yield self._row_to_dict(row)
     def __enter__(self): return self
     def __exit__(self, *args): self.close(); return False
     @property
@@ -81,8 +104,9 @@ class _SqliteConnectionWrapper:
     _is_sqlite = True
     def __init__(self, conn):
         self._conn = conn
-    def cursor(self):
-        return _SqliteCursorWrapper(self._conn.cursor())
+    def cursor(self, cursor_factory=None):
+        as_dict = cursor_factory is not None
+        return _SqliteCursorWrapper(self._conn.cursor(), as_dict=as_dict)
     def execute(self, sql, params=None):
         """Permite conn.execute() direto (usado por pandas internamente)."""
         sql = sql.replace("%s", "?")

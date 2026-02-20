@@ -571,7 +571,7 @@ def fetch_spot_copy_history(credentials: Dict[str, str], limit: int = 100) -> Li
 
 
 def _timestamp_to_date_str(ts) -> Optional[str]:
-    """Converte timestamp da API (ms ou segundos) para YYYY-MM-DD. Retorna None se inválido."""
+    """Converte timestamp da API (ms ou segundos) para YYYY-MM-DD em data LOCAL. Retorna None se inválido."""
     from datetime import datetime
     if ts is None:
         return None
@@ -579,7 +579,7 @@ def _timestamp_to_date_str(ts) -> Optional[str]:
         t = int(ts)
         if t > 1e12:  # em ms
             t = t // 1000
-        return datetime.utcfromtimestamp(t).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(t).strftime("%Y-%m-%d")
     except (ValueError, TypeError, OSError):
         return None
 
@@ -763,6 +763,17 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
                         if verbose:
                             print(f"  [AUTO-SYNC] Aviso: não salvou atributos de {ativo}: {e2}")
 
+                # Hook: adicionar posição às turmas do produto
+                try:
+                    from services.turmas_service import TurmasService
+                    ts = TurmasService(db_url=repo.db_url)
+                    ts.sync_nova_posicao(posicao_id, produto_id, data_entrada, entry_price or 0)
+                    if verbose:
+                        print(f"  [AUTO-SYNC] Turmas sync: {ativo} adicionado às turmas")
+                except Exception as e_turma:
+                    if verbose:
+                        print(f"  [AUTO-SYNC] Aviso: turma sync falhou para {ativo}: {e_turma}")
+
                 if verbose:
                     print(f"  [AUTO-SYNC] ABERTA: {ativo} {side} @ ${entry_price:.4f} qty={qty} ({exchange_symbol})")
             except Exception as e:
@@ -826,6 +837,17 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
                 price_str = f"@ ${close_price:.4f}" if close_price else "(sem preço)"
                 if verbose:
                     print(f"  [AUTO-SYNC] FECHADA: {ativo} {side} {price_str} em {close_date}")
+
+                # Hook: fechar posição nas turmas
+                try:
+                    from services.turmas_service import TurmasService
+                    ts = TurmasService(db_url=repo.db_url)
+                    ts.sync_posicao_fechada(posicao_id, close_date)
+                    if verbose:
+                        print(f"  [AUTO-SYNC] Turmas sync: {ativo} fechado nas turmas")
+                except Exception as e_turma:
+                    if verbose:
+                        print(f"  [AUTO-SYNC] Aviso: turma sync fechamento falhou para {ativo}: {e_turma}")
             except Exception as e:
                 resultado["errors"].append(f"Erro ao fechar {ativo}: {str(e)}")
                 if verbose:

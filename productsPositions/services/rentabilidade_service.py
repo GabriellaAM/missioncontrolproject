@@ -154,12 +154,11 @@ class RentabilidadeService:
     # Formato de data esperado
     FORMATO_DATA = "%Y-%m-%d"
 
-    def __init__(self, db_path: Optional[Path] = None):
-        # db_path parameter kept for signature compatibility but ignored
-        self.db_url = os.getenv('SUPABASE_DB_URL')
+    def __init__(self, db_path: Optional[Path] = None, db_url: Optional[str] = None):
+        self.db_url = db_url if db_url is not None else os.getenv('SUPABASE_DB_URL')
         if self.db_url is None:
             raise ValueError("SUPABASE_DB_URL environment variable is not set")
-        self.cotacoes_service = CotacoesService(db_path)
+        self.cotacoes_service = CotacoesService(db_path, db_url=self.db_url)
 
     def _validar_side(self, side: Any) -> Tuple[bool, Optional[str]]:
         """
