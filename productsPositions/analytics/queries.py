@@ -347,11 +347,11 @@ def posicoes_abertas(produto_id=None):
     price_map = {}
     bitget_ran = False
 
-    if not df.empty and produto_id:
-        coingecko_ids = df['coingecko_id'].tolist()
+    if produto_id:
+        coingecko_ids = df['coingecko_id'].tolist() if not df.empty and 'coingecko_id' in df.columns else []
         tipo_spot, tipo_perpetuos = _get_product_type(repo, produto_id)
         exchange_symbol_map = {}
-        if 'exchange_symbol' in df.columns and 'coingecko_id' in df.columns:
+        if not df.empty and 'exchange_symbol' in df.columns and 'coingecko_id' in df.columns:
             for _, row in df.drop_duplicates('coingecko_id', keep='last').iterrows():
                 cg = row.get('coingecko_id')
                 ex = row.get('exchange_symbol')
