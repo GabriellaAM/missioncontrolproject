@@ -19,7 +19,7 @@ def _formatar_stop_valor(x):
         return "—"
     if isinstance(x, (int, float)):
         if x == -1:
-            return "STOP ATINGIDO"
+            return '<span class="bdg-stop">Stop Atingido</span>'
         abs_x = abs(x)
         if abs_x >= 100:
             decimais = 2
@@ -123,7 +123,7 @@ def display_posicoes_abertas(produto_id=None, formatar=True, filtrar_colunas=Tru
                 if produto_id == 4970919917:
                     def _stop_com_percent(row):
                         v, p = row.get('stop_atual'), row.get('preco_atual')
-                        if pd.isna(p) or p == 0 or pd.isna(v):
+                        if pd.isna(p) or p == 0 or pd.isna(v) or v == -1:
                             return _formatar_stop_valor(v)
                         try:
                             pct = ((v / p) - 1) * 100

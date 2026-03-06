@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from storage.sqlite_repo import SQLiteRepo, get_repo
-from services.valor_diario_service import ValorDiarioService
+from services.cotacoes_service import CotacoesService
 from services.atr_stop_service import atualizar_stops_posicoes_abertas
 from services.bitget_service import (
     sync_positions_with_exchange,
@@ -47,12 +47,12 @@ def _batch_load_stops(repo, posicao_ids: list) -> dict:
 
     placeholders = ','.join(['%s' for _ in ids_int])
     query = f"""
-        SELECT posicao_id, valor
-        FROM stops s1
-        WHERE posicao_id IN ({placeholders})
-        AND data = (
-            SELECT MAX(s2.data) FROM stops s2 WHERE s2.posicao_id = s1.posicao_id
-        )
+        SELECT posicao_id, valor FROM (
+            SELECT posicao_id, valor,
+                   ROW_NUMBER() OVER (PARTITION BY posicao_id ORDER BY data DESC, id DESC) as rn
+            FROM stops
+            WHERE posicao_id IN ({placeholders})
+        ) sub WHERE rn = 1
     """
 
     try:
@@ -97,7 +97,7 @@ def _batch_load_stops_por_ativo(repo, produto_id: int, ativos: list) -> dict:
     query = f"""
         SELECT ativo, valor FROM (
             SELECT p.ativo, s.valor,
-                   ROW_NUMBER() OVER (PARTITION BY p.ativo ORDER BY s.data DESC) as rn
+                   ROW_NUMBER() OVER (PARTITION BY p.ativo ORDER BY s.data DESC, s.id DESC) as rn
             FROM stops s
             JOIN posicoes p ON p.id = s.posicao_id
             WHERE p.produto_id = %s AND p.ativo IN ({placeholders})
@@ -115,11 +115,16 @@ def _batch_load_stops_por_ativo(repo, produto_id: int, ativos: list) -> dict:
         return {}
 
 
-def _batch_load_prices(coingecko_ids: list) -> dict:
+def obter_precos_bitget_primeiro_coingecko_fallback(
+    coingecko_ids: list,
+    db_url: str = None,
+    exchange_symbol_map: dict = None,
+    tipo_perpetuos: bool = True,
+    tipo_spot: bool = True,
+) -> dict:
     """
-    Batch load current prices for unique coingecko_ids.
-    Returns dict mapping coingecko_id -> price
-    Uses single API call to CoinGecko for all IDs (much faster than individual calls).
+    Busca preços atuais: Bitget primeiro (onde houver exchange_symbol), CoinGecko como fallback.
+    Retorna dict coingecko_id -> preço.
     """
     if not coingecko_ids:
         return {}
@@ -128,14 +133,46 @@ def _batch_load_prices(coingecko_ids: list) -> dict:
     if not unique_ids:
         return {}
 
-    # Single API call for all prices
-    prices = ValorDiarioService.obter_precos_batch(unique_ids)
+    precos = {}
+    exchange_symbol_map = exchange_symbol_map or {}
 
-    # Apply mog-coin multiplier
-    if 'mog-coin' in prices and prices['mog-coin'] is not None:
-        prices['mog-coin'] = prices['mog-coin'] * 1_000_000
+    # 1) Bitget primeiro — preenche para todos os que têm exchange_symbol e ticker disponível
+    if exchange_symbol_map and (tipo_perpetuos or tipo_spot):
+        if tipo_perpetuos:
+            try:
+                tickers = fetch_bitget_tickers_perpetuals()
+                if tickers:
+                    for cg_id, ex_sym in exchange_symbol_map.items():
+                        if cg_id in unique_ids and ex_sym and ex_sym in tickers and tickers[ex_sym] > 0:
+                            precos[cg_id] = tickers[ex_sym]
+            except Exception:
+                pass
+        if tipo_spot:
+            try:
+                tickers_spot = fetch_bitget_tickers_spot()
+                if tickers_spot:
+                    for cg_id, ex_sym in exchange_symbol_map.items():
+                        if cg_id in unique_ids and (cg_id not in precos or precos[cg_id] is None):
+                            if ex_sym and ex_sym in tickers_spot and tickers_spot[ex_sym] > 0:
+                                precos[cg_id] = tickers_spot[ex_sym]
+            except Exception:
+                pass
 
-    return prices
+    # 2) CoinGecko como fallback — só para os que ainda não têm preço
+    ids_faltando = [cid for cid in unique_ids if cid not in precos or precos.get(cid) is None]
+    if ids_faltando:
+        cotacoes = CotacoesService(db_url=db_url)
+        cg_precos = cotacoes.obter_precos_coingecko_fallback(ids_faltando) or {}
+        for cg_id, preco in cg_precos.items():
+            if preco is not None:
+                precos[cg_id] = preco
+
+    # Ajuste mog-coin (multiplicador)
+    if 'mog-coin' in precos and precos.get('mog-coin') is not None:
+        precos = dict(precos)
+        precos['mog-coin'] = precos['mog-coin'] * 1_000_000
+
+    return precos
 
 
 def _batch_load_allocations(repo, produto_id: int, ativos: list) -> dict:
@@ -306,29 +343,58 @@ def posicoes_abertas(produto_id=None):
                 print(f"[ATR] Cache ativo para produto {cache_key}, próximo update em ~{mins_restantes}min", flush=True)
 
     # OPTIMIZED: Run Bitget sync and CoinGecko price fetch in PARALLEL
+    # Se Bitget sync ou preços falharem (timeout, API key, etc.), a página ainda carrega com dados atuais
     price_map = {}
     bitget_ran = False
 
     if not df.empty and produto_id:
         coingecko_ids = df['coingecko_id'].tolist()
-        produto_info = repo.carregar_produto(produto_id)
-        has_bitget = produto_info and get_bitget_credentials(produto_info['nome'])
+        tipo_spot, tipo_perpetuos = _get_product_type(repo, produto_id)
+        exchange_symbol_map = {}
+        if 'exchange_symbol' in df.columns and 'coingecko_id' in df.columns:
+            for _, row in df.drop_duplicates('coingecko_id', keep='last').iterrows():
+                cg = row.get('coingecko_id')
+                ex = row.get('exchange_symbol')
+                if cg and pd.notna(cg) and ex and pd.notna(ex):
+                    exchange_symbol_map[str(cg).strip()] = str(ex).strip().upper()
+        try:
+            produto_info = repo.carregar_produto(produto_id)
+            has_bitget = produto_info and get_bitget_credentials(produto_info['nome'])
 
-        # Bitget sync com cache temporal (evita sync a cada page load)
-        sync_cache_key = produto_id
-        last_sync = _bitget_sync_cache.get(sync_cache_key, 0)
-        should_sync = has_bitget and (time.time() - last_sync > _BITGET_SYNC_TTL)
+            sync_cache_key = produto_id
+            last_sync = _bitget_sync_cache.get(sync_cache_key, 0)
+            should_sync = has_bitget and (time.time() - last_sync > _BITGET_SYNC_TTL)
 
-        if should_sync:
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_prices = executor.submit(_batch_load_prices, coingecko_ids)
-                future_bitget = executor.submit(auto_sync_positions, repo, produto_id, True)
-                price_map = future_prices.result()
-                future_bitget.result()
+            def _precos():
+                return obter_precos_bitget_primeiro_coingecko_fallback(
+                    coingecko_ids, repo.db_url,
+                    exchange_symbol_map=exchange_symbol_map,
+                    tipo_perpetuos=tipo_perpetuos, tipo_spot=tipo_spot,
+                )
+
+            if should_sync:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    future_prices = executor.submit(_precos)
+                    future_bitget = executor.submit(auto_sync_positions, repo, produto_id, True)
+                    price_map = future_prices.result()
+                    future_bitget.result()
                 bitget_ran = True
                 _bitget_sync_cache[sync_cache_key] = time.time()
-        else:
-            price_map = _batch_load_prices(coingecko_ids)
+            else:
+                price_map = _precos()
+        except Exception as e:
+            print(f"[POSICOES_ABERTAS] Produto {produto_id}: falha em Bitget sync ou preços — carregando sem sync: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            try:
+                price_map = obter_precos_bitget_primeiro_coingecko_fallback(
+                    coingecko_ids, repo.db_url,
+                    exchange_symbol_map=exchange_symbol_map,
+                    tipo_perpetuos=tipo_perpetuos, tipo_spot=tipo_spot,
+                )
+            except Exception as e2:
+                print(f"[POSICOES_ABERTAS] Produto {produto_id}: falha ao carregar preços: {e2}", flush=True)
+                price_map = {}
 
     # Reload positions after Bitget sync to get updated quantities
     if bitget_ran:
@@ -353,45 +419,34 @@ def posicoes_abertas(produto_id=None):
 
     # Adicionar preço atual, stop atual, RR e PnL dinamicamente para posições abertas
     if not df.empty:
-        # Apply pre-fetched prices (already loaded in parallel above)
+        # Preços: Bitget primeiro, CoinGecko fallback (já aplicado em price_map)
         if not price_map:
-            price_map = _batch_load_prices(df['coingecko_id'].tolist())
+            emap = {}
+            if 'exchange_symbol' in df.columns and 'coingecko_id' in df.columns:
+                for _, row in df.drop_duplicates('coingecko_id', keep='last').iterrows():
+                    cg, ex = row.get('coingecko_id'), row.get('exchange_symbol')
+                    if cg and pd.notna(cg) and ex and pd.notna(ex):
+                        emap[str(cg).strip()] = str(ex).strip().upper()
+            ts, tp = (_get_product_type(repo, produto_id) if produto_id else (True, True))
+            price_map = obter_precos_bitget_primeiro_coingecko_fallback(
+                df['coingecko_id'].tolist(), repo.db_url,
+                exchange_symbol_map=emap, tipo_perpetuos=tp, tipo_spot=ts,
+            )
         df['preco_atual'] = df['coingecko_id'].map(price_map)
 
-        # Perpétuos: preço em tempo real da Bitget (mark price) — endpoint público, sem API key
-        if tipo_perpetuos:
-            tickers = fetch_bitget_tickers_perpetuals()
-            if tickers and 'exchange_symbol' in df.columns:
-                for idx, row in df.iterrows():
-                    ex_sym = row.get('exchange_symbol')
-                    if pd.notna(ex_sym) and ex_sym:
-                        sym = str(ex_sym).strip().upper()
-                        if sym in tickers and tickers[sym] > 0:
-                            df.at[idx, 'preco_atual'] = tickers[sym]
-            # Fallback: CoinGecko ou derivar de entry ± (pnl/qty) quando Bitget não retornar o par
-            if 'pnl_exchange' in df.columns and 'preco_entrada_exchange' in df.columns:
-                for idx, row in df.iterrows():
-                    if pd.isna(df.at[idx, 'preco_atual']) or df.at[idx, 'preco_atual'] is None or df.at[idx, 'preco_atual'] == 0:
-                        pnl = row.get('pnl_exchange')
-                        entry = row.get('preco_entrada_exchange')
-                        qty = row.get('quantidade')
-                        if pd.notna(pnl) and pd.notna(entry) and pd.notna(qty) and qty != 0:
-                            side = str(row.get('side', 'long')).lower()
-                            if side == 'short':
-                                df.at[idx, 'preco_atual'] = entry - (pnl / qty)
-                            else:
-                                df.at[idx, 'preco_atual'] = entry + (pnl / qty)
-
-        # Spot: preço em tempo real da Bitget (last price) — endpoint público, sem API key
-        if tipo_spot:
-            tickers_spot = fetch_bitget_tickers_spot()
-            if tickers_spot and 'exchange_symbol' in df.columns:
-                for idx, row in df.iterrows():
-                    ex_sym = row.get('exchange_symbol')
-                    if pd.notna(ex_sym) and ex_sym:
-                        sym = str(ex_sym).strip().upper()
-                        if sym in tickers_spot and tickers_spot[sym] > 0:
-                            df.at[idx, 'preco_atual'] = tickers_spot[sym]
+        # Fallback: derivar preço de entry ± (pnl/qty) quando Bitget e CoinGecko não retornarem
+        if 'pnl_exchange' in df.columns and 'preco_entrada_exchange' in df.columns:
+            for idx, row in df.iterrows():
+                if pd.isna(df.at[idx, 'preco_atual']) or df.at[idx, 'preco_atual'] is None or df.at[idx, 'preco_atual'] == 0:
+                    pnl = row.get('pnl_exchange')
+                    entry = row.get('preco_entrada_exchange')
+                    qty = row.get('quantidade')
+                    if pd.notna(pnl) and pd.notna(entry) and pd.notna(qty) and qty != 0:
+                        side = str(row.get('side', 'long')).lower()
+                        if side == 'short':
+                            df.at[idx, 'preco_atual'] = entry - (pnl / qty)
+                        else:
+                            df.at[idx, 'preco_atual'] = entry + (pnl / qty)
 
         # Para produtos Spot, calcular preco_atual_total (quantidade * preco_atual)
         if tipo_spot:
@@ -845,8 +900,11 @@ def manutencoes_signals(produto_id=4970919917):
     if df.empty:
         return df
 
-    # OPTIMIZED: Batch load prices in single API call
-    precos_atuais_map = _batch_load_prices(df['coingecko_id'].tolist())
+    # Preços atuais: Bitget primeiro, CoinGecko fallback (sem exchange_symbol no relatório de stops)
+    precos_atuais_map = obter_precos_bitget_primeiro_coingecko_fallback(
+        df['coingecko_id'].tolist(), repo.db_url,
+        exchange_symbol_map={}, tipo_perpetuos=True, tipo_spot=True,
+    )
     df['preco_atual'] = df['coingecko_id'].map(precos_atuais_map)
 
     # Calcular PnL: calcular como long e inverter sinal para short

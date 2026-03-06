@@ -17,8 +17,9 @@ from socketserver import ThreadingMixIn
 import json
 import gzip
 import urllib.parse
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import io
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 
@@ -35,7 +36,7 @@ from analytics.notebook_utils import (
 )
 from analytics.queries import invalidar_cache_atr
 from services.atr_stop_service import atualizar_stops_posicoes_abertas, calcular_stop_para_posicao
-from services.bitget_service import sync_positions_with_exchange, auto_sync_positions, fetch_bitget_tickers_perpetuals, fetch_bitget_tickers_spot
+from services.bitget_service import sync_positions_with_exchange, auto_sync_positions, fetch_bitget_tickers_perpetuals, fetch_bitget_tickers_spot, get_bitget_credentials
 from services.notificacao_service import notificar_stop_atingido
 from services.turmas_service import TurmasService
 from services.rentabilidade_service import RentabilidadeService
@@ -49,7 +50,21 @@ from turmas_dashboard import (
     get_rentabilidade_historica_html,
     get_produto_dashboard_html
 )
+from portfolio_dashboard import get_portfolio_dashboard_html
+from services.portfolio_service import get_portfolio_data, get_portfolio_pnl, get_portfolio_rentabilidade_serie, PORTFOLIO_CONFIG
+from services.btc_cache_service import BTCCacheService
 
+logger = logging.getLogger(__name__)
+
+# Mapeamento de produto_id para configuração de portfolio
+# EXC, HB, LC são sub-portfolios de "Exponential Coins"
+# AC (Alphacoins) é produto separado
+PORTFOLIO_PRODUCTS = {
+    2150859854: {'type': 'group', 'group_name': 'Exponential Coins', 'keys': ['EXC', 'HB', 'LC']},
+    2000449260: {'type': 'redirect', 'target_id': 2150859854},  # HB -> Exponential Coins
+    2394004756: {'type': 'redirect', 'target_id': 2150859854},  # LC -> Exponential Coins
+    3476245316: {'type': 'single', 'group_name': 'Alphacoins', 'keys': ['AC']},
+}
 
 def _enrich_carteira_trades(carteira, precos_atuais=None, repo=None):
     """Enriquece trades da carteira com campos computados (dias, PnL, preço atual, stop)."""
@@ -75,6 +90,11 @@ def _enrich_carteira_trades(carteira, precos_atuais=None, repo=None):
             data_remocao = data_remocao.isoformat()[:10]
         if hasattr(data_saida, 'isoformat'):
             data_saida = data_saida.isoformat()[:10]
+        trade['data_insercao'] = data_insercao
+        if data_remocao is not None:
+            trade['data_remocao'] = data_remocao
+        if data_saida is not None:
+            trade['data_saida'] = data_saida
         status = (trade.get('status_posicao') or '').strip().lower()
         # Fechado se tiver data de saída/remocão OU status 'closed' (fonte da verdade: posicoes.status)
         is_closed = bool(data_remocao or data_saida or status == 'closed')
@@ -142,12 +162,30 @@ def _price_key(trade):
     return trade.get('coingecko_id') or (trade.get('exchange_symbol') or '').strip().upper() or None
 
 
-def _fetch_precos_batch(carteira, tipo_produto=None, db_url=None):
+def _obter_preco_btc_bitget_coingecko_fallback(cotacoes_service):
     """
-    Busca preços atuais em batch para trades ativos da carteira.
-    Fonte principal: Bitget (sempre primeiro quando há exchange_symbol).
-    Fallback: CoinGecko (apenas para ativos que a Bitget não cobriu).
-    Indexa por _price_key (coingecko_id ou exchange_symbol).
+    Preço atual do BTC: Bitget primeiro (spot ou perp), CoinGecko como fallback.
+    Usado no benchmark de rentabilidade acumulada.
+    """
+    try:
+        tickers = fetch_bitget_tickers_spot()
+        if tickers and 'BTCUSDT' in tickers and tickers['BTCUSDT'] and tickers['BTCUSDT'] > 0:
+            return float(tickers['BTCUSDT'])
+    except Exception:
+        pass
+    try:
+        tickers = fetch_bitget_tickers_perpetuals()
+        if tickers and 'BTCUSDT' in tickers and tickers['BTCUSDT'] and tickers['BTCUSDT'] > 0:
+            return float(tickers['BTCUSDT'])
+    except Exception:
+        pass
+    return cotacoes_service.obter_preco_coingecko('bitcoin') if cotacoes_service else None
+
+
+def _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=None, db_url=None):
+    """
+    Busca preços atuais: Bitget primeiro (onde houver exchange_symbol), CoinGecko como fallback.
+    Para trades ativos da carteira. Indexa por _price_key (coingecko_id ou exchange_symbol).
     """
     trades_ativos = [t for t in carteira if t.get('ativo_atual')]
     if not trades_ativos:
@@ -192,7 +230,7 @@ def _fetch_precos_batch(carteira, tipo_produto=None, db_url=None):
     if coingecko_ids_faltando:
         try:
             cotacoes_service = CotacoesService(db_url=db_url)
-            cg_precos = cotacoes_service.obter_precos_batch_coingecko(coingecko_ids_faltando)
+            cg_precos = cotacoes_service.obter_precos_coingecko_fallback(coingecko_ids_faltando)
             for cg_id, preco in cg_precos.items():
                 if cg_id not in precos:
                     precos[cg_id] = preco
@@ -509,6 +547,12 @@ def get_base_styles():
         .badge-outro { background-color: #ffd93d; color: #1a1a2e; }
         .badge-success { background-color: #4ecca3; color: #1a1a2e; }
         .badge-danger { background-color: #ff6b6b; color: white; }
+        .bdg-stop {
+            display: inline-block; padding: 3px 10px; border-radius: 12px;
+            font-size: 0.8em; font-weight: 600;
+            background: rgba(231, 76, 60, 0.15); color: #e74c3c;
+            border: 1px solid rgba(231, 76, 60, 0.3);
+        }
         .stats { display: flex; gap: 15px; margin-top: 15px; flex-wrap: wrap; }
         .stat {
             background: rgba(78, 204, 163, 0.1);
@@ -2818,7 +2862,7 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                     mi.innerHTML = '';
                     return;
                 }}
-                ct.innerHTML = '<div class="sheet-loading"><div class="spinner"></div>Carregando alocacoes...</div>';
+                ct.innerHTML = '<div class="sheet-loading"><div class="spinner"></div>Carregando...</div>';
                 mi.innerHTML = '';
                 try {{
                     const r = await fetch('/api/alocacoes/tabela?produto_id=' + pid);
@@ -4383,14 +4427,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         pos_ids = [r[0] for r in pos_abertas]
                         info['posicoes_abertas'] = [{'id': r[0], 'ativo': r[1], 'side': r[2]} for r in pos_abertas]
 
-                        # Stops para essas posições (query exata do _batch_load_stops)
+                        # Stops para essas posições (mesma lógica do _batch_load_stops)
                         if pos_ids:
                             placeholders = ','.join(['%s'] * len(pos_ids))
                             cursor.execute(f"""
-                                SELECT posicao_id, valor
-                                FROM stops s1
-                                WHERE posicao_id IN ({placeholders})
-                                AND data = (SELECT MAX(s2.data) FROM stops s2 WHERE s2.posicao_id = s1.posicao_id)
+                                SELECT posicao_id, valor FROM (
+                                    SELECT posicao_id, valor,
+                                           ROW_NUMBER() OVER (PARTITION BY posicao_id ORDER BY data DESC, id DESC) as rn
+                                    FROM stops
+                                    WHERE posicao_id IN ({placeholders})
+                                ) sub WHERE rn = 1
                             """, pos_ids)
                             batch_result = cursor.fetchall()
                             info['batch_load_result'] = [{'posicao_id': r[0], 'valor': r[1], 'tipo_id': str(type(r[0])), 'tipo_val': str(type(r[1]))} for r in batch_result]
@@ -4474,12 +4520,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'erro': str(e)}, 500)
             return
 
+        # Servir arquivos estáticos da pasta assets
+        if path.startswith('/assets/'):
+            from pathlib import Path as _Path
+            _assets_dir = _Path(__file__).resolve().parent.parent / 'assets'
+            _file_path = _assets_dir / path[len('/assets/'):]
+            if _file_path.resolve().is_file() and str(_file_path.resolve()).startswith(str(_assets_dir)):
+                _ext = _file_path.suffix.lower()
+                _mime = {
+                    '.js': 'application/javascript',
+                    '.css': 'text/css',
+                    '.png': 'image/png',
+                    '.jpg': 'image/jpeg',
+                    '.svg': 'image/svg+xml',
+                    '.ico': 'image/x-icon',
+                }.get(_ext, 'application/octet-stream')
+                with open(_file_path, 'rb') as f:
+                    data = f.read()
+                self._send_body(_mime, data, cache_control='public, max-age=86400')
+            else:
+                self._send_html('<h1>404 Not Found</h1>', 404)
+            return
+
         # Dashboard principal
         if path == '/' or path == '':
             produtos = repo.listar_produtos()
+            # Não exibir HB e LC na home (são abas do Exponential Coins)
+            _hidden_ids = {int(pid) for pid, cfg in PORTFOLIO_PRODUCTS.items() if cfg.get('type') == 'redirect'}
+            _hidden_nomes_exatos = {'HB', 'LC', 'High Beta', 'Low Caps'}
+            produtos_visiveis = []
+            for p in produtos:
+                try:
+                    pid = int(p.get('id') or 0)
+                except (TypeError, ValueError):
+                    pid = 0
+                nome = (p.get('nome') or '').strip()
+                if pid in _hidden_ids:
+                    continue
+                if nome in _hidden_nomes_exatos or nome.upper() in ('HB', 'LC'):
+                    continue
+                produtos_visiveis.append(p)
             contagem = repo.contar_posicoes_abertas_por_produto()
-            stats = {p['id']: {'posicoes_abertas': contagem.get(p['id'], 0)} for p in produtos}
-            html = get_dashboard_html(produtos, stats, repo)
+            stats = {p['id']: {'posicoes_abertas': contagem.get(p['id'], 0)} for p in produtos_visiveis}
+            html = get_dashboard_html(produtos_visiveis, stats, repo)
             self._send_html(html)
             return
 
@@ -4752,6 +4835,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_html(get_visualizacao_html(produto, fake_viz, df))
                     return
 
+                # Dashboard de portfolio (EXC/HB/LC/Alphacoins)
+                pf_cfg = PORTFOLIO_PRODUCTS.get(produto_id)
+                if pf_cfg:
+                    if pf_cfg['type'] == 'redirect':
+                        self.send_response(302)
+                        self.send_header('Location', f"/produto/{pf_cfg['target_id']}")
+                        self.end_headers()
+                        return
+                    try:
+                        keys = pf_cfg['keys']
+                        group_name = pf_cfg['group_name']
+                        data_inicio = str(produto.get('data_inicio', ''))[:10]
+                        # POSSÍVEL CAUSA: forçar data_inicio para EXC faz o benchmark BTC ser pedido desde 2017-10-02;
+                        # a API Bitget usa limit=200, então o histórico real pode truncar em ~200 dias
+                        if produto_id == 2150859854 and data_inicio != '2017-10-02':
+                            data_inicio = '2017-10-02'
+                        sub_portfolios = []
+                        for k in keys:
+                            cfg = PORTFOLIO_CONFIG[k]
+                            csv_path = _root / cfg['csv']
+                            if not csv_path.exists():
+                                csv_path = _root / 'data' / 'allocations' / cfg['csv']
+                            if not csv_path.exists():
+                                print(f"[DASHBOARD] ERRO: CSV não encontrado para portfolio {k}: {csv_path}", flush=True)
+                                self._send_html(f"<h1>Erro</h1><p>Arquivo de alocação não encontrado: {cfg['csv']}</p>", 500)
+                                return
+                            sub_portfolios.append({'key': k, 'nome': cfg['nome'], 'data_inicio': data_inicio})
+
+                        first_key = keys[0]
+                        print(f"[DASHBOARD] Carregando dados do portfolio {first_key}...", flush=True)
+                        active_data, _ = get_portfolio_data(first_key, repo=repo)
+                        print(f"[DASHBOARD] Dados carregados: resumo={active_data.get('resumo')}, "
+                              f"serie_len={len(active_data.get('rentabilidade_serie', []))}, "
+                              f"abertas={len(active_data.get('posicoes_abertas', []))}, "
+                              f"fechadas={len(active_data.get('posicoes_fechadas', []))}", flush=True)
+                        self._send_html(get_portfolio_dashboard_html(
+                            group_name, sub_portfolios, active_data, first_key, produto_id))
+                        return
+                    except Exception as e:
+                        print(f"[DASHBOARD] ERRO ao montar portfolio dashboard: {e}", flush=True)
+                        import traceback; traceback.print_exc()
+                        self._send_html(f"<h1>Erro</h1><p>Erro ao carregar portfolio: {str(e)}</p><pre>{traceback.format_exc()}</pre>", 500)
+                        return
+
                 # Pagina do produto (default) - Dashboard rico se tiver turmas
                 turmas_produto = []
                 try:
@@ -4775,11 +4902,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         primeira_turma_id = turmas_produto[0]['id']
 
                         carteira = turmas_service.listar_carteira_turma(primeira_turma_id)
-                        precos_atuais = _fetch_precos_batch(carteira, tipo_produto=produto.get('tipo', ''), db_url=repo.db_url)
+                        precos_atuais = _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=produto.get('tipo', ''), db_url=repo.db_url)
                         _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
-                        resumo = rentabilidade_service.resumo_turma(primeira_turma_id)
+                        resumo = rentabilidade_service.resumo_turma(primeira_turma_id, precos_atuais=precos_atuais)
 
-                        self._send_html(get_produto_dashboard_html(produto, turmas_produto, resumo, carteira))
+                        mostrar_caixa_alocacao = get_bitget_credentials(produto.get('nome') or '') is not None
+                        self._send_html(get_produto_dashboard_html(produto, turmas_produto, resumo, carteira, mostrar_caixa_alocacao=mostrar_caixa_alocacao))
                         return
                     except Exception as e:
                         print(f"[DASHBOARD] Erro ao montar dashboard rico: {e}", flush=True)
@@ -4874,9 +5002,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     produto_turma = repo.carregar_produto(turma.get('produto_id'))
                     tipo_produto_turma = (produto_turma or {}).get('tipo', '')
                     carteira = turmas_service.listar_carteira_turma(turma_id)
-                    precos_atuais = _fetch_precos_batch(carteira, tipo_produto=tipo_produto_turma, db_url=repo.db_url)
+                    precos_atuais = _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=tipo_produto_turma, db_url=repo.db_url)
                     _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
-                    resumo = rentabilidade_service.resumo_turma(turma_id)
+                    resumo = rentabilidade_service.resumo_turma(turma_id, precos_atuais=precos_atuais)
 
                     self._send_html(get_turma_detalhes_html(turma, resumo, carteira, tab_ativa))
                     return
@@ -4900,9 +5028,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 produto_turma = repo.carregar_produto(turma.get('produto_id'))
                 tipo_produto_turma = (produto_turma or {}).get('tipo', '')
                 carteira = turmas_service.listar_carteira_turma(turma_id)
-                precos_atuais = _fetch_precos_batch(carteira, tipo_produto=tipo_produto_turma, db_url=repo.db_url)
+                precos_atuais = _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=tipo_produto_turma, db_url=repo.db_url)
                 _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
-                resumo = rentabilidade_service.resumo_turma(turma_id)
+                resumo = rentabilidade_service.resumo_turma(turma_id, precos_atuais=precos_atuais)
 
                 # Serializar carteira (converter Decimal/date)
                 import decimal as _dec
@@ -4933,16 +5061,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # API: Rentabilidade de uma turma (para grafico comparativo)
-        if path.startswith('/api/turma/') and path.endswith('/rentabilidade'):
+        # GET /api/turma/{id}/rentabilidade ou ?inicio=YYYY-MM-DD&fim=YYYY-MM-DD
+        if path.startswith('/api/turma/') and '/rentabilidade' in path:
             try:
-                turma_id = int(path.split('/')[3])
+                parts = path.split('/')
+                turma_id = int(parts[3]) if len(parts) > 3 else 0
+                if not turma_id:
+                    self._send_json({'erro': 'ID da turma inválido'}, 400)
+                    return
+                data_inicio = query.get('inicio', [None])[0]
+                data_fim = query.get('fim', [None])[0]
                 rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
-                serie = rentabilidade_service.calcular_serie_rentabilidade(turma_id)
+                serie = rentabilidade_service.calcular_serie_rentabilidade(
+                    turma_id, data_inicio=data_inicio, data_fim=data_fim
+                )
                 data = [
                     {
-                        'dia': p.dia,
+                        'dia': p.dia if not hasattr(p.dia, 'isoformat') else p.dia.isoformat()[:10],
                         'valor_total': p.valor_total,
-                        'rentabilidade_acumulada_pct': p.rentabilidade_acumulada_pct
+                        'rentabilidade_acumulada_pct': p.rentabilidade_acumulada_pct,
+                        'capital_alocado': getattr(p, 'capital_alocado', 0),
+                        'capital_em_caixa': getattr(p, 'capital_em_caixa', 0),
                     }
                     for p in serie
                 ]
@@ -4951,38 +5090,203 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'erro': str(e)}, 400)
             return
 
-        # API: Série de rentabilidade do BTC (benchmark) a partir de uma data base
-        # GET /api/benchmark/btc?data_inicio=2025-08-15
+        # API: Dados de dashboard de portfolio
+        # GET /api/portfolio/{key}/dashboard-data
+        if path.startswith('/api/portfolio/') and path.endswith('/dashboard-data'):
+            try:
+                pf_key = path.split('/')[3]
+                print(f"[PORTFOLIO API] Requisição para portfolio: {pf_key}", flush=True)
+                if pf_key not in PORTFOLIO_CONFIG:
+                    self._send_json({'erro': f'Portfolio desconhecido: {pf_key}'}, 404)
+                    return
+                data, _ = get_portfolio_data(pf_key, repo=repo)
+                print(f"[PORTFOLIO API] Dados carregados com sucesso para {pf_key}: "
+                      f"serie_len={len(data.get('rentabilidade_serie', []))}, "
+                      f"abertas={len(data.get('posicoes_abertas', []))}", flush=True)
+                self._send_json(data)
+            except Exception as e:
+                print(f"[PORTFOLIO API] ERRO ao carregar {pf_key}: {e}", flush=True)
+                import traceback; traceback.print_exc()
+                self._send_json({'erro': str(e)}, 500)
+            return
+
+        # API: PnL por ativo em um período (lógica do notebook)
+        # GET /api/portfolio/{key}/pnl?inicio=2025-01-01&fim=2026-02-20
+        if path.startswith('/api/portfolio/') and path.endswith('/pnl'):
+            try:
+                pf_key = path.split('/')[3]
+                if pf_key not in PORTFOLIO_CONFIG:
+                    self._send_json({'erro': f'Portfolio desconhecido: {pf_key}'}, 404)
+                    return
+                inicio = query.get('inicio', [None])[0]
+                fim = query.get('fim', [None])[0]
+                result = get_portfolio_pnl(pf_key, inicio=inicio, fim=fim, repo=repo)
+                self._send_json({'ativos': result, 'inicio': inicio, 'fim': fim})
+            except Exception as e:
+                print(f"[PORTFOLIO PNL API] ERRO: {e}", flush=True)
+                import traceback; traceback.print_exc()
+                self._send_json({'erro': str(e)}, 500)
+            return
+
+        # API: Série de rentabilidade dia a dia para um período (sem downsampling)
+        # GET /api/portfolio/{key}/rentabilidade_serie?inicio=2025-01-01&fim=2026-02-20
+        if path.startswith('/api/portfolio/') and '/rentabilidade_serie' in path:
+            try:
+                parts = path.split('/')
+                pf_key = parts[3] if len(parts) > 3 else None
+                if not pf_key or pf_key not in PORTFOLIO_CONFIG:
+                    self._send_json({'erro': 'Portfolio desconhecido'}, 404)
+                    return
+                inicio = query.get('inicio', [None])[0]
+                fim = query.get('fim', [None])[0]
+                serie = get_portfolio_rentabilidade_serie(pf_key, inicio=inicio, fim=fim, repo=repo)
+                self._send_json({'rentabilidade_serie': serie})
+            except Exception as e:
+                print(f"[PORTFOLIO RENT SERIE API] ERRO: {e}", flush=True)
+                import traceback; traceback.print_exc()
+                self._send_json({'erro': str(e)}, 500)
+            return
+
+        # API: Série de rentabilidade do BTC (benchmark) - cache + Bitget paginado ou CoinGecko range
         if path == '/api/benchmark/btc':
             try:
                 data_inicio = query.get('data_inicio', [None])[0]
                 if not data_inicio:
                     self._send_json({'erro': 'data_inicio é obrigatório'}, 400)
                     return
-                cotacoes_service = CotacoesService(db_url=repo.db_url)
-                lista_hist = cotacoes_service.obter_historico_coingecko('bitcoin', dias=365)
-                if not lista_hist:
-                    self._send_json([])
-                    return
+                data_inicio_str = str(data_inicio)[:10]
+                try:
+                    data_inicio_obj = date.fromisoformat(data_inicio_str)
+                    dias = max(1, (date.today() - data_inicio_obj).days)
+                except (ValueError, TypeError):
+                    dias = 365
+                coingecko_only = (query.get('coingecko_only', [None])[0] or '').strip().lower() in ('1', 'true', 'yes')
+                logger.debug("[api_benchmark_btc] ENTRADA data_inicio=%s dias=%s coingecko_only=%s", data_inicio_str, dias, coingecko_only)
+
+                btc_cache = BTCCacheService(repo=repo)
+                dados_cache = btc_cache.buscar_cache(data_inicio_obj)
                 preco_por_data = {}
-                for item in lista_hist:
-                    preco_por_data[item['data']] = item['preco']
-                datas_ordenadas = sorted(preco_por_data.keys())
-                preco_base = None
-                for d in datas_ordenadas:
-                    if d >= data_inicio:
-                        preco_base = preco_por_data[d]
-                        break
-                if preco_base is None or preco_base == 0:
+                bitget_data = []
+                coingecko_data = []
+
+                if coingecko_only:
+                    # Exponential Coins / Alphacoins: só CoinGecko (alinhado ao notebook e à rentabilidade do portfólio)
+                    cotacoes_service = CotacoesService(db_url=repo.db_url)
+                    lista_hist = cotacoes_service.obter_historico_coingecko_range_chunked('bitcoin', data_inicio_obj)
+                    coingecko_data = lista_hist if lista_hist else []
+                    for item in lista_hist:
+                        d = item.get('data')
+                        if d and d >= data_inicio_str:
+                            preco_por_data[d] = item['preco']
+                    logger.debug("[api_benchmark_btc] COINGECKO ONLY len=%s", len(preco_por_data))
+                elif btc_cache.cobre_periodo(dados_cache, data_inicio_obj):
+                    for item in dados_cache:
+                        d = item.get('data')
+                        if d and d >= data_inicio_str:
+                            preco_por_data[d] = item['preco']
+                    logger.debug("[api_benchmark_btc] USANDO CACHE len=%s", len(preco_por_data))
+                else:
+                    cotacoes_service = CotacoesService(db_url=repo.db_url)
+                    klines = cotacoes_service.obter_klines_bitget_paginado('BTCUSDT', '1Dutc', dias)
+                    bitget_data = klines if klines else []
+                    if klines:
+                        for k in klines:
+                            d = k.get('open_time')
+                            if d and d >= data_inicio_str:
+                                preco_por_data[d] = k['close']
+                        logger.debug("[api_benchmark_btc] BITGET PAGINADO len=%s", len(preco_por_data))
+                        # Complementação parcial: se Bitget não cobre data_inicio (ex.: só desde 2018), buscar pré-Bitget no CoinGecko
+                        if preco_por_data:
+                            min_bitget_str = min(preco_por_data.keys())
+                            min_bitget = date.fromisoformat(min_bitget_str)
+                            if min_bitget > data_inicio_obj:
+                                data_fim_cg = min_bitget - timedelta(days=1)
+                                print("[BENCHMARK] Complementando período pré-Bitget via CoinGecko:", data_inicio_obj, "→", data_fim_cg, flush=True)
+                                dados_cg = cotacoes_service.obter_historico_coingecko_range_chunked(
+                                    'bitcoin', data_inicio_obj, data_fim=data_fim_cg
+                                )
+                                for item in dados_cg:
+                                    d = item.get('data')
+                                    if d and d not in preco_por_data:
+                                        preco_por_data[d] = item['preco']
+                                coingecko_data = dados_cg
+                                logger.debug("[api_benchmark_btc] COINGECKO COMPLEMENTO len=%s", len(dados_cg))
+                    if not preco_por_data:
+                        lista_hist = cotacoes_service.obter_historico_coingecko_range_chunked(
+                            'bitcoin', data_inicio_obj
+                        )
+                        coingecko_data = lista_hist if lista_hist else []
+                        for item in lista_hist:
+                            d = item.get('data')
+                            if d and d >= data_inicio_str:
+                                preco_por_data[d] = item['preco']
+                        logger.debug("[api_benchmark_btc] COINGECKO RANGE len=%s", len(preco_por_data))
+                    if preco_por_data:
+                        lista_para_cache = [{'data': d, 'preco': p} for d, p in preco_por_data.items()]
+                        btc_cache.salvar_cache(lista_para_cache)
+
+                if not preco_por_data:
+                    logger.debug("[api_benchmark_btc] preco_por_data vazio, retornando []")
                     self._send_json([])
                     return
-                serie_btc = []
-                for d in datas_ordenadas:
-                    if d >= data_inicio:
-                        rent_pct = ((preco_por_data[d] / preco_base) - 1) * 100
-                        serie_btc.append({'dia': d, 'rentabilidade_acumulada_pct': round(rent_pct, 4)})
-                self._send_json(serie_btc)
+                if data_inicio_str not in preco_por_data:
+                    first_avail = min(preco_por_data.keys())
+                    preco_por_data[data_inicio_str] = preco_por_data[first_avail]
+
+                print("data_inicio_obj:", data_inicio_obj, flush=True)
+                print("primeira data do dict:", min(preco_por_data.keys()), flush=True)
+                print("ultima data do dict:", max(preco_por_data.keys()), flush=True)
+                print("hoje:", date.today(), flush=True)
+
+                # FASE 4: garantir todos os dias de data_inicio até hoje (ffill); estender até hoje se último dia < hoje
+                hoje_str = date.today().isoformat()
+                datas_ordenadas_antes = sorted(preco_por_data.keys())
+                d_min = datetime.strptime(data_inicio_str, "%Y-%m-%d").date()
+                d_max = date.today()
+                last_preco = preco_por_data[datas_ordenadas_antes[-1]]
+                cur = d_min
+                while cur <= d_max:
+                    d_str = cur.isoformat()
+                    if d_str not in preco_por_data:
+                        preco_por_data[d_str] = last_preco
+                    else:
+                        last_preco = preco_por_data[d_str]
+                    cur += timedelta(days=1)
+                datas_ordenadas = sorted(preco_por_data.keys())
+                print("ultima data apos ffill:", max(preco_por_data.keys()), flush=True)
+
+                preco_base = preco_por_data[datas_ordenadas[0]]
+                if not preco_base or preco_base == 0:
+                    logger.debug("[api_benchmark_btc] preco_base inválido, retornando []")
+                    self._send_json([])
+                    return
+
+                # Instrumentação FASE 2 + validação FASE 5
+                print("DIAS SOLICITADOS:", dias, flush=True)
+                print("DIAS BITGET:", len(bitget_data), flush=True)
+                print("DIAS COINGECKO:", len(coingecko_data), flush=True)
+                print("MIN DIA REAL:", datas_ordenadas[0], flush=True)
+                print("MAX DIA REAL:", datas_ordenadas[-1], flush=True)
+                print("TOTAL PONTOS:", len(datas_ordenadas), flush=True)
+                print("DATA INICIAL FINAL:", datas_ordenadas[0], flush=True)
+                print("DATA FINAL FINAL:", datas_ordenadas[-1], flush=True)
+                print("TOTAL DIAS FINAL:", len(datas_ordenadas), flush=True)
+                print("DATA INICIO SOLICITADA:", data_inicio_str, flush=True)
+                faltantes = []
+                for i in range(len(datas_ordenadas) - 1):
+                    d1 = datetime.strptime(datas_ordenadas[i], "%Y-%m-%d")
+                    d2 = datetime.strptime(datas_ordenadas[i + 1], "%Y-%m-%d")
+                    if (d2 - d1).days > 1:
+                        faltantes.append((d1, d2))
+                print("BURACOS ENCONTRADOS:", len(faltantes), flush=True)
+
+                serie_resposta = [
+                    {'dia': d, 'rentabilidade_acumulada_pct': round(((preco_por_data[d] / preco_base) - 1) * 100, 4)}
+                    for d in datas_ordenadas
+                ]
+                self._send_json(serie_resposta)
             except Exception as e:
+                logger.debug("[api_benchmark_btc] EXCEÇÃO %s", e, exc_info=True)
                 self._send_json({'erro': str(e)}, 400)
             return
 
@@ -5376,6 +5680,13 @@ def iniciar_servidor(porta=8080, host='localhost'):
 if __name__ == "__main__":
     import sys
     import os
+    # Diagnóstico rentabilidade BTC: defina DEBUG_BTC_RENT=1 para ativar logs detalhados (timestamp + DEBUG)
+    if os.environ.get('DEBUG_BTC_RENT'):
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s %(name)s %(levelname)s %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
     porta = int(os.environ.get('PORT', sys.argv[1] if len(sys.argv) > 1 else 8080))
     host = os.environ.get('HOST', '0.0.0.0' if os.environ.get('PORT') else 'localhost')
     iniciar_servidor(porta, host)

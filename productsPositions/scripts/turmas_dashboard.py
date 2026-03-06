@@ -747,11 +747,13 @@ def _render_tab_abertas(carteira, turma_id):
     """Renderiza tabela da aba Abertas."""
     trades = [t for t in carteira if t.get('ativo_atual')]
     if not trades:
-        return '<tr><td colspan="8" style="text-align: center; color: #888;">Nenhum trade ativo</td></tr>'
+        return '<tr><td colspan="9" style="text-align: center; color: #888;">Nenhum trade ativo</td></tr>'
     html = ""
     for t in trades:
         qtd = t.get('quantidade')
         qtd_str = f"{float(qtd):,.4f}" if qtd is not None else '—'
+        stop = t.get('stop_atual')
+        stop_str = _format_preco(stop) if stop is not None else '—'
         html += f"""
         <tr>
             <td style="text-align: left;">{t.get('ativo', 'N/A')}</td>
@@ -761,6 +763,7 @@ def _render_tab_abertas(carteira, turma_id):
             <td>{_format_preco(t.get('preco_entrada_turma'))}</td>
             <td>{qtd_str}</td>
             <td>{_format_preco(t.get('preco_atual'))}</td>
+            <td>{stop_str}</td>
             <td>{_format_pnl(t.get('pnl_pct'))}</td>
         </tr>
         """
@@ -771,9 +774,11 @@ def _render_tab_fechadas(carteira, turma_id):
     """Renderiza tabela da aba Fechadas."""
     trades = [t for t in carteira if not t.get('ativo_atual')]
     if not trades:
-        return '<tr><td colspan="9" style="text-align: center; color: #888;">Nenhum trade fechado</td></tr>'
+        return '<tr><td colspan="10" style="text-align: center; color: #888;">Nenhum trade fechado</td></tr>'
     html = ""
     for t in trades:
+        stop = t.get('stop_atual')
+        stop_str = _format_preco(stop) if stop is not None else '—'
         html += f"""
         <tr>
             <td style="text-align: left;">{t.get('ativo', 'N/A')}</td>
@@ -784,6 +789,7 @@ def _render_tab_fechadas(carteira, turma_id):
             <td>{t.get('dias', 0)}</td>
             <td>{_format_preco(t.get('preco_entrada_turma'))}</td>
             <td>{_format_preco(t.get('preco_atual'))}</td>
+            <td>{stop_str}</td>
             <td>{_format_pnl(t.get('pnl_pct'))}</td>
         </tr>
         """
@@ -793,10 +799,12 @@ def _render_tab_fechadas(carteira, turma_id):
 def _render_tab_historico(carteira, turma_id):
     """Renderiza tabela da aba Histórico."""
     if not carteira:
-        return '<tr><td colspan="10" style="text-align: center; color: #888;">Nenhum trade na carteira</td></tr>'
+        return '<tr><td colspan="11" style="text-align: center; color: #888;">Nenhum trade na carteira</td></tr>'
     html = ""
     for t in carteira:
         preco_saida_atual = _format_preco(t.get('preco_atual'))
+        stop = t.get('stop_atual')
+        stop_str = _format_preco(stop) if stop is not None else '—'
         html += f"""
         <tr>
             <td style="text-align: left;">{t.get('ativo', 'N/A')}</td>
@@ -808,6 +816,7 @@ def _render_tab_historico(carteira, turma_id):
             <td>{t.get('dias', 0)}</td>
             <td>{_format_preco(t.get('preco_entrada_turma'))}</td>
             <td>{preco_saida_atual}</td>
+            <td>{stop_str}</td>
             <td>{_format_pnl(t.get('pnl_pct'))}</td>
         </tr>
         """
@@ -840,6 +849,7 @@ def get_turma_detalhes_html(turma, resumo, carteira, tab_ativa='abertas'):
                         <th>Dias</th>
                         <th>Preço Entrada</th>
                         <th>Preço Saída</th>
+                        <th>Stop</th>
                         <th>PnL%</th>
         """
         tab_body = _render_tab_fechadas(carteira, turma_id)
@@ -854,6 +864,7 @@ def get_turma_detalhes_html(turma, resumo, carteira, tab_ativa='abertas'):
                         <th>Dias</th>
                         <th>Preço Entrada</th>
                         <th>Preço Saída/Atual</th>
+                        <th>Stop</th>
                         <th>PnL%</th>
         """
         tab_body = _render_tab_historico(carteira, turma_id)
@@ -866,6 +877,7 @@ def get_turma_detalhes_html(turma, resumo, carteira, tab_ativa='abertas'):
                         <th>Preço Entrada</th>
                         <th>Qtd</th>
                         <th>Preço Atual</th>
+                        <th>Stop</th>
                         <th>PnL%</th>
         """
         tab_body = _render_tab_abertas(carteira, turma_id)
@@ -1055,7 +1067,7 @@ def get_rentabilidade_chart_html(turma, serie):
 <head>
     <meta charset="UTF-8">
     <title>Rentabilidade - {turma.get('nome', 'Turma')}</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/assets/chart.umd.min.js"></script>
     <style>
         {get_base_styles()}
         .content {{ padding: 30px; }}
@@ -1215,7 +1227,7 @@ def get_rentabilidade_historica_html(turmas_resumo):
 <head>
     <meta charset="UTF-8">
     <title>Rentabilidade Histórica - Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/assets/chart.umd.min.js"></script>
     <style>
         {get_base_styles()}
         .content {{ padding: 30px; }}
@@ -1611,7 +1623,7 @@ def get_comparar_turmas_html(turmas, comparacao):
 <head>
     <meta charset="UTF-8">
     <title>Comparar Turmas - Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/assets/chart.umd.min.js"></script>
     <style>
         {get_base_styles()}
         .content {{ padding: 30px; }}
@@ -1783,8 +1795,9 @@ def _json_serializer(obj):
     return str(obj)
 
 
-def get_produto_dashboard_html(produto, turmas, resumo, carteira):
-    """Dashboard rico do produto com abas por turma, gráficos e tabelas interativas."""
+def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_alocacao=False):
+    """Dashboard rico do produto com abas por turma, gráficos e tabelas interativas.
+    mostrar_caixa_alocacao: exibe Caixa no gráfico de evolução da alocação apenas para produtos com API key (Soros, Memebot)."""
     get_navbar, _, get_base_styles = _get_shared_components()
 
     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
@@ -1843,7 +1856,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{nome} - Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="/assets/chart.umd.min.js"></script>
     <style>
         {get_base_styles()}
 
@@ -1913,6 +1926,13 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira):
 
         .chart-box {{ position: relative; height: 350px; width: 100%; }}
 
+        .period-btn {{
+            padding: 4px 12px; border-radius: 4px; border: 1px solid #333;
+            background: transparent; color: #888; cursor: pointer; font-size: 12px; transition: all 0.2s;
+        }}
+        .period-btn:hover {{ color: #e0e0e0; border-color: #4ecca3; }}
+        .period-btn.active {{ background: #4ecca3; color: #1a1a2e; border-color: #4ecca3; font-weight: 600; }}
+
         .sub-tabs {{ display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }}
         .sub-tab {{
             padding: 8px 18px; background: rgba(255,255,255,0.05);
@@ -1951,6 +1971,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira):
         .bdg-short {{ background: rgba(231, 76, 60, 0.2); color: #e74c3c; }}
         .bdg-open {{ background: rgba(52, 152, 219, 0.2); color: #3498db; }}
         .bdg-closed {{ background: rgba(149, 165, 166, 0.2); color: #95a5a6; }}
+        .bdg-stop {{ background: rgba(231, 76, 60, 0.15); color: #e74c3c; border: 1px solid rgba(231, 76, 60, 0.3); }}
         .pnl-pos {{ color: #4ecca3; font-weight: 600; }}
         .pnl-neg {{ color: #e74c3c; font-weight: 600; }}
 
@@ -2094,23 +2115,43 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira):
                     <span style="display:inline-block; width:14px; height:0; border-top:2px dashed #f7931a;"></span>
                     Bitcoin (BTC)
                 </label>
-                <span style="color:#555; font-size:13px;">|</span>
-                <label style="display:flex; align-items:center; gap:5px; color:#e0e0e0; font-size:13px;">
-                    <span style="color:#888;">Comparar com:</span>
-                    <select id="selectCompareTurma" style="background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:2px 6px; font-size:12px; cursor:pointer;">
-                        <option value="">Nenhuma</option>
-                    </select>
-                </label>
+                <span style="color:#888; font-size:13px;">Comparar com:</span>
+                <div id="compareCheckboxes" style="display:inline-flex; flex-wrap:wrap; gap:10px 14px; align-items:center;"></div>
             </div>
-            <div id="chartLoading" class="loading-overlay"><div class="spinner"></div>Carregando gr&aacute;fico...</div>
+            <div style="display:flex; gap:6px; margin-bottom:12px; align-items:center; flex-wrap:wrap;">
+                <button class="period-btn active" data-period="MAX" onclick="setRentPeriod('MAX',this)">MAX</button>
+                <button class="period-btn" data-period="YTD" onclick="setRentPeriod('YTD',this)">YTD</button>
+                <button class="period-btn" data-period="1Y" onclick="setRentPeriod('1Y',this)">1A</button>
+                <button class="period-btn" data-period="6M" onclick="setRentPeriod('6M',this)">6M</button>
+                <button class="period-btn" data-period="3M" onclick="setRentPeriod('3M',this)">3M</button>
+                <button class="period-btn" data-period="1M" onclick="setRentPeriod('1M',this)">1M</button>
+                <span style="color:#444; margin:0 4px;">|</span>
+                <input type="date" id="rentPeriodStart" style="background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:3px 8px; font-size:12px;" onchange="setRentCustomPeriod()">
+                <span style="color:#666; font-size:12px;">a</span>
+                <input type="date" id="rentPeriodEnd" style="background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:3px 8px; font-size:12px;" onchange="setRentCustomPeriod()">
+            </div>
+            <div id="chartLoading" class="loading-overlay"><div class="spinner"></div>Carregando...</div>
             <div class="chart-box" id="chartWrapper" style="display:none;">
                 <canvas id="chartRent"></canvas>
             </div>
         </div>
 
         <div class="dash-section">
-            <h3>PnL dos ativos em aberto</h3>
-            <div class="chart-box" style="height:280px;">
+            <h3>PnL dos ativos no per&iacute;odo</h3>
+            <div style="display:flex; gap:6px; margin-bottom:12px; align-items:center; flex-wrap:wrap;">
+                <button class="period-btn pnl-period-btn active" onclick="setPnlPeriod('MAX',this)">MAX</button>
+                <button class="period-btn pnl-period-btn" onclick="setPnlPeriod('YTD',this)">YTD</button>
+                <button class="period-btn pnl-period-btn" onclick="setPnlPeriod('1Y',this)">1A</button>
+                <button class="period-btn pnl-period-btn" onclick="setPnlPeriod('6M',this)">6M</button>
+                <button class="period-btn pnl-period-btn" onclick="setPnlPeriod('3M',this)">3M</button>
+                <button class="period-btn pnl-period-btn" onclick="setPnlPeriod('1M',this)">1M</button>
+                <span style="color:#444; margin:0 4px;">|</span>
+                <input type="date" id="pnlPeriodStart" style="background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:3px 8px; font-size:12px;" onchange="setPnlCustomPeriod()">
+                <span style="color:#666; font-size:12px;">a</span>
+                <input type="date" id="pnlPeriodEnd" style="background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:3px 8px; font-size:12px;" onchange="setPnlCustomPeriod()">
+            </div>
+            <div id="pnlChartLoading" class="loading-overlay"><div class="spinner"></div>Carregando gr&aacute;fico...</div>
+            <div class="chart-box" id="pnlChartWrapper" style="height:280px; display:none;">
                 <canvas id="chartPnlAbertas"></canvas>
             </div>
         </div>
@@ -2159,6 +2200,7 @@ var RESUMO = {resumo_json};
 var CARTEIRA = {carteira_json};
 var TURMAS = {turmas_json};
 var DATA_INICIO_TURMA = '{data_inicio_turma}';
+var MOSTRAR_CAIXA_ALOCACAO = {str(mostrar_caixa_alocacao).lower()};
 var rentChart = null;
 var pnlAbertasChart = null;
 var allocTimelineChart = null;
@@ -2178,9 +2220,13 @@ document.addEventListener('click', function(e) {{
     }}
 }});
 var btcSerie = null;
-var compareSerie = null;
-var compareTurmaId = null;
+var compareSeries = {{}};
+var COMPARE_COLORS = ['#e056fd','#3498db','#f39c12','#1abc9c','#9b59b6'];
 var currentTurmaSerie = null;
+var fullRentSerie = null;
+var activeRentPeriod = 'MAX';
+var rentPeriodStartDate = null;
+var rentPeriodEndDate = null;
 
 function fmtPrice(v) {{
     if (v == null) return '\\u2014';
@@ -2206,6 +2252,95 @@ function statusBdg(a) {{
 function fmtDate(d) {{ return d || '\\u2014'; }}
 function fmtQty(q) {{ return q!=null ? Number(q).toLocaleString('en-US',{{maximumFractionDigits:4}}) : '\\u2014'; }}
 
+function filterSerieByDate(serie, startDate, endDate) {{
+    if (!serie || !serie.length) return serie;
+    return serie.filter(function(s) {{
+        var d = s.dia || s.data;
+        if (!d) return true;
+        if (startDate && d < startDate) return false;
+        if (endDate && d > endDate) return false;
+        return true;
+    }});
+}}
+function rebaseRent(serie) {{
+    if (!serie || serie.length < 2) return serie;
+    var base = serie[0].rentabilidade_acumulada_pct;
+    if (base === 0) return serie;
+    var baseFactor = 1 + base / 100;
+    return serie.map(function(s) {{
+        return {{ dia: s.dia, valor_total: s.valor_total, rentabilidade_acumulada_pct: ((1 + s.rentabilidade_acumulada_pct / 100) / baseFactor - 1) * 100 }};
+    }});
+}}
+function getDateForRentPeriod(period) {{
+    var now = new Date();
+    var y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+    switch(period) {{
+        case '1M': return new Date(y, m - 1, d).toISOString().slice(0, 10);
+        case '3M': return new Date(y, m - 3, d).toISOString().slice(0, 10);
+        case '6M': return new Date(y, m - 6, d).toISOString().slice(0, 10);
+        case '1Y': return new Date(y - 1, m, d).toISOString().slice(0, 10);
+        case 'YTD': return y + '-01-01';
+        default: return null;
+    }}
+}}
+function setRentPeriod(period, btn) {{
+    activeRentPeriod = period;
+    document.querySelectorAll('.dash-section#sectionChart .period-btn').forEach(function(b){{ if(b.classList.contains('pnl-period-btn')) return; b.classList.remove('active'); }});
+    if (btn) btn.classList.add('active');
+    rentPeriodStartDate = getDateForRentPeriod(period);
+    rentPeriodEndDate = null;
+    var startEl = document.getElementById('rentPeriodStart');
+    var endEl = document.getElementById('rentPeriodEnd');
+    if (startEl) startEl.value = rentPeriodStartDate || '';
+    if (endEl) endEl.value = '';
+    applyRentPeriodFilter();
+}}
+function setRentCustomPeriod() {{
+    rentPeriodStartDate = document.getElementById('rentPeriodStart').value || null;
+    rentPeriodEndDate = document.getElementById('rentPeriodEnd').value || null;
+    activeRentPeriod = 'CUSTOM';
+    document.querySelectorAll('.dash-section#sectionChart .period-btn').forEach(function(b){{ if(b.classList.contains('pnl-period-btn')) return; b.classList.remove('active'); }});
+    applyRentPeriodFilter();
+}}
+function applyRentPeriodFilter() {{
+    if (!fullRentSerie) {{ if (currentTurmaSerie) renderRentChart(currentTurmaSerie); return; }}
+    if (activeRentPeriod === 'MAX' && !rentPeriodStartDate && !rentPeriodEndDate) {{
+        currentTurmaSerie = fullRentSerie;
+        renderRentChartFiltered(fullRentSerie, btcSerie, compareSeries);
+        return;
+    }}
+    var inicio = rentPeriodStartDate || null;
+    var fim = rentPeriodEndDate || null;
+    var urlMain = '/api/turma/' + TURMA_ID + '/rentabilidade?';
+    if (inicio) urlMain += 'inicio=' + encodeURIComponent(inicio) + '&';
+    if (fim) urlMain += 'fim=' + encodeURIComponent(fim);
+    var compareIds = Object.keys(compareSeries);
+    var query = (inicio ? 'inicio=' + encodeURIComponent(inicio) + '&' : '') + (fim ? 'fim=' + encodeURIComponent(fim) : '');
+    var promises = [fetch(urlMain).then(function(r){{ return r.json(); }})];
+    compareIds.forEach(function(tid) {{ promises.push(fetch('/api/turma/' + tid + '/rentabilidade?' + query).then(function(r){{ return r.json(); }})); }});
+    document.getElementById('chartLoading').style.display = 'block';
+    document.getElementById('chartWrapper').style.display = 'none';
+    Promise.all(promises).then(function(results) {{
+        document.getElementById('chartLoading').style.display = 'none';
+        document.getElementById('chartWrapper').style.display = 'block';
+        var data = results[0];
+        if (data.erro || !Array.isArray(data) || !data.length) {{ if (currentTurmaSerie) renderRentChart(currentTurmaSerie); return; }}
+        var rebased = rebaseRent(data);
+        currentTurmaSerie = rebased;
+        var filteredBtc = btcSerie ? rebaseRent(filterSerieByDate(btcSerie, inicio, fim)) : null;
+        var filteredCompare = {{}};
+        for (var i = 0; i < compareIds.length; i++) {{
+            var d = results[i + 1];
+            if (d && !d.erro && Array.isArray(d) && d.length) filteredCompare[compareIds[i]] = rebaseRent(d);
+        }}
+        renderRentChartFiltered(rebased, filteredBtc, filteredCompare);
+    }}).catch(function(e) {{
+        document.getElementById('chartLoading').style.display = 'none';
+        document.getElementById('chartWrapper').style.display = 'block';
+        console.error('Erro ao buscar rentabilidade:', e);
+    }});
+}}
+
 function updateCards(r) {{
     var rentab = r.rentabilidade_acumulada_pct||0;
     var el = document.getElementById('card-rentab');
@@ -2221,7 +2356,7 @@ function updateCards(r) {{
     document.getElementById('countHistorico').textContent = (r.trades_ativos||0)+(r.trades_fechados||0);
 }}
 
-function fmtStop(v) {{ if(v==null||v==undefined) return '\\u2014'; return '$ '+fmtPrice(v); }}
+function fmtStop(v) {{ if(v==null||v==undefined) return '\\u2014'; if(v===-1) return '<span class="bdg bdg-stop">Stop Atingido</span>'; return '$ '+fmtPrice(v); }}
 function fmtTotal(v) {{
     if(v==null||v===undefined) return '\\u2014';
     return '$ '+v.toLocaleString('en-US',{{minimumFractionDigits:2,maximumFractionDigits:2}});
@@ -2263,7 +2398,9 @@ function setupSort(tbl, data, cols, renderRow) {{
     }});
 }}
 
+// Fonte da verdade: backend (carteira_turma.ativo_atual) + datas e status da posição
 function isTradeOpen(t) {{
+    if(t.ativo_atual === 0 || t.ativo_atual === false) return false;
     if(t.data_remocao || t.data_saida) return false;
     if(String(t.status_posicao||'').toLowerCase() === 'closed') return false;
     return true;
@@ -2366,21 +2503,50 @@ function renderPnlAbertasChart(cart) {{
     }});
 }}
 
+var activePnlPeriod = 'MAX';
+
+function applyPnlFilter() {{
+    var loadEl = document.getElementById('pnlChartLoading');
+    var wrapEl = document.getElementById('pnlChartWrapper');
+    if (loadEl) loadEl.style.display = 'none';
+    if (wrapEl) wrapEl.style.display = 'block';
+    renderPnlAbertasChart(CARTEIRA);
+}}
+
+function setPnlPeriod(period, btn) {{
+    activePnlPeriod = period;
+    document.querySelectorAll('.pnl-period-btn').forEach(function(b){{ b.classList.remove('active'); }});
+    if (btn) btn.classList.add('active');
+    applyPnlFilter();
+}}
+
+function setPnlCustomPeriod() {{
+    activePnlPeriod = 'CUSTOM';
+    document.querySelectorAll('.pnl-period-btn').forEach(function(b){{ b.classList.remove('active'); }});
+    applyPnlFilter();
+}}
+
 var ALLOC_COLORS = ['#4ecca3','#e74c3c','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22','#2ecc71','#e84393','#00cec9','#fd79a8','#6c5ce7','#ffeaa7','#dfe6e9','#fab1a0','#a29bfe'];
 
-function renderAllocTimeline(cart) {{
+// Gráfico de evolução da alocação usa os mesmos dados e regras da tabela (CARTEIRA + isTradeOpen + ativo_atual do backend)
+function renderAllocTimeline(cart, rentSerie) {{
+    function toYMD(v) {{ return (v && String(v).slice) ? String(v).slice(0,10) : (v || ''); }}
+    var today = new Date().toISOString().slice(0,10);
+    // Só considerar "aberta" se isTradeOpen (inclui ativo_atual); fechadas precisam ter data de saída para entrar no gráfico
     var entries = cart.filter(function(t){{
         if(!t.data_insercao) return false;
-        if(String(t.status_posicao||'').toLowerCase() === 'closed' && !t.data_remocao && !t.data_saida) return false;
-        return true;
+        if(isTradeOpen(t)) return true;
+        return !!(t.data_remocao || t.data_saida);
     }});
     if(!entries.length) return;
 
     var dateSet = {{}};
-    var today = new Date().toISOString().slice(0,10);
     entries.forEach(function(t){{
-        var start = t.data_insercao;
-        var end = t.data_remocao || t.data_saida || today;
+        var start = toYMD(t.data_insercao);
+        var dataSaida = t.data_remocao || t.data_saida;
+        var isOpen = isTradeOpen(t);
+        var end = isOpen ? today : toYMD(dataSaida);
+        if(!start || !end) return;
         dateSet[start] = 1;
         dateSet[end] = 1;
     }});
@@ -2413,8 +2579,10 @@ function renderAllocTimeline(cart) {{
         rawByAsset[key] = dates.map(function(day){{
             var total = 0;
             trades.forEach(function(t){{
-                var start = t.data_insercao;
-                var end = t.data_remocao || t.data_saida || today;
+                var start = toYMD(t.data_insercao);
+                var dataSaida = t.data_remocao || t.data_saida;
+                var end = isTradeOpen(t) ? today : toYMD(dataSaida);
+                if(!start || !end) return;
                 if(day >= start && day <= end) {{
                     var qty = t.quantidade || 0;
                     var pe = t.preco_entrada_turma || 0;
@@ -2431,14 +2599,46 @@ function renderAllocTimeline(cart) {{
         return s;
     }});
 
+    var caixaByDate = {{}};
+    if(rentSerie && Array.isArray(rentSerie) && rentSerie.length) {{
+        rentSerie.forEach(function(p){{
+            var dia = p.dia || (p.dia && p.dia.toISOString ? p.dia.toISOString().slice(0,10) : '');
+            if(dia) caixaByDate[dia] = (p.capital_em_caixa != null) ? Number(p.capital_em_caixa) : 0;
+        }});
+    }}
+    var caixaPerDay = dates.map(function(day){{ return caixaByDate[day] != null ? caixaByDate[day] : 0; }});
+    var totalPerDay = dates.map(function(_, i){{ return dailyTotals[i] + caixaPerDay[i]; }});
+
     var datasets = [];
+    var hasCaixa = (typeof MOSTRAR_CAIXA_ALOCACAO !== 'undefined' && MOSTRAR_CAIXA_ALOCACAO) && rentSerie && Array.isArray(rentSerie) && rentSerie.length && totalPerDay.some(function(t,i){{ return t > 0 && caixaPerDay[i] > 0; }});
+    if(hasCaixa) {{
+        var caixaColor = '#6c7a89';
+        var caixaPct = dates.map(function(_, i){{
+            var tot = totalPerDay[i];
+            return tot > 0 ? Math.round((caixaPerDay[i] / tot) * 10000) / 100 : 0;
+        }});
+        datasets.push({{
+            label: 'USDT',
+            data: caixaPct,
+            _rawData: caixaPerDay,
+            backgroundColor: caixaColor + 'AA',
+            borderColor: caixaColor,
+            borderWidth: 1,
+            fill: true,
+            tension: 0.3,
+            pointRadius: 0,
+            pointHoverRadius: 3
+        }});
+    }}
+
     assetKeys.forEach(function(key, idx){{
         var parts = key.split('_');
         var ativo = parts[0];
         var side = parts[1] || 'long';
         var color = ALLOC_COLORS[idx % ALLOC_COLORS.length];
+        var denom = hasCaixa ? totalPerDay : dailyTotals;
         var data = dates.map(function(_, i){{
-            var t = dailyTotals[i];
+            var t = denom[i];
             return t > 0 ? Math.round((rawByAsset[key][i] / t) * 10000) / 100 : 0;
         }});
         datasets.push({{
@@ -2555,30 +2755,49 @@ function buildRentDatasets(serie, btc, compare) {{
             hidden: !document.getElementById('toggleBTC').checked
         }});
     }}
-    if (compare && compare.length > 0) {{
+    var cmpKeys = compare && typeof compare === 'object' && !Array.isArray(compare) ? Object.keys(compare) : [];
+    cmpKeys.forEach(function(tid, idx) {{
+        var cmp = compare[tid];
+        if (!cmp || !cmp.length) return;
         var cmpMap = {{}};
-        compare.forEach(function(s){{cmpMap[s.dia]=s.rentabilidade_acumulada_pct;}});
+        cmp.forEach(function(s){{cmpMap[s.dia]=s.rentabilidade_acumulada_pct;}});
         var cmpData = labels.map(function(d){{return cmpMap[d] !== undefined ? cmpMap[d] : null;}});
-        var cmpInfo = TURMAS.find(function(t){{return t.id === compareTurmaId;}});
-        var cmpLabel = cmpInfo ? cmpInfo.nome : 'Comparação';
+        var cmpInfo = TURMAS.find(function(t){{return String(t.id) === String(tid);}});
+        var cmpLabel = cmpInfo ? cmpInfo.nome : 'Turma '+tid;
+        var color = COMPARE_COLORS[idx % COMPARE_COLORS.length];
         datasets.push({{
             label: cmpLabel,
             data: cmpData,
-            borderColor: '#e056fd',
+            borderColor: color,
             backgroundColor: 'transparent',
             fill: false, tension: 0.3, pointRadius: 0,
             pointHoverRadius: 5, borderWidth: 2,
             borderDash: [3, 3], spanGaps: true
         }});
-    }}
+    }});
     return {{labels: labels, datasets: datasets}};
 }}
 
+function renderRentChartFiltered(serie, btc, compareObj) {{
+    var built = buildRentDatasets(serie, btc, compareObj || {{}});
+    if (!built || !built.labels || !built.labels.length) return;
+    if(rentChart) rentChart.destroy();
+    rentChart=new Chart(document.getElementById('chartRent').getContext('2d'),{{
+        type:'line',
+        data: built,
+        options:{{ responsive:true, maintainAspectRatio:false, interaction:{{mode:'index', intersect:false}}, plugins:{{ legend:{{display:false}}, tooltip:{{ backgroundColor:'rgba(26,26,46,0.95)', titleColor:'#4ecca3', bodyColor:'#e0e0e0', borderColor:'#4ecca3', borderWidth:1, callbacks:{{ label:function(c){{ if(c.raw==null)return null; return c.dataset.label+': '+(c.raw>=0?'+':'')+c.raw.toFixed(2)+'%'; }} }} }} }}, scales:{{ x:{{ ticks:{{ color:'#666', maxTicksLimit:20, maxRotation:0 }}, grid:{{ color:'rgba(255,255,255,0.05)' }} }}, y:{{ ticks:{{ color:'#666', callback:function(v){{ return v+'%'; }} }}, grid:{{ color:'rgba(255,255,255,0.05)' }}, title:{{ display:true, text:'Rentabilidade Acumulada (%)', color:'#888' }} }} }} }}
+    }});
+}}
 function renderRentChart(serie) {{
     document.getElementById('chartLoading').style.display='none';
     document.getElementById('chartWrapper').style.display='block';
+    fullRentSerie = serie;
     currentTurmaSerie = serie;
-    var built = buildRentDatasets(serie, btcSerie, compareSerie);
+    if (activeRentPeriod !== 'MAX' || rentPeriodStartDate || rentPeriodEndDate) {{
+        applyRentPeriodFilter();
+        return;
+    }}
+    var built = buildRentDatasets(serie, btcSerie, compareSeries);
     if(rentChart) rentChart.destroy();
     rentChart=new Chart(document.getElementById('chartRent').getContext('2d'),{{
         type:'line',
@@ -2608,7 +2827,8 @@ function renderRentChart(serie) {{
 
 function rebuildChart() {{
     if(!currentTurmaSerie) return;
-    renderRentChart(currentTurmaSerie);
+    if (activeRentPeriod !== 'MAX' || rentPeriodStartDate || rentPeriodEndDate) applyRentPeriodFilter();
+    else renderRentChartFiltered(currentTurmaSerie, btcSerie, compareSeries);
 }}
 
 function fetchBtcBenchmark(dataInicio) {{
@@ -2622,18 +2842,34 @@ function fetchBtcBenchmark(dataInicio) {{
         .catch(function(){{ btcSerie = null; }});
 }}
 
-function populateCompareSelect() {{
-    var sel = document.getElementById('selectCompareTurma');
-    sel.innerHTML = '<option value="">Nenhuma</option>';
-    TURMAS.forEach(function(t){{
-        if(t.id !== TURMA_ID) {{
-            var opt = document.createElement('option');
-            opt.value = t.id;
-            opt.textContent = t.nome;
-            if(compareTurmaId && t.id === compareTurmaId) opt.selected = true;
-            sel.appendChild(opt);
-        }}
+function populateCompareCheckboxes() {{
+    var container = document.getElementById('compareCheckboxes');
+    if (!container) return;
+    container.innerHTML = '';
+    TURMAS.forEach(function(t) {{
+        if (t.id === TURMA_ID) return;
+        var label = document.createElement('label');
+        label.style.cssText = 'display:inline-flex; align-items:center; gap:5px; cursor:pointer; color:#e0e0e0; font-size:13px;';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.dataset.turmaId = t.id;
+        cb.style.cssText = 'accent-color:#e056fd; width:15px; height:15px; cursor:pointer;';
+        if (compareSeries[t.id]) cb.checked = true;
+        cb.addEventListener('change', function() {{ onCompareCheckboxChange(t.id, cb.checked); }});
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(t.nome));
+        container.appendChild(label);
     }});
+}}
+function onCompareCheckboxChange(turmaId, checked) {{
+    if (checked) {{
+        fetch('/api/turma/' + turmaId + '/rentabilidade').then(function(r){{ return r.json(); }}).then(function(data){{
+            if (Array.isArray(data) && data.length) {{ compareSeries[turmaId] = data; rebuildChart(); }}
+        }}).catch(function(){{ rebuildChart(); }});
+    }} else {{
+        delete compareSeries[turmaId];
+        rebuildChart();
+    }}
 }}
 
 function switchPosTab(tab, btn) {{
@@ -2646,8 +2882,6 @@ function switchPosTab(tab, btn) {{
 async function switchTurma(turmaId, btn) {{
     if(turmaId===TURMA_ID) return;
     TURMA_ID=turmaId;
-    compareSerie = null;
-    compareTurmaId = null;
     document.querySelectorAll('.turma-tab').forEach(function(t){{t.classList.remove('active');}});
     btn.classList.add('active');
     document.getElementById('chartLoading').style.display='block';
@@ -2658,7 +2892,8 @@ async function switchTurma(turmaId, btn) {{
         DATA_INICIO_TURMA = turmaInfo.data_inicio;
         document.getElementById('toggleTurmaLabel').textContent = turmaInfo.nome;
     }}
-    populateCompareSelect();
+    compareSeries = {{}};
+    populateCompareCheckboxes();
     try {{
         var results=await Promise.all([
             fetch('/api/turma/'+turmaId+'/dashboard-data'),
@@ -2666,24 +2901,27 @@ async function switchTurma(turmaId, btn) {{
         ]);
         var dashData=await results[0].json();
         var serieData=await results[1].json();
-        if(dashData.erro){{console.error(dashData.erro);return;}}
+        document.getElementById('chartLoading').style.display='none';
+        document.getElementById('chartWrapper').style.display='block';
+        if(dashData.erro){{console.error(dashData.erro);document.getElementById('chartWrapper').innerHTML='<div style="padding:40px; text-align:center; color:#e74c3c;">'+dashData.erro+'</div>';return;}}
         RESUMO=dashData.resumo;
         CARTEIRA=dashData.carteira;
         updateCards(RESUMO);
-        renderPnlAbertasChart(CARTEIRA);
+        applyPnlFilter();
         renderAbertas(CARTEIRA);
         renderFechadas(CARTEIRA);
         renderHistorico(CARTEIRA);
-        renderAllocTimeline(CARTEIRA);
+        renderAllocTimeline(CARTEIRA, serieData);
         if(Array.isArray(serieData)&&serieData.length>0){{
             renderRentChart(serieData);
             fetchBtcBenchmark(DATA_INICIO_TURMA);
         }}
-        else{{document.getElementById('chartLoading').innerHTML='<span style="color:#666;">Sem dados de rentabilidade</span>';document.getElementById('chartLoading').style.display='block';}}
+        else{{ document.getElementById('chartWrapper').innerHTML='<div style="padding:40px; text-align:center; color:#666;">Sem dados de rentabilidade</div>'; }}
     }} catch(err) {{
         console.error('Erro:',err);
-        document.getElementById('chartLoading').innerHTML='<span style="color:#e74c3c;">Erro: '+err.message+'</span>';
-        document.getElementById('chartLoading').style.display='block';
+        document.getElementById('chartLoading').style.display='none';
+        document.getElementById('chartWrapper').style.display='block';
+        document.getElementById('chartWrapper').innerHTML='<div style="padding:40px; text-align:center; color:#e74c3c;">Erro: '+err.message+'</div>';
     }}
 }}
 
@@ -2736,49 +2974,52 @@ function preencherPrecos(produtoId, tipo) {{
 }}
 
 document.addEventListener('DOMContentLoaded', function() {{
-    renderPnlAbertasChart(CARTEIRA);
+    applyPnlFilter();
     renderAbertas(CARTEIRA);
     renderFechadas(CARTEIRA);
     renderHistorico(CARTEIRA);
     renderAllocTimeline(CARTEIRA);
-    populateCompareSelect();
+    populateCompareCheckboxes();
 
     document.getElementById('toggleTurma').addEventListener('change', function(){{ rebuildChart(); }});
     document.getElementById('toggleBTC').addEventListener('change', function(){{ rebuildChart(); }});
-    document.getElementById('selectCompareTurma').addEventListener('change', function(){{
-        var val = this.value;
-        if(!val) {{
-            compareSerie = null;
-            compareTurmaId = null;
-            rebuildChart();
-            return;
-        }}
-        compareTurmaId = parseInt(val);
-        fetch('/api/turma/'+compareTurmaId+'/rentabilidade')
-            .then(function(r){{return r.json();}})
-            .then(function(data){{
-                if(Array.isArray(data)) compareSerie = data;
-                else compareSerie = null;
-                rebuildChart();
-            }})
-            .catch(function(){{ compareSerie = null; rebuildChart(); }});
-    }});
 
     if(TURMA_ID){{
-        fetch('/api/turma/'+TURMA_ID+'/rentabilidade')
-            .then(function(r){{return r.json();}})
+        var loadEl = document.getElementById('chartLoading');
+        var wrapEl = document.getElementById('chartWrapper');
+        var timeoutMs = 20000;
+        var timeoutPromise = new Promise(function(_, reject){{ setTimeout(function(){{ reject(new Error('Tempo esgotado ao carregar dados.')); }}, timeoutMs); }});
+        Promise.race([
+            fetch('/api/turma/'+TURMA_ID+'/rentabilidade').then(function(r){{ return r.json(); }}),
+            timeoutPromise
+        ])
             .then(function(data){{
-                if(Array.isArray(data)&&data.length>0){{
-                    renderRentChart(data);
-                    fetchBtcBenchmark(DATA_INICIO_TURMA);
+                loadEl.style.display = 'none';
+                wrapEl.style.display = 'block';
+                if(data && data.erro){{
+                    wrapEl.innerHTML = '<div style="padding:40px; text-align:center; color:#e74c3c;">Erro: '+String(data.erro)+'</div>';
+                    return;
                 }}
-                else{{document.getElementById('chartLoading').innerHTML='<span style="color:#666;">Sem dados de rentabilidade</span>';}}
+                if(Array.isArray(data)&&data.length>0){{
+                    if(typeof Chart === 'undefined'){{
+                        wrapEl.innerHTML = '<div style="padding:40px; text-align:center; color:#e74c3c;">Erro: biblioteca de gr&aacute;ficos n&atilde;o carregou. Recarregue a p&aacute;gina.</div>';
+                    }} else {{
+                        renderRentChart(data);
+                        renderAllocTimeline(CARTEIRA, data);
+                        fetchBtcBenchmark(DATA_INICIO_TURMA);
+                    }}
+                }}
+                else{{ wrapEl.innerHTML = '<div style="padding:40px; text-align:center; color:#666;">Sem dados de rentabilidade</div>'; }}
             }})
             .catch(function(err){{
-                document.getElementById('chartLoading').innerHTML='<span style="color:#e74c3c;">Erro: '+err.message+'</span>';
+                loadEl.style.display = 'none';
+                wrapEl.style.display = 'block';
+                wrapEl.innerHTML = '<div style="padding:40px; text-align:center; color:#e74c3c;">Erro: '+err.message+'</div>';
             }});
     }} else {{
-        document.getElementById('chartLoading').innerHTML='<span style="color:#666;">Nenhuma turma selecionada</span>';
+        document.getElementById('chartLoading').style.display = 'none';
+        document.getElementById('chartWrapper').style.display = 'block';
+        document.getElementById('chartWrapper').innerHTML = '<div style="padding:40px; text-align:center; color:#666;">Nenhuma turma selecionada</div>';
     }}
 }});
 </script>

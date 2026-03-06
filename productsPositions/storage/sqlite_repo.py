@@ -197,6 +197,7 @@ class SQLiteRepo:
         self._pg_pool = None  # connection pool (apenas PostgreSQL)
         if self._use_sqlite:
             print(f"[SQLiteRepo INIT] Modo: SQLite | Path: {self.db_url}", flush=True)
+            self._inicializar_banco()
         else:
             host_info = re.search(r'@([^/]+)', self.db_url)
             print(f"[SQLiteRepo INIT] Modo: PostgreSQL | Host: {host_info.group(1) if host_info else '?'}", flush=True)
@@ -284,7 +285,20 @@ class SQLiteRepo:
                 cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}{default_clause}")
 
     def _inicializar_banco(self):
-        """Garante que o schema existe e dados essenciais (apenas PostgreSQL)."""
+        """Garante que o schema existe e dados essenciais."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            # Tabela precos_diarios (usada por todos os modos)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS precos_diarios (
+                    coingecko_id TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    preco DOUBLE PRECISION NOT NULL,
+                    fonte TEXT DEFAULT 'coingecko',
+                    PRIMARY KEY (coingecko_id, data)
+                )
+            """)
+
         if self._use_sqlite:
             return
         with self._get_connection() as conn:
@@ -1290,7 +1304,7 @@ class SQLiteRepo:
             cursor.execute("""
                 SELECT valor FROM stops
                 WHERE posicao_id = %s
-                ORDER BY data DESC
+                ORDER BY data DESC, id DESC
                 LIMIT 1
             """, (posicao_id,))
             row = cursor.fetchone()

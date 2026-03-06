@@ -435,6 +435,8 @@ def calcular_trailing_stop(
     trail = None
     breached = False
 
+    hoje = pd.Timestamp.now().normalize()
+
     for i in range(len(df_filtered)):
         row = df_filtered.iloc[i]
 
@@ -461,18 +463,17 @@ def calcular_trailing_stop(
 
             if is_long:
                 candidate = prev_close - (multiplier * prev_atr)
-                # Trail up only (never lower the stop for longs)
                 trail = max(trail, candidate)
-                # Check breach against CURRENT close
-                if close <= trail:
+                # Breach only counts on fully closed candles (not today's incomplete candle)
+                candle_date = pd.Timestamp(row['timestamp']).normalize()
+                if candle_date < hoje and close <= trail:
                     breached = True
                     break
             else:
                 candidate = prev_close + (multiplier * prev_atr)
-                # Trail down only (never raise the stop for shorts)
                 trail = min(trail, candidate)
-                # Check breach against CURRENT close
-                if close >= trail:
+                candle_date = pd.Timestamp(row['timestamp']).normalize()
+                if candle_date < hoje and close >= trail:
                     breached = True
                     break
 
