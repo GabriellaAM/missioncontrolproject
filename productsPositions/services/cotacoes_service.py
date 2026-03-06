@@ -422,7 +422,10 @@ class CotacoesService:
     def obter_historicos_batch(self, coingecko_ids: List[str],
                               dias: int = 365) -> Dict[str, Dict[str, float]]:
         """
-        Busca histórico de preços de múltiplos ativos via CoinGecko em paralelo.
+        Busca histórico de preços de múltiplos ativos.
+
+        Estratégia: tabela precos_diarios (DB) primeiro; CoinGecko apenas
+        para ativos sem cobertura suficiente no banco.
 
         Args:
             coingecko_ids: Lista de IDs CoinGecko
@@ -430,32 +433,78 @@ class CotacoesService:
 
         Returns:
             Dict[coingecko_id, Dict[data_str, preco]]
-            Ex: {'bitcoin': {'2026-01-15': 100000.0, '2026-01-16': 101000.0}}
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         resultado = {}
-        ids_unicos = list(set(coingecko_ids))
+        ids_unicos = list(set(cid for cid in coingecko_ids if cid))
         if not ids_unicos:
             return resultado
 
-        def _fetch_one(cg_id):
-            historico = self.obter_historico_coingecko(cg_id, dias=dias)
-            if historico:
-                return cg_id, {item['data']: item['preco'] for item in historico}
-            return cg_id, None
+        data_limite = (datetime.now() - timedelta(days=dias)).strftime("%Y-%m-%d")
 
-        max_workers = min(len(ids_unicos), 5)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_fetch_one, cg_id): cg_id for cg_id in ids_unicos}
-            for future in as_completed(futures):
+        # 1) Buscar do banco (precos_diarios) — uma única query para todos
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            placeholders = ','.join(['%s'] * len(ids_unicos))
+            cursor.execute(f"""
+                SELECT coingecko_id, data, preco
+                FROM precos_diarios
+                WHERE coingecko_id IN ({placeholders}) AND data >= %s
+                ORDER BY coingecko_id, data
+            """, ids_unicos + [data_limite])
+            for row in cursor.fetchall():
+                cg_id = row[0]
+                if cg_id not in resultado:
+                    resultado[cg_id] = {}
+                resultado[cg_id][row[1]] = float(row[2])
+            conn.close()
+        except Exception as e:
+            logger.debug("[obter_historicos_batch] Erro ao ler precos_diarios: %s", e)
+
+        # 2) CoinGecko apenas para ativos sem dados (ou com menos de 5 pontos)
+        ids_faltando = [cid for cid in ids_unicos if len(resultado.get(cid, {})) < 5]
+        if ids_faltando:
+            def _fetch_one(cg_id):
+                historico = self.obter_historico_coingecko(cg_id, dias=dias)
+                if historico:
+                    return cg_id, {item['data']: item['preco'] for item in historico}
+                return cg_id, None
+
+            max_workers = min(len(ids_faltando), 5)
+            novos_precos = []
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_fetch_one, cg_id): cg_id for cg_id in ids_faltando}
+                for future in as_completed(futures):
+                    try:
+                        cg_id, precos_por_data = future.result()
+                        if precos_por_data:
+                            if cg_id not in resultado:
+                                resultado[cg_id] = {}
+                            resultado[cg_id].update(precos_por_data)
+                            for d, p in precos_por_data.items():
+                                novos_precos.append((cg_id, d, p))
+                    except Exception as e:
+                        cg_id = futures[future]
+                        print(f"[HISTORICO BATCH] Erro ao buscar {cg_id}: {e}", flush=True)
+
+            # Persistir no banco para acelerar próximas consultas
+            if novos_precos:
                 try:
-                    cg_id, precos_por_data = future.result()
-                    if precos_por_data:
-                        resultado[cg_id] = precos_por_data
+                    conn = self._get_connection()
+                    cursor = conn.cursor()
+                    for cg_id, d, p in novos_precos:
+                        cursor.execute("""
+                            INSERT INTO precos_diarios (coingecko_id, data, preco, fonte)
+                            VALUES (%s, %s, %s, 'coingecko')
+                            ON CONFLICT (coingecko_id, data) DO NOTHING
+                        """, (cg_id, d, p))
+                    conn.commit()
+                    conn.close()
+                    logger.debug("[obter_historicos_batch] Salvos %d precos em precos_diarios", len(novos_precos))
                 except Exception as e:
-                    cg_id = futures[future]
-                    print(f"[HISTORICO BATCH] Erro ao buscar {cg_id}: {e}", flush=True)
+                    logger.debug("[obter_historicos_batch] Erro ao salvar precos_diarios: %s", e)
 
         return resultado
 

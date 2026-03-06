@@ -2987,7 +2987,7 @@ document.addEventListener('DOMContentLoaded', function() {{
     if(TURMA_ID){{
         var loadEl = document.getElementById('chartLoading');
         var wrapEl = document.getElementById('chartWrapper');
-        var timeoutMs = 20000;
+        var timeoutMs = 90000;
         var timeoutPromise = new Promise(function(_, reject){{ setTimeout(function(){{ reject(new Error('Tempo esgotado ao carregar dados.')); }}, timeoutMs); }});
         Promise.race([
             fetch('/api/turma/'+TURMA_ID+'/rentabilidade').then(function(r){{ return r.json(); }}),
