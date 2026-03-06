@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 import time
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Carregar .env da raiz do projeto
 try:
@@ -167,6 +170,11 @@ class CotacoesService:
         Returns:
             Lista de dicts com open_time, close, etc.
         """
+        limit_effective = min(limit, 200)
+        logger.debug(
+            "[obter_klines_bitget] ENTRADA symbol=%s period=%s limit=%s limit_effective=%s",
+            symbol, period, limit, limit_effective
+        )
         try:
             # API v2 spot: history-candles (endTime = até quando buscar; retorna candles antes)
             end_time = datetime.now()
@@ -177,16 +185,18 @@ class CotacoesService:
                     "symbol": symbol.upper(),
                     "granularity": period,
                     "endTime": str(end_ts_ms),
-                    "limit": str(min(limit, 200))
+                    "limit": str(limit_effective)
                 },
                 timeout=10
             )
             if response.status_code == 200:
                 data = response.json()
                 if data.get("code") != "00000":
+                    logger.debug("[obter_klines_bitget] API code != 00000, retornando []")
                     return []
                 arr = data.get("data", [])
                 if not arr:
+                    logger.debug("[obter_klines_bitget] data vazia, retornando []")
                     return []
                 # Bitget retorna [ts, open, high, low, close, volume, ...]
                 klines = []
@@ -201,10 +211,96 @@ class CotacoesService:
                             "open_time": datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d"),
                             "close": close
                         })
+                dates_kl = [x.get("open_time") for x in klines if x.get("open_time")]
+                min_date = min(dates_kl) if dates_kl else None
+                max_date = max(dates_kl) if dates_kl else None
+                logger.debug(
+                    "[obter_klines_bitget] RETORNO len=%s min_date=%s max_date=%s head5=%s tail5=%s",
+                    len(klines), min_date, max_date,
+                    klines[:5] if len(klines) >= 5 else klines,
+                    klines[-5:] if len(klines) >= 5 else klines
+                )
                 return klines
         except Exception as e:
+            logger.debug("[obter_klines_bitget] EXCEÇÃO %s", e, exc_info=True)
             print(f"Erro ao buscar klines Bitget para {symbol}: {e}")
         return []
+
+    def obter_klines_bitget_paginado(self, symbol: str, period: str, dias: int) -> List[Dict]:
+        """
+        Obtém candles históricos da Bitget com paginação (máx 200 por chamada).
+        Usa endTime para paginar para trás no tempo até cobrir `dias` dias.
+        Usa request_with_retry e time.sleep(0.2) entre páginas.
+        """
+        from services.http_client import request_with_retry
+
+        LIMIT_POR_PAGINA = 200
+        all_klines: List[Dict] = []
+        seen_dates: set = set()
+        end_ts_ms = int(datetime.now().timestamp() * 1000)
+        url = f"{self.BITGET_API_URL}/api/v2/spot/market/history-candles"
+        first_to_ts_enviado = end_ts_ms
+        first_ts_raw = None
+        last_ts_raw = None
+
+        while dias > 0:
+            params = {
+                "symbol": symbol.upper(),
+                "granularity": period,
+                "endTime": str(end_ts_ms),
+                "limit": str(LIMIT_POR_PAGINA),
+            }
+            try:
+                response = request_with_retry(url, params=params, timeout=10)
+            except requests.RequestException as e:
+                logger.warning("[obter_klines_bitget_paginado] Falha após retries: %s", e)
+                break
+            data = response.json()
+            if data.get("code") != "00000":
+                break
+            arr = data.get("data", [])
+            if not arr:
+                break
+            if first_ts_raw is None:
+                first_ts_raw = int(arr[0][0])  # mais recente (primeiro da resposta)
+            last_ts_raw = int(arr[-1][0])  # mais antigo (último da resposta)
+            batch: List[Dict] = []
+            min_ts_ms = None
+            for k in arr:
+                if len(k) >= 5:
+                    try:
+                        ts_ms = int(k[0])
+                        close = float(k[4])
+                        dt_str = datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d")
+                        if dt_str not in seen_dates:
+                            seen_dates.add(dt_str)
+                            batch.append({"open_time": dt_str, "close": close})
+                        if min_ts_ms is None or ts_ms < min_ts_ms:
+                            min_ts_ms = ts_ms
+                    except (TypeError, ValueError):
+                        continue
+            all_klines.extend(batch)
+            if min_ts_ms is None:
+                break
+            end_ts_ms = min_ts_ms - 1
+            dias -= len(batch)
+            if len(arr) < LIMIT_POR_PAGINA:
+                break
+            time.sleep(0.2)
+
+        all_klines.sort(key=lambda x: x.get("open_time", ""))
+        # Instrumentação FASE 2
+        if all_klines:
+            min_day = min(k["open_time"] for k in all_klines)
+            max_day = max(k["open_time"] for k in all_klines)
+            print(f"[BITGET] MIN DIA REAL: {min_day}", flush=True)
+            print(f"[BITGET] MAX DIA REAL: {max_day}", flush=True)
+            print(f"[BITGET] TOTAL PONTOS: {len(all_klines)}", flush=True)
+            print(f"[BITGET] TO_TS ENVIADO (primeira req): {first_to_ts_enviado}", flush=True)
+            print(f"[BITGET] LIMIT ENVIADO: {LIMIT_POR_PAGINA}", flush=True)
+            print(f"[BITGET] PRIMEIRO TIMESTAMP BRUTO (ms): {first_ts_raw}", flush=True)
+            print(f"[BITGET] ULTIMO TIMESTAMP BRUTO (ms): {last_ts_raw}", flush=True)
+        return all_klines
 
     def obter_preco_fechamento_bitget_data(self, symbol: str, data: str) -> Optional[float]:
         """
@@ -262,9 +358,11 @@ class CotacoesService:
         preco, _ = self.obter_preco_coingecko_com_status(coingecko_id)
         return preco
 
-    def obter_precos_batch_coingecko(self, coingecko_ids: List[str]) -> Dict[str, float]:
+    def obter_precos_coingecko_fallback(
+        self, coingecko_ids: List[str]
+    ) -> Dict[str, float]:
         """
-        Busca preços atuais de múltiplos ativos em uma única chamada CoinGecko.
+        Busca preços atuais via CoinGecko. Uso: apenas como fallback após tentar Bitget.
         Usa cache module-level com TTL de 5 minutos para evitar chamadas repetidas.
 
         Args:
@@ -324,10 +422,7 @@ class CotacoesService:
     def obter_historicos_batch(self, coingecko_ids: List[str],
                               dias: int = 365) -> Dict[str, Dict[str, float]]:
         """
-        Busca histórico de preços de múltiplos ativos via CoinGecko.
-
-        Faz uma chamada market_chart por ativo e monta um dicionário
-        indexado por coingecko_id e data para consulta O(1).
+        Busca histórico de preços de múltiplos ativos via CoinGecko em paralelo.
 
         Args:
             coingecko_ids: Lista de IDs CoinGecko
@@ -337,18 +432,30 @@ class CotacoesService:
             Dict[coingecko_id, Dict[data_str, preco]]
             Ex: {'bitcoin': {'2026-01-15': 100000.0, '2026-01-16': 101000.0}}
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         resultado = {}
         ids_unicos = list(set(coingecko_ids))
+        if not ids_unicos:
+            return resultado
 
-        for cg_id in ids_unicos:
+        def _fetch_one(cg_id):
             historico = self.obter_historico_coingecko(cg_id, dias=dias)
             if historico:
-                # Montar dict data->preco. Se houver duplicatas (mesmo dia),
-                # a última entrada vence (geralmente o preço de fechamento)
-                precos_por_data = {}
-                for item in historico:
-                    precos_por_data[item['data']] = item['preco']
-                resultado[cg_id] = precos_por_data
+                return cg_id, {item['data']: item['preco'] for item in historico}
+            return cg_id, None
+
+        max_workers = min(len(ids_unicos), 5)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_fetch_one, cg_id): cg_id for cg_id in ids_unicos}
+            for future in as_completed(futures):
+                try:
+                    cg_id, precos_por_data = future.result()
+                    if precos_por_data:
+                        resultado[cg_id] = precos_por_data
+                except Exception as e:
+                    cg_id = futures[future]
+                    print(f"[HISTORICO BATCH] Erro ao buscar {cg_id}: {e}", flush=True)
 
         return resultado
 
@@ -415,6 +522,10 @@ class CotacoesService:
         Returns:
             Lista de dicts com data e preco
         """
+        logger.debug(
+            "[obter_historico_coingecko] ENTRADA coingecko_id=%s dias=%s",
+            coingecko_id, dias
+        )
         try:
             headers = {}
             if self.gecko_api_key:
@@ -439,10 +550,105 @@ class CotacoesService:
                         'data': data_str,
                         'preco': preco
                     })
+                dates_cg = [x.get('data') for x in precos if x.get('data')]
+                min_date = min(dates_cg) if dates_cg else None
+                max_date = max(dates_cg) if dates_cg else None
+                logger.debug(
+                    "[obter_historico_coingecko] RETORNO len=%s min_date=%s max_date=%s head5=%s tail5=%s",
+                    len(precos), min_date, max_date,
+                    precos[:5] if len(precos) >= 5 else precos,
+                    precos[-5:] if len(precos) >= 5 else precos
+                )
                 return precos
         except Exception as e:
+            logger.debug("[obter_historico_coingecko] EXCEÇÃO %s", e, exc_info=True)
             print(f"Erro ao buscar histórico CoinGecko para {coingecko_id}: {e}")
         return []
+
+    def obter_historico_coingecko_range_chunked(
+        self, coingecko_id: str, data_inicio: date, data_fim: Optional[date] = None
+    ) -> List[Dict]:
+        """
+        Obtém histórico de preços via endpoint market_chart/range, em blocos de 365 dias.
+        Se data_fim não for passado, vai até hoje. Usa timestamps UNIX; request_with_retry e time.sleep(1) entre blocos.
+        Retorna lista consolidada de dicts com 'data' (YYYY-MM-DD) e 'preco'.
+        """
+        from services.http_client import request_with_retry
+
+        CHUNK_DAYS = 365
+        hoje = date.today()
+        limite_superior = data_fim if data_fim is not None else hoje
+        if data_inicio > limite_superior:
+            return []
+        resultado: List[Dict] = []
+        seen_dates: set = set()
+        current_start = data_inicio
+        first_ts_raw = None
+        last_ts_raw = None
+
+        while current_start <= limite_superior:
+            current_end = min(
+                current_start + timedelta(days=CHUNK_DAYS - 1),
+                limite_superior
+            )
+            from_ts = int(datetime.combine(current_start, datetime.min.time()).timestamp())
+            # Último chunk até hoje: usar utcnow(); caso contrário fim do dia current_end
+            if data_fim is None and current_end >= hoje:
+                to_ts = int(datetime.utcnow().timestamp())
+            else:
+                to_ts = int(datetime.combine(current_end, datetime.min.time()).timestamp())
+            url = f"{self.COINGECKO_API_URL}/coins/{coingecko_id}/market_chart/range"
+            params = {"vs_currency": "usd", "from": from_ts, "to": to_ts}
+            headers = {}
+            if self.gecko_api_key:
+                headers["x-cg-pro-api-key"] = self.gecko_api_key
+            try:
+                response = request_with_retry(
+                    url, params=params, headers=headers, timeout=30
+                )
+            except requests.RequestException as e:
+                logger.warning(
+                    "[obter_historico_coingecko_range_chunked] Falha %s a %s: %s",
+                    current_start, current_end, e
+                )
+                current_start = current_end + timedelta(days=1)
+                time.sleep(1)
+                continue
+            data = response.json()
+            for item in data.get("prices", []):
+                try:
+                    ts_raw = item[0]
+                    # FASE 4: se veio em ms (> 10^12), converter para segundos ao interpretar
+                    if ts_raw > 10**12:
+                        ts_sec = ts_raw / 1000
+                    else:
+                        ts_sec = ts_raw
+                    data_str = datetime.fromtimestamp(ts_sec).strftime("%Y-%m-%d")
+                    if first_ts_raw is None:
+                        first_ts_raw = ts_raw
+                    last_ts_raw = ts_raw
+                    if data_str not in seen_dates:
+                        seen_dates.add(data_str)
+                        resultado.append({"data": data_str, "preco": float(item[1])})
+                except (IndexError, TypeError, ValueError):
+                    continue
+            current_start = current_end + timedelta(days=1)
+            time.sleep(1)
+
+        resultado.sort(key=lambda x: x.get("data", ""))
+        # Instrumentação FASE 2
+        if resultado:
+            min_day = min(r["data"] for r in resultado)
+            max_day = max(r["data"] for r in resultado)
+            print(f"[COINGECKO] MIN DIA REAL: {min_day}", flush=True)
+            print(f"[COINGECKO] MAX DIA REAL: {max_day}", flush=True)
+            print(f"[COINGECKO] TOTAL PONTOS: {len(resultado)}", flush=True)
+            print(f"[COINGECKO] FROM_TS ENVIADO (primeiro chunk): {int(datetime.combine(data_inicio, datetime.min.time()).timestamp())}", flush=True)
+            print(f"[COINGECKO] TO_TS ENVIADO (ultimo chunk): ate utcnow()", flush=True)
+            print(f"[COINGECKO] LIMIT ENVIADO: (range API, sem limit)", flush=True)
+            print(f"[COINGECKO] PRIMEIRO TIMESTAMP BRUTO: {first_ts_raw}", flush=True)
+            print(f"[COINGECKO] ULTIMO TIMESTAMP BRUTO: {last_ts_raw}", flush=True)
+        return resultado
 
     def obter_preco_historico_exato(self, coingecko_id: str, data: str) -> Dict:
         """

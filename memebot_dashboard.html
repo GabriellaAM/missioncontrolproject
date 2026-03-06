@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Memebot Dashboard - Rentabilidade por Produto</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="productsPositions/assets/chart.umd.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -204,7 +204,7 @@
             <div class="table-scroll">
                 <table class="data-table">
                     <thead><tr>
-                        <th>Ativo</th><th>Side</th><th>Data Entrada</th><th>Pre&ccedil;o Entrada</th><th>Qtd</th><th>Pre&ccedil;o Atual</th><th>PnL%</th>
+                        <th>Ativo</th><th>Side</th><th>Data Entrada</th><th>Pre&ccedil;o Entrada</th><th>Qtd</th><th>Pre&ccedil;o Atual</th><th>Stop</th><th>PnL%</th>
                     </tr></thead>
                     <tbody id="tbody-meme-abertas"></tbody>
                 </table>
@@ -215,7 +215,7 @@
             <div class="table-scroll">
                 <table class="data-table">
                     <thead><tr>
-                        <th>Ativo</th><th>Side</th><th>Data Entrada</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada</th><th>Pre&ccedil;o Sa&iacute;da</th><th>Qtd</th><th>PnL%</th>
+                        <th>Ativo</th><th>Side</th><th>Data Entrada</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada</th><th>Pre&ccedil;o Sa&iacute;da</th><th>Qtd</th><th>Stop</th><th>PnL%</th>
                     </tr></thead>
                     <tbody id="tbody-meme-fechadas"></tbody>
                 </table>
@@ -226,7 +226,7 @@
             <div class="table-scroll">
                 <table class="data-table">
                     <thead><tr>
-                        <th>Ativo</th><th>Side</th><th>Status</th><th>Data Entrada</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada</th><th>Pre&ccedil;o Sa&iacute;da/Atual</th><th>Qtd</th><th>PnL%</th>
+                        <th>Ativo</th><th>Side</th><th>Status</th><th>Data Entrada</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada</th><th>Pre&ccedil;o Sa&iacute;da/Atual</th><th>Qtd</th><th>Stop</th><th>PnL%</th>
                     </tr></thead>
                     <tbody id="tbody-meme-historico"></tbody>
                 </table>
@@ -364,6 +364,10 @@ function setupSortableHeaders(tableEl, tableKey, data, columns, renderFn) {
     });
 }
 
+function formatStop(v) {
+    if (v === null || v === undefined) return '\u2014';
+    return '$ ' + formatPrice(v);
+}
 function closedColumns() {
     return [
         { type:'text',   value:t=>t.ativo },
@@ -374,6 +378,7 @@ function closedColumns() {
         { type:'number', value:t=>t.preco_entrada_turma },
         { type:'number', value:t=>t.preco_saida },
         { type:'number', value:t=>t.quantidade },
+        { type:'number', value:t=>t.stop_atual },
         { type:'number', value:t=>getPnlValue(t.preco_entrada_turma, t.preco_saida, t.side) }
     ];
 }
@@ -385,6 +390,7 @@ function openColumns() {
         { type:'number', value:t=>t.preco_entrada_turma },
         { type:'number', value:t=>t.quantidade },
         { type:'number', value:t=>t.preco_atual||t.preco_entrada_turma },
+        { type:'number', value:t=>t.stop_atual },
         { type:'number', value:t=>getPnlValue(t.preco_entrada_turma, t.preco_atual||t.preco_entrada_turma, t.side) }
     ];
 }
@@ -399,6 +405,7 @@ function historicoColumns() {
         { type:'number', value:t=>t.preco_entrada_turma },
         { type:'number', value:t=>t.ativo_atual?(t.preco_atual||t.preco_entrada_turma):t.preco_saida },
         { type:'number', value:t=>t.quantidade },
+        { type:'number', value:t=>t.stop_atual },
         { type:'number', value:t=>{const p2=t.ativo_atual?(t.preco_atual||t.preco_entrada_turma):t.preco_saida;return getPnlValue(t.preco_entrada_turma,p2,t.side);} }
     ];
 }
@@ -410,6 +417,7 @@ function renderClosedRow(t) {
         <td>${daysDiff(t.data_insercao, t.data_remocao)}</td>
         <td>$ ${formatPrice(t.preco_entrada_turma)}</td><td>$ ${formatPrice(t.preco_saida)}</td>
         <td>${t.quantidade!=null?t.quantidade.toLocaleString('en-US',{maximumFractionDigits:4}):'\u2014'}</td>
+        <td>${formatStop(t.stop_atual)}</td>
         <td>${formatPnl(t.preco_entrada_turma, t.preco_saida, t.side)}</td></tr>`;
 }
 function renderOpenRow(t) {
@@ -420,6 +428,7 @@ function renderOpenRow(t) {
         <td>$ ${formatPrice(t.preco_entrada_turma)}</td>
         <td>${t.quantidade!=null?t.quantidade.toLocaleString('en-US',{maximumFractionDigits:4}):'\u2014'}</td>
         <td>$ ${formatPrice(pa)}</td>
+        <td>${formatStop(t.stop_atual)}</td>
         <td>${formatPnl(t.preco_entrada_turma, pa, t.side)}</td></tr>`;
 }
 function renderHistoricoRow(t) {
@@ -430,6 +439,7 @@ function renderHistoricoRow(t) {
         <td>${t.ativo_atual?daysDiff(t.data_insercao,'2026-02-06'):daysDiff(t.data_insercao,t.data_remocao)}</td>
         <td>$ ${formatPrice(t.preco_entrada_turma)}</td><td>$ ${formatPrice(p2)}</td>
         <td>${t.quantidade!=null?t.quantidade.toLocaleString('en-US',{maximumFractionDigits:4}):'\u2014'}</td>
+        <td>${formatStop(t.stop_atual)}</td>
         <td>${formatPnl(t.preco_entrada_turma, p2, t.side)}</td></tr>`;
 }
 
@@ -440,21 +450,21 @@ function renderHistoricoRow(t) {
 function populateClosedTable(tbodyId, carteira) {
     const tbody = document.getElementById(tbodyId);
     const closed = carteira.filter(t=>!t.ativo_atual).sort((a,b)=>b.data_insercao.localeCompare(a.data_insercao));
-    if (!closed.length) { tbody.innerHTML='<tr><td colspan="9" class="empty-state">Nenhum trade fechado</td></tr>'; return; }
+    if (!closed.length) { tbody.innerHTML='<tr><td colspan="10" class="empty-state">Nenhum trade fechado</td></tr>'; return; }
     tbody.innerHTML = closed.map(renderClosedRow).join('');
     setupSortableHeaders(tbody.closest('table'), tbodyId, closed, closedColumns(), renderClosedRow);
 }
 function populateHistoricoTable(tbodyId, carteira) {
     const tbody = document.getElementById(tbodyId);
     const all = [...carteira].sort((a,b)=>b.data_insercao.localeCompare(a.data_insercao));
-    if (!all.length) { tbody.innerHTML='<tr><td colspan="10" class="empty-state">Nenhum trade</td></tr>'; return; }
+    if (!all.length) { tbody.innerHTML='<tr><td colspan="11" class="empty-state">Nenhum trade</td></tr>'; return; }
     tbody.innerHTML = all.map(renderHistoricoRow).join('');
     setupSortableHeaders(tbody.closest('table'), tbodyId, all, historicoColumns(), renderHistoricoRow);
 }
 function populateOpenTable(tbodyId, carteira) {
     const tbody = document.getElementById(tbodyId);
     const open = carteira.filter(t=>t.ativo_atual).sort((a,b)=>b.data_insercao.localeCompare(a.data_insercao));
-    if (!open.length) { tbody.innerHTML='<tr><td colspan="7" class="empty-state">Nenhuma posicao aberta</td></tr>'; return; }
+    if (!open.length) { tbody.innerHTML='<tr><td colspan="8" class="empty-state">Nenhuma posicao aberta</td></tr>'; return; }
     tbody.innerHTML = open.map(renderOpenRow).join('');
     setupSortableHeaders(tbody.closest('table'), tbodyId, open, openColumns(), renderOpenRow);
 }

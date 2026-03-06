@@ -1084,7 +1084,7 @@ class RentabilidadeService:
             )
 
             hoje = datetime.now().strftime("%Y-%m-%d")
-            precos_hoje = self.cotacoes_service.obter_precos_batch_coingecko(coingecko_ids)
+            precos_hoje = self.cotacoes_service.obter_precos_coingecko_fallback(coingecko_ids)
             for cg_id, preco in precos_hoje.items():
                 if cg_id not in precos_cache:
                     precos_cache[cg_id] = {}
@@ -1171,7 +1171,7 @@ class RentabilidadeService:
 
         # Preço de hoje (1 chamada batch para todos)
         hoje = datetime.now().strftime("%Y-%m-%d")
-        precos_hoje = self.cotacoes_service.obter_precos_batch_coingecko(coingecko_ids)
+        precos_hoje = self.cotacoes_service.obter_precos_coingecko_fallback(coingecko_ids)
         for cg_id, preco in precos_hoje.items():
             if cg_id not in precos_cache:
                 precos_cache[cg_id] = {}
@@ -1198,15 +1198,25 @@ class RentabilidadeService:
             )
         return resultado
 
-    def resumo_turma(self, turma_id: int) -> Dict[str, Any]:
+    def resumo_turma(self, turma_id: int, precos_atuais: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
         """
         Obtém resumo atual de uma turma.
+
+        Args:
+            turma_id: ID da turma
+            precos_atuais: Dict[coingecko_id, preco] já obtidos (ex: via obter_precos_bitget_primeiro_coingecko_fallback).
+                          Se fornecido, evita N chamadas individuais à API CoinGecko.
 
         Returns:
             Dict com métricas resumidas, incluindo informações de validação
         """
         hoje = datetime.now().strftime("%Y-%m-%d")
-        portfolio = self.calcular_portfolio_dia(turma_id, hoje)
+
+        precos_cache = None
+        if precos_atuais:
+            precos_cache = {cg_id: {hoje: preco} for cg_id, preco in precos_atuais.items() if preco is not None}
+
+        portfolio = self.calcular_portfolio_dia(turma_id, hoje, precos_cache=precos_cache)
 
         conn = self._get_connection()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1472,7 +1482,7 @@ class RentabilidadeService:
         # Buscar preços em tempo real via batch (uma única chamada API)
         precos_realtime = {}
         if coingecko_ids_necessarios:
-            precos_realtime = self.cotacoes_service.obter_precos_batch_coingecko(
+            precos_realtime = self.cotacoes_service.obter_precos_coingecko_fallback(
                 list(coingecko_ids_necessarios)
             )
 

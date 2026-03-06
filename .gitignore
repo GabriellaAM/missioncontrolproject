@@ -63,3 +63,8 @@ Thumbs.db  # Windows
 *.log
 *.tmp
 tmpclaude-*
+
+# --------------------
+# 8) Markdown docs/planos em productsPositions
+# --------------------
+productsPositions/*.md

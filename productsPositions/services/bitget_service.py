@@ -86,6 +86,13 @@ def get_bitget_credentials(produto_nome: str) -> Optional[Dict[str, str]]:
         if creds:
             return creds
 
+    # Fallback: "Soros Perpétuos" -> SOROS_PERP_TUOS; .env pode ter SOROS_PERP ou MEMEBOT_PERP
+    if "_PERP_TUOS" in normalized or "_PERPETUOS" in normalized:
+        short_perp = normalized.replace("_PERP_TUOS", "_PERP").replace("_PERPETUOS", "_PERP")
+        creds = _try_env_credentials(short_perp)
+        if creds:
+            return creds
+
     return None
 
 
@@ -474,41 +481,63 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
     return resultado
 
 
-def fetch_perpetual_history(credentials: Dict[str, str], limit: int = 100) -> List[Dict]:
+def fetch_perpetual_history(credentials: Dict[str, str], limit: int = 100, max_pages: int = 20) -> List[Dict]:
     """
     Fetches closed perpetual positions from Bitget (last 3 months).
 
     Uses GET /api/v2/mix/position/history-position
+    Doc: list items use "ctime" and "utime" (lowercase); pagination via idLessThan=endId.
 
     Returns list of closed positions with:
         - symbol, exchange_symbol, side, open_price, close_price,
           pnl, quantity, open_time, close_time
     """
-    endpoint = f"/api/v2/mix/position/history-position?productType=USDT-FUTURES&limit={limit}"
-    result = _bitget_request(credentials, "GET", endpoint)
+    all_positions = []
+    page_limit = min(limit, 100)  # API max 100 per page
+    id_less_than = None
 
-    if result.get("code") != "00000":
-        raise Exception(f"Bitget history-position error: {result.get('msg', 'Unknown')}")
+    for _ in range(max_pages):
+        endpoint = f"/api/v2/mix/position/history-position?productType=USDT-FUTURES&limit={page_limit}"
+        if id_less_than:
+            endpoint += f"&idLessThan={id_less_than}"
 
-    positions = []
-    data_obj = result.get("data", {})
-    items = data_obj.get("list", []) if isinstance(data_obj, dict) else []
+        result = _bitget_request(credentials, "GET", endpoint)
+        if result.get("code") != "00000":
+            raise Exception(f"Bitget history-position error: {result.get('msg', 'Unknown')}")
 
-    for pos in items:
-        symbol_raw = pos.get("symbol", "")
-        positions.append({
-            "symbol": symbol_raw.replace("USDT", ""),
-            "exchange_symbol": symbol_raw,
-            "side": pos.get("holdSide", "").lower(),
-            "open_price": float(pos.get("openAvgPrice", 0)),
-            "close_price": float(pos.get("closeAvgPrice", 0)),
-            "pnl": float(pos.get("netProfit", 0)),
-            "quantity": float(pos.get("closeTotalPos", 0)),
-            "open_time": pos.get("cTime"),   # timestamp ms
-            "close_time": pos.get("uTime"),  # timestamp ms
-        })
+        data_obj = result.get("data", {})
+        if not isinstance(data_obj, dict):
+            break
+        items = data_obj.get("list", [])
+        if not items:
+            break
 
-    return positions
+        for pos in items:
+            symbol_raw = pos.get("symbol", "")
+            # API doc: response uses "ctime" / "utime" (lowercase); aceitar ambos
+            open_ts = pos.get("cTime") or pos.get("ctime")
+            close_ts = pos.get("uTime") or pos.get("utime")
+            all_positions.append({
+                "symbol": symbol_raw.replace("USDT", ""),
+                "exchange_symbol": symbol_raw,
+                "side": pos.get("holdSide", "").lower(),
+                "open_price": float(pos.get("openAvgPrice", 0)),
+                "close_price": float(pos.get("closeAvgPrice", 0)),
+                "pnl": float(pos.get("netProfit", 0)),
+                "quantity": float(pos.get("closeTotalPos", 0)),
+                "open_time": open_ts,
+                "close_time": close_ts,
+            })
+
+        end_id = data_obj.get("endId")
+        if not end_id or len(items) < page_limit:
+            break
+        id_less_than = end_id
+        if len(all_positions) >= limit:
+            break
+        time.sleep(0.05)
+
+    return all_positions
 
 
 def fetch_spot_copy_history(credentials: Dict[str, str], limit: int = 100) -> List[Dict]:
