@@ -759,12 +759,22 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
                 if skip_create:
                     continue
 
+                # Resolver coingecko_id da tabela ativos (posições anteriores já o têm)
+                coingecko_id = None
+                try:
+                    ativo_info = repo.obter_ativo(ativo)
+                    if ativo_info and ativo_info.get('coingecko_id'):
+                        coingecko_id = ativo_info['coingecko_id']
+                except Exception:
+                    pass
+
                 posicao = Posicao(
                     ativo=ativo,
                     side=side,
                     data_entrada=data_entrada,
                     preco_entrada=entry_price,
                     exchange_symbol=exchange_symbol,
+                    coingecko_id=coingecko_id,
                 )
                 posicao_id = repo.salvar_posicao(produto_id, posicao)
                 resultado["opened"] += 1
