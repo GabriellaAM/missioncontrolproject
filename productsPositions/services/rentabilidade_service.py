@@ -142,6 +142,8 @@ class DailyPortfolio:
 class RentabilidadeService:
     """Serviço para calcular rentabilidade por turma."""
 
+    CAMPOS_DATA = ('data_insercao', 'data_remocao', 'data_inicio')
+
     # Valores válidos para o campo 'side'
     SIDES_VALIDOS = ('long', 'short')
 
@@ -159,6 +161,27 @@ class RentabilidadeService:
         if self.db_url is None:
             raise ValueError("SUPABASE_DB_URL environment variable is not set")
         self.cotacoes_service = CotacoesService(db_path, db_url=self.db_url)
+
+    @staticmethod
+    def _normalizar_data(val):
+        """Converte datetime.date/datetime para string YYYY-MM-DD.
+
+        psycopg2 retorna colunas DATE como datetime.date, enquanto SQLite
+        retorna strings. Normalizar garante que comparações funcionem em ambos.
+        """
+        if val is None:
+            return None
+        if hasattr(val, 'isoformat'):
+            return val.isoformat()[:10]
+        return str(val)
+
+    @classmethod
+    def _normalizar_datas_trade(cls, trade: dict) -> dict:
+        """Normaliza campos de data em um trade dict para strings YYYY-MM-DD."""
+        for campo in cls.CAMPOS_DATA:
+            if campo in trade:
+                trade[campo] = cls._normalizar_data(trade[campo])
+        return trade
 
     def _validar_side(self, side: Any) -> Tuple[bool, Optional[str]]:
         """
@@ -552,9 +575,8 @@ class RentabilidadeService:
 
         trades = []
         for row in cursor.fetchall():
-            trade = dict(row)
+            trade = self._normalizar_datas_trade(dict(row))
 
-            # Determinar se está 'aberto' ou 'vendido' neste dia
             if trade['data_remocao'] and trade['data_remocao'] == dia:
                 trade['status'] = 'vendido'
             else:
@@ -1024,7 +1046,7 @@ class RentabilidadeService:
             return []
 
         if data_inicio is None:
-            data_inicio = row['data_inicio']
+            data_inicio = self._normalizar_data(row['data_inicio'])
         capital_base = float(row['capital_base']) if row['capital_base'] else 1500.0
 
         if data_fim is None:
@@ -1053,7 +1075,8 @@ class RentabilidadeService:
                 pap.quantidade,
                 p.preco_saida,
                 p.status as status_posicao,
-                COALESCE(prod.usa_quantidade, 0) as usa_quantidade
+                COALESCE(prod.usa_quantidade, 0) as usa_quantidade,
+                prod.tipo as tipo_produto
             FROM carteira_turma ct
             JOIN trades_turma tt ON ct.trade_id = tt.id
             JOIN posicoes p ON tt.posicao_id = p.id
@@ -1063,11 +1086,11 @@ class RentabilidadeService:
             WHERE ct.turma_id = %s
             AND date(ct.data_insercao) <= date(%s)
         """, (turma_id, data_fim))
-        todos_trades = [dict(r) for r in cursor.fetchall()]
+        todos_trades = [self._normalizar_datas_trade(dict(r)) for r in cursor.fetchall()]
         conn.close()
 
         # =====================================================================
-        # PRÉ-CARREGAR: preços históricos via API (pula se cache externo)
+        # PRÉ-CARREGAR: preços históricos — Bitget primeiro, CoinGecko fallback
         # =====================================================================
         if precos_cache is None:
             coingecko_ids = list(set(
@@ -1075,12 +1098,27 @@ class RentabilidadeService:
                 if t.get('coingecko_id')
             ))
 
+            exchange_symbol_map = {}
+            tipo_produto_map = {}
+            for t in todos_trades:
+                cg_id = t.get('coingecko_id')
+                ex_sym = (t.get('exchange_symbol') or '').strip()
+                if cg_id and ex_sym and cg_id not in exchange_symbol_map:
+                    exchange_symbol_map[cg_id] = ex_sym
+                    tipo_raw = (t.get('tipo_produto') or '').lower()
+                    if 'perp' in tipo_raw:
+                        tipo_produto_map[cg_id] = 'perpetuos'
+                    else:
+                        tipo_produto_map[cg_id] = 'spot'
+
             dias_necessarios = (datetime.strptime(data_fim, "%Y-%m-%d") -
                                datetime.strptime(data_inicio, "%Y-%m-%d")).days + 5
             dias_api = min(dias_necessarios, 365)
 
             precos_cache = self.cotacoes_service.obter_historicos_batch(
-                coingecko_ids, dias=dias_api
+                coingecko_ids, dias=dias_api,
+                exchange_symbol_map=exchange_symbol_map,
+                tipo_produto_map=tipo_produto_map,
             )
 
             hoje = datetime.now().strftime("%Y-%m-%d")
@@ -1139,37 +1177,44 @@ class RentabilidadeService:
         conn = self._get_connection()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+        base_query = """
+                SELECT DISTINCT p.coingecko_id, p.exchange_symbol, prod.tipo as tipo_produto
+                FROM carteira_turma ct
+                JOIN trades_turma tt ON ct.trade_id = tt.id
+                JOIN posicoes p ON tt.posicao_id = p.id
+                JOIN turmas t ON ct.turma_id = t.id
+                JOIN produtos prod ON t.produto_id = prod.id
+                WHERE p.coingecko_id IS NOT NULL
+        """
         if turma_ids:
             placeholders = ','.join(['%s'] * len(turma_ids))
-            cursor.execute(f"""
-                SELECT DISTINCT p.coingecko_id
-                FROM carteira_turma ct
-                JOIN trades_turma tt ON ct.trade_id = tt.id
-                JOIN posicoes p ON tt.posicao_id = p.id
-                WHERE ct.turma_id IN ({placeholders})
-                AND p.coingecko_id IS NOT NULL
-            """, turma_ids)
+            cursor.execute(f"{base_query} AND ct.turma_id IN ({placeholders})", turma_ids)
         else:
-            cursor.execute("""
-                SELECT DISTINCT p.coingecko_id
-                FROM carteira_turma ct
-                JOIN trades_turma tt ON ct.trade_id = tt.id
-                JOIN posicoes p ON tt.posicao_id = p.id
-                WHERE p.coingecko_id IS NOT NULL
-            """)
+            cursor.execute(base_query)
 
-        coingecko_ids = [row['coingecko_id'] for row in cursor.fetchall()]
+        rows = cursor.fetchall()
         conn.close()
 
+        coingecko_ids = [row['coingecko_id'] for row in rows]
         if not coingecko_ids:
             return {}
 
-        # Histórico (1 chamada por ativo)
+        exchange_symbol_map = {}
+        tipo_produto_map = {}
+        for row in rows:
+            cg_id = row['coingecko_id']
+            ex_sym = (row.get('exchange_symbol') or '').strip()
+            if cg_id and ex_sym and cg_id not in exchange_symbol_map:
+                exchange_symbol_map[cg_id] = ex_sym
+                tipo_raw = (row.get('tipo_produto') or '').lower()
+                tipo_produto_map[cg_id] = 'perpetuos' if 'perp' in tipo_raw else 'spot'
+
         precos_cache = self.cotacoes_service.obter_historicos_batch(
-            coingecko_ids, dias=min(dias, 365)
+            coingecko_ids, dias=min(dias, 365),
+            exchange_symbol_map=exchange_symbol_map,
+            tipo_produto_map=tipo_produto_map,
         )
 
-        # Preço de hoje (1 chamada batch para todos)
         hoje = datetime.now().strftime("%Y-%m-%d")
         precos_hoje = self.cotacoes_service.obter_precos_coingecko_fallback(coingecko_ids)
         for cg_id, preco in precos_hoje.items():
@@ -1250,7 +1295,7 @@ class RentabilidadeService:
             'turma_id': turma_id,
             'nome': turma_info['nome'] if turma_info else None,
             'produto': turma_info['produto_nome'] if turma_info else None,
-            'data_inicio': turma_info['data_inicio'] if turma_info else None,
+            'data_inicio': self._normalizar_data(turma_info['data_inicio']) if turma_info else None,
             'capital_base': turma_info['capital_base'] if turma_info else 1500.0,
             'trades_ativos': trades_ativos,
             'trades_fechados': trades_fechados,
@@ -1297,11 +1342,14 @@ class RentabilidadeService:
             JOIN produtos p ON t.produto_id = p.id
             WHERE t.id = %s
         """, (turma_id,))
-        turma_info = cursor.fetchone()
+        row = cursor.fetchone()
         conn.close()
 
-        if not turma_info:
+        if not row:
             return {'erro': f'Turma {turma_id} não encontrada'}
+
+        turma_info = dict(row)
+        turma_info['data_inicio'] = self._normalizar_data(turma_info.get('data_inicio'))
 
         # Calcular série de rentabilidade
         serie = self.calcular_serie_rentabilidade(turma_id, data_inicio, data_fim)
@@ -1431,6 +1479,9 @@ class RentabilidadeService:
             """)
 
         turmas = [dict(row) for row in cursor.fetchall()]
+        for t in turmas:
+            if 'data_inicio' in t:
+                t['data_inicio'] = self._normalizar_data(t['data_inicio'])
 
         if not turmas:
             conn.close()
@@ -1468,7 +1519,7 @@ class RentabilidadeService:
             turma_id = row['turma_id']
             if turma_id not in trades_por_turma:
                 trades_por_turma[turma_id] = []
-            trade = dict(row)
+            trade = self._normalizar_datas_trade(dict(row))
             trades_por_turma[turma_id].append(trade)
 
             # Coletar coingecko_ids de trades que precisam de preço em tempo real

@@ -420,16 +420,22 @@ class CotacoesService:
             return {cid: self._precos_atuais_cache[cid] for cid in set(coingecko_ids) if cid in self._precos_atuais_cache}
 
     def obter_historicos_batch(self, coingecko_ids: List[str],
-                              dias: int = 365) -> Dict[str, Dict[str, float]]:
+                              dias: int = 365,
+                              exchange_symbol_map: Optional[Dict[str, str]] = None,
+                              tipo_produto_map: Optional[Dict[str, str]] = None) -> Dict[str, Dict[str, float]]:
         """
         Busca histórico de preços de múltiplos ativos.
 
-        Estratégia: tabela precos_diarios (DB) primeiro; CoinGecko apenas
-        para ativos sem cobertura suficiente no banco.
+        Estratégia:
+          1) precos_diarios (DB cache)
+          2) Bitget candles (se exchange_symbol disponível)
+          3) CoinGecko como último fallback
 
         Args:
             coingecko_ids: Lista de IDs CoinGecko
             dias: Número de dias de histórico (max 365)
+            exchange_symbol_map: Dict[coingecko_id -> exchange_symbol] para Bitget
+            tipo_produto_map: Dict[coingecko_id -> 'spot'|'perpetuos'] para Bitget
 
         Returns:
             Dict[coingecko_id, Dict[data_str, preco]]
@@ -440,6 +446,11 @@ class CotacoesService:
         ids_unicos = list(set(cid for cid in coingecko_ids if cid))
         if not ids_unicos:
             return resultado
+
+        if exchange_symbol_map is None:
+            exchange_symbol_map = {}
+        if tipo_produto_map is None:
+            tipo_produto_map = {}
 
         data_limite = (datetime.now() - timedelta(days=dias)).strftime("%Y-%m-%d")
 
@@ -458,24 +469,70 @@ class CotacoesService:
                 cg_id = row[0]
                 if cg_id not in resultado:
                     resultado[cg_id] = {}
-                resultado[cg_id][row[1]] = float(row[2])
+                data_key = row[1].isoformat()[:10] if hasattr(row[1], 'isoformat') else str(row[1])
+                resultado[cg_id][data_key] = float(row[2])
             conn.close()
         except Exception as e:
             logger.debug("[obter_historicos_batch] Erro ao ler precos_diarios: %s", e)
 
-        # 2) CoinGecko apenas para ativos sem dados (ou com menos de 5 pontos)
         ids_faltando = [cid for cid in ids_unicos if len(resultado.get(cid, {})) < 5]
-        if ids_faltando:
+        if not ids_faltando:
+            return resultado
+
+        # 2) Bitget candles para ativos que têm exchange_symbol
+        ids_com_bitget = [cid for cid in ids_faltando if exchange_symbol_map.get(cid)]
+        ids_sem_bitget = [cid for cid in ids_faltando if not exchange_symbol_map.get(cid)]
+        novos_precos = []
+
+        if ids_com_bitget:
+            from services.atr_stop_service import buscar_ohlc_bitget
+
+            def _fetch_bitget(cg_id):
+                symbol = exchange_symbol_map[cg_id]
+                product_type = tipo_produto_map.get(cg_id, 'spot')
+                try:
+                    df = buscar_ohlc_bitget(symbol, days=dias, product_type=product_type)
+                    if df is not None and not df.empty:
+                        precos = {}
+                        for _, row in df.iterrows():
+                            d = row['timestamp'].strftime("%Y-%m-%d")
+                            precos[d] = float(row['close'])
+                        return cg_id, precos
+                except Exception as e:
+                    logger.debug("[obter_historicos_batch] Bitget falhou %s (%s): %s", cg_id, symbol, e)
+                return cg_id, None
+
+            max_w = min(len(ids_com_bitget), 5)
+            with ThreadPoolExecutor(max_workers=max_w) as executor:
+                futures = {executor.submit(_fetch_bitget, cg_id): cg_id for cg_id in ids_com_bitget}
+                for future in as_completed(futures):
+                    try:
+                        cg_id, precos_por_data = future.result()
+                        if precos_por_data:
+                            if cg_id not in resultado:
+                                resultado[cg_id] = {}
+                            resultado[cg_id].update(precos_por_data)
+                            for d, p in precos_por_data.items():
+                                novos_precos.append((cg_id, d, p))
+                            print(f"[HISTORICO BATCH] Bitget OK: {cg_id} ({len(precos_por_data)} pontos)", flush=True)
+                        else:
+                            ids_sem_bitget.append(cg_id)
+                    except Exception as e:
+                        cg_id = futures[future]
+                        ids_sem_bitget.append(cg_id)
+                        print(f"[HISTORICO BATCH] Bitget erro {cg_id}: {e}", flush=True)
+
+        # 3) CoinGecko fallback para ativos sem Bitget ou onde Bitget falhou
+        if ids_sem_bitget:
             def _fetch_one(cg_id):
                 historico = self.obter_historico_coingecko(cg_id, dias=dias)
                 if historico:
                     return cg_id, {item['data']: item['preco'] for item in historico}
                 return cg_id, None
 
-            max_workers = min(len(ids_faltando), 5)
-            novos_precos = []
+            max_workers = min(len(ids_sem_bitget), 5)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(_fetch_one, cg_id): cg_id for cg_id in ids_faltando}
+                futures = {executor.submit(_fetch_one, cg_id): cg_id for cg_id in ids_sem_bitget}
                 for future in as_completed(futures):
                     try:
                         cg_id, precos_por_data = future.result()
@@ -487,24 +544,25 @@ class CotacoesService:
                                 novos_precos.append((cg_id, d, p))
                     except Exception as e:
                         cg_id = futures[future]
-                        print(f"[HISTORICO BATCH] Erro ao buscar {cg_id}: {e}", flush=True)
+                        print(f"[HISTORICO BATCH] CoinGecko erro {cg_id}: {e}", flush=True)
 
-            # Persistir no banco para acelerar próximas consultas
-            if novos_precos:
-                try:
-                    conn = self._get_connection()
-                    cursor = conn.cursor()
-                    for cg_id, d, p in novos_precos:
-                        cursor.execute("""
-                            INSERT INTO precos_diarios (coingecko_id, data, preco, fonte)
-                            VALUES (%s, %s, %s, 'coingecko')
-                            ON CONFLICT (coingecko_id, data) DO NOTHING
-                        """, (cg_id, d, p))
-                    conn.commit()
-                    conn.close()
-                    logger.debug("[obter_historicos_batch] Salvos %d precos em precos_diarios", len(novos_precos))
-                except Exception as e:
-                    logger.debug("[obter_historicos_batch] Erro ao salvar precos_diarios: %s", e)
+        # Persistir no banco para acelerar próximas consultas
+        if novos_precos:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                for cg_id, d, p in novos_precos:
+                    fonte = 'bitget' if exchange_symbol_map.get(cg_id) else 'coingecko'
+                    cursor.execute("""
+                        INSERT INTO precos_diarios (coingecko_id, data, preco, fonte)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (coingecko_id, data) DO NOTHING
+                    """, (cg_id, d, p, fonte))
+                conn.commit()
+                conn.close()
+                logger.debug("[obter_historicos_batch] Salvos %d precos em precos_diarios", len(novos_precos))
+            except Exception as e:
+                logger.debug("[obter_historicos_batch] Erro ao salvar precos_diarios: %s", e)
 
         return resultado
 
@@ -1114,7 +1172,8 @@ class CotacoesService:
             trade_id = trade['trade_id']
             ativo = trade['ativo']
             coingecko_id = trade['coingecko_id']
-            data_insercao = trade['data_insercao']
+            raw_di = trade['data_insercao']
+            data_insercao = raw_di.isoformat()[:10] if hasattr(raw_di, 'isoformat') else str(raw_di)
 
             # Precisa ter coingecko_id para buscar histórico
             if not coingecko_id:
@@ -1133,8 +1192,10 @@ class CotacoesService:
                 WHERE trade_id = %s
             """, (trade_id,))
             row = cursor.fetchone()
-            primeira_data = row['primeira_data'] if row and row['primeira_data'] else None
-            ultima_data = row['ultima_data'] if row and row['ultima_data'] else None
+            raw_pd = row['primeira_data'] if row and row['primeira_data'] else None
+            raw_ud = row['ultima_data'] if row and row['ultima_data'] else None
+            primeira_data = (raw_pd.isoformat()[:10] if hasattr(raw_pd, 'isoformat') else str(raw_pd)) if raw_pd else None
+            ultima_data = (raw_ud.isoformat()[:10] if hasattr(raw_ud, 'isoformat') else str(raw_ud)) if raw_ud else None
 
             # Determinar período que precisa de preenchimento
             # Caso 1: Não tem nenhum preço - preencher de data_insercao até ontem
