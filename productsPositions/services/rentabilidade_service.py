@@ -21,6 +21,7 @@ Fórmulas:
 import psycopg2
 import psycopg2.extras
 import os
+import time
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -155,6 +156,10 @@ class RentabilidadeService:
 
     # Formato de data esperado
     FORMATO_DATA = "%Y-%m-%d"
+
+    # Cache class-level de séries de rentabilidade (compartilhado entre instâncias)
+    _serie_cache: Dict[int, dict] = {}
+    _SERIE_CACHE_TTL: float = 300.0  # 5 minutos
 
     def __init__(self, db_path: Optional[Path] = None, db_url: Optional[str] = None):
         self.db_url = db_url if db_url is not None else os.getenv('SUPABASE_DB_URL')
@@ -1035,10 +1040,26 @@ class RentabilidadeService:
         Returns:
             Lista de DailyPortfolio ordenada por data
         """
+        # =================================================================
+        # CACHE: verificar se resultado está em cache (class-level)
+        # =================================================================
+        _filtro_aplicado = data_inicio is not None or data_fim is not None
+        _usar_cache = precos_cache is None
+
+        if _usar_cache:
+            cached = self._serie_cache.get(turma_id)
+            if cached and (time.time() - cached['ts']) < self._SERIE_CACHE_TTL:
+                if _filtro_aplicado:
+                    return [
+                        p for p in cached['serie']
+                        if (not data_inicio or p.dia >= data_inicio) and
+                           (not data_fim or p.dia <= data_fim)
+                    ]
+                return list(cached['serie'])
+
         conn = self._get_connection()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # Obter data_inicio e capital_base da turma
         cursor.execute("SELECT data_inicio, capital_base FROM turmas WHERE id = %s", (turma_id,))
         row = cursor.fetchone()
         if not row:
@@ -1052,13 +1073,7 @@ class RentabilidadeService:
         if data_fim is None:
             data_fim = datetime.now().strftime("%Y-%m-%d")
 
-        conn.close()
-
-        # =====================================================================
-        # PRÉ-CARREGAR: todos os trades da turma (uma única query)
-        # =====================================================================
-        conn = self._get_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # PRÉ-CARREGAR: todos os trades da turma (mesma conexão)
         cursor.execute("""
             SELECT
                 ct.trade_id,
@@ -1156,6 +1171,15 @@ class RentabilidadeService:
             serie.append(portfolio)
             valor_anterior = portfolio.valor_total
             current += timedelta(days=1)
+
+        # =================================================================
+        # CACHE: armazenar série completa para reutilização
+        # =================================================================
+        if _usar_cache and not _filtro_aplicado:
+            self._serie_cache[turma_id] = {
+                'serie': list(serie),
+                'ts': time.time()
+            }
 
         return serie
 

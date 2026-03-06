@@ -7,6 +7,7 @@ Adaptado da classe PortfolioCrypto do notebook.
 
 import os
 import logging
+import time
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -554,8 +555,17 @@ def _get_svc(portfolio_key, repo=None):
     return svc
 
 
+_portfolio_data_cache = {}
+_portfolio_serie_cache = {}
+_PORTFOLIO_CACHE_TTL = 300.0  # 5 minutos
+
+
 def get_portfolio_data(portfolio_key, capital_base=10000, repo=None):
     """Carrega e calcula dados de um portfólio pelo seu key."""
+    cached = _portfolio_data_cache.get(portfolio_key)
+    if cached and (time.time() - cached['ts']) < _PORTFOLIO_CACHE_TTL:
+        return cached['data'], None
+
     svc = _get_svc(portfolio_key, repo=repo)
     svc.calcular_retornos_ponderados()
     svc.calcular_posicao(capital_base)
@@ -589,6 +599,7 @@ def get_portfolio_data(portfolio_key, capital_base=10000, repo=None):
         'posicoes_fechadas': fechadas,
         'alocacao_historica': alloc_list,
     }
+    _portfolio_data_cache[portfolio_key] = {'data': data, 'ts': time.time()}
     return data, svc
 
 
@@ -600,6 +611,29 @@ def get_portfolio_pnl(portfolio_key, inicio=None, fim=None, repo=None):
 
 def get_portfolio_rentabilidade_serie(portfolio_key, inicio=None, fim=None, repo=None):
     """Retorna série de rentabilidade acumulada para um período, dia a dia (sem downsampling)."""
+    _filtro_aplicado = inicio is not None or fim is not None
+
+    cached = _portfolio_serie_cache.get(portfolio_key)
+    if cached and (time.time() - cached['ts']) < _PORTFOLIO_CACHE_TTL:
+        serie = cached['serie']
+        if _filtro_aplicado:
+            return [
+                s for s in serie
+                if (not inicio or s['dia'] >= inicio) and
+                   (not fim or s['dia'] <= fim)
+            ]
+        return list(serie)
+
     svc = _get_svc(portfolio_key, repo=repo)
     svc.calcular_retornos_ponderados()
-    return svc.rentabilidade_serie_periodo(inicio=inicio, fim=fim)
+    serie = svc.rentabilidade_serie_periodo()
+
+    _portfolio_serie_cache[portfolio_key] = {'serie': serie, 'ts': time.time()}
+
+    if _filtro_aplicado:
+        return [
+            s for s in serie
+            if (not inicio or s['dia'] >= inicio) and
+               (not fim or s['dia'] <= fim)
+        ]
+    return serie

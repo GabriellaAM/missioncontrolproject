@@ -44,6 +44,10 @@ class CotacoesService:
     _precos_atuais_cache_ts: float = 0.0
     _precos_atuais_cache_ttl: float = 300.0  # 5 minutos
 
+    # Cache de históricos batch (evita re-leitura do banco + APIs externas)
+    _historicos_batch_cache: Dict[str, dict] = {}
+    _HISTORICOS_BATCH_CACHE_TTL: float = 600.0  # 10 minutos
+
     def __init__(self, db_path: Optional[Path] = None, gecko_api_key: Optional[str] = None,
                  db_url: Optional[str] = None):
         # db_path mantido para compatibilidade de assinatura, mas não usado
@@ -447,6 +451,11 @@ class CotacoesService:
         if not ids_unicos:
             return resultado
 
+        cache_key = "|".join(sorted(ids_unicos)) + f"|{dias}"
+        cached = self._historicos_batch_cache.get(cache_key)
+        if cached and (time.time() - cached['ts']) < self._HISTORICOS_BATCH_CACHE_TTL:
+            return {k: dict(v) for k, v in cached['data'].items()}
+
         if exchange_symbol_map is None:
             exchange_symbol_map = {}
         if tipo_produto_map is None:
@@ -479,10 +488,29 @@ class CotacoesService:
         if not ids_faltando:
             return resultado
 
+        def _salvar_precos_ativo(cg_id, precos_por_data, fonte):
+            """Salva preços de um ativo no banco IMEDIATAMENTE (não espera o final).
+            Garante que mesmo se a requisição for interrompida por timeout,
+            os preços já buscados ficam no banco para a próxima tentativa."""
+            if not precos_por_data:
+                return
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                for d, p in precos_por_data.items():
+                    cursor.execute("""
+                        INSERT INTO precos_diarios (coingecko_id, data, preco, fonte)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (coingecko_id, data) DO NOTHING
+                    """, (cg_id, d, p, fonte))
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.debug("[_salvar_precos_ativo] Erro ao salvar %s: %s", cg_id, e)
+
         # 2) Bitget candles para ativos que têm exchange_symbol
         ids_com_bitget = [cid for cid in ids_faltando if exchange_symbol_map.get(cid)]
         ids_sem_bitget = [cid for cid in ids_faltando if not exchange_symbol_map.get(cid)]
-        novos_precos = []
 
         if ids_com_bitget:
             from services.atr_stop_service import buscar_ohlc_bitget
@@ -512,8 +540,7 @@ class CotacoesService:
                             if cg_id not in resultado:
                                 resultado[cg_id] = {}
                             resultado[cg_id].update(precos_por_data)
-                            for d, p in precos_por_data.items():
-                                novos_precos.append((cg_id, d, p))
+                            _salvar_precos_ativo(cg_id, precos_por_data, 'bitget')
                             print(f"[HISTORICO BATCH] Bitget OK: {cg_id} ({len(precos_por_data)} pontos)", flush=True)
                         else:
                             ids_sem_bitget.append(cg_id)
@@ -540,29 +567,15 @@ class CotacoesService:
                             if cg_id not in resultado:
                                 resultado[cg_id] = {}
                             resultado[cg_id].update(precos_por_data)
-                            for d, p in precos_por_data.items():
-                                novos_precos.append((cg_id, d, p))
+                            _salvar_precos_ativo(cg_id, precos_por_data, 'coingecko')
                     except Exception as e:
                         cg_id = futures[future]
                         print(f"[HISTORICO BATCH] CoinGecko erro {cg_id}: {e}", flush=True)
 
-        # Persistir no banco para acelerar próximas consultas
-        if novos_precos:
-            try:
-                conn = self._get_connection()
-                cursor = conn.cursor()
-                for cg_id, d, p in novos_precos:
-                    fonte = 'bitget' if exchange_symbol_map.get(cg_id) else 'coingecko'
-                    cursor.execute("""
-                        INSERT INTO precos_diarios (coingecko_id, data, preco, fonte)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (coingecko_id, data) DO NOTHING
-                    """, (cg_id, d, p, fonte))
-                conn.commit()
-                conn.close()
-                logger.debug("[obter_historicos_batch] Salvos %d precos em precos_diarios", len(novos_precos))
-            except Exception as e:
-                logger.debug("[obter_historicos_batch] Erro ao salvar precos_diarios: %s", e)
+        self._historicos_batch_cache[cache_key] = {
+            'data': {k: dict(v) for k, v in resultado.items()},
+            'ts': time.time()
+        }
 
         return resultado
 
