@@ -4898,6 +4898,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         except Exception:
                             pass
 
+                        # 3. Reconciliar posições que existem em `posicoes` mas não em carteira_turma
+                        try:
+                            turmas_service.reconciliar_posicoes_com_turmas(produto_id, verbose=True)
+                        except Exception as e_reconciliar:
+                            print(f"[DASHBOARD] Aviso: reconciliação turmas falhou: {e_reconciliar}", flush=True)
+
                         rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
                         primeira_turma_id = turmas_produto[0]['id']
 
@@ -5001,6 +5007,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     # Detalhes da turma com abas (usa helpers compartilhados)
                     produto_turma = repo.carregar_produto(turma.get('produto_id'))
                     tipo_produto_turma = (produto_turma or {}).get('tipo', '')
+                    produto_id_turma = turma.get('produto_id')
+                    if produto_id_turma:
+                        try:
+                            turmas_service.reconciliar_posicoes_com_turmas(produto_id_turma)
+                        except Exception:
+                            pass
                     carteira = turmas_service.listar_carteira_turma(turma_id)
                     precos_atuais = _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=tipo_produto_turma, db_url=repo.db_url)
                     _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
@@ -5027,6 +5039,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
                 produto_turma = repo.carregar_produto(turma.get('produto_id'))
                 tipo_produto_turma = (produto_turma or {}).get('tipo', '')
+                produto_id_turma = turma.get('produto_id')
+                if produto_id_turma:
+                    try:
+                        turmas_service.reconciliar_posicoes_com_turmas(produto_id_turma)
+                    except Exception:
+                        pass
                 carteira = turmas_service.listar_carteira_turma(turma_id)
                 precos_atuais = _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=tipo_produto_turma, db_url=repo.db_url)
                 _enrich_carteira_trades(carteira, precos_atuais, repo=repo)

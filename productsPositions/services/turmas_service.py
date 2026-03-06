@@ -636,6 +636,107 @@ class TurmasService:
             conn.close()
 
     # ================================================================
+    # RECONCILIAÇÃO: posicoes → carteira_turma
+    # ================================================================
+
+    def reconciliar_posicoes_com_turmas(self, produto_id: int, verbose: bool = False) -> dict:
+        """
+        Garante que todas as posições do produto estejam representadas
+        em trades_turma / carteira_turma. Posições criadas antes dos
+        hooks de turma (auto_sync antigo) ficam invisíveis no dashboard
+        de turmas sem essa reconciliação.
+
+        Retorna dict com contadores: {adicionadas, fechadas_sync, erros}.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        resultado = {'adicionadas': 0, 'fechadas_sync': 0, 'erros': []}
+
+        try:
+            cursor.execute("SELECT id, data_inicio FROM turmas WHERE produto_id = %s", (produto_id,))
+            turmas = cursor.fetchall()
+            if not turmas:
+                return resultado
+
+            cursor.execute("""
+                SELECT id, data_entrada, preco_entrada, status, data_saida
+                FROM posicoes
+                WHERE produto_id = %s
+            """, (produto_id,))
+            posicoes = cursor.fetchall()
+            if not posicoes:
+                return resultado
+
+            for pos in posicoes:
+                pos_id, data_entrada, preco_entrada, status, data_saida = (
+                    pos[0], pos[1], pos[2], pos[3], pos[4]
+                )
+                if hasattr(data_entrada, 'isoformat'):
+                    data_entrada = data_entrada.isoformat()[:10]
+                if hasattr(data_saida, 'isoformat'):
+                    data_saida = data_saida.isoformat()[:10]
+                is_closed = (status or '').lower() == 'closed'
+
+                for turma in turmas:
+                    turma_id, turma_inicio = turma[0], turma[1]
+                    if hasattr(turma_inicio, 'isoformat'):
+                        turma_inicio = turma_inicio.isoformat()[:10]
+
+                    # Verificar se já existe em carteira_turma (via trades_turma)
+                    cursor.execute("""
+                        SELECT tt.id FROM trades_turma tt
+                        JOIN carteira_turma ct ON ct.trade_id = tt.id AND ct.turma_id = tt.turma_id
+                        WHERE tt.turma_id = %s AND tt.posicao_id = %s
+                    """, (turma_id, pos_id))
+                    if cursor.fetchone():
+                        continue
+
+                    if data_entrada and data_entrada >= turma_inicio:
+                        try:
+                            self._adicionar_trade_turma(
+                                cursor=cursor,
+                                turma_id=turma_id,
+                                posicao_id=pos_id,
+                                origem='nativo',
+                                data_insercao=data_entrada,
+                                preco_entrada_turma=preco_entrada,
+                                preco_fonte='original',
+                                preco_data_referencia=data_entrada,
+                                preco_moeda='USD'
+                            )
+                            resultado['adicionadas'] += 1
+                            if verbose:
+                                print(f"  [RECONCILIAR] Posição {pos_id} adicionada à turma {turma_id}")
+
+                            if is_closed and data_saida:
+                                cursor.execute("""
+                                    SELECT tt.id FROM trades_turma tt
+                                    WHERE tt.turma_id = %s AND tt.posicao_id = %s
+                                """, (turma_id, pos_id))
+                                tt_row = cursor.fetchone()
+                                if tt_row:
+                                    cursor.execute("""
+                                        UPDATE carteira_turma
+                                        SET data_remocao = %s, ativo_atual = 0
+                                        WHERE trade_id = %s AND ativo_atual = 1
+                                    """, (data_saida, tt_row[0]))
+                                    resultado['fechadas_sync'] += 1
+                        except Exception as e:
+                            resultado['erros'].append(f"Posição {pos_id} turma {turma_id}: {e}")
+
+            conn.commit()
+            if verbose and (resultado['adicionadas'] or resultado['fechadas_sync']):
+                print(f"  [RECONCILIAR] Resultado: {resultado['adicionadas']} adicionadas, "
+                      f"{resultado['fechadas_sync']} fechadas sincronizadas", flush=True)
+        except Exception as e:
+            conn.rollback()
+            resultado['erros'].append(str(e))
+        finally:
+            conn.close()
+
+        return resultado
+
+    # ================================================================
     # VALORES DIÁRIOS
     # ================================================================
 
