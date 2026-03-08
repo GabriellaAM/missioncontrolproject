@@ -116,7 +116,7 @@ class PortfolioService:
         return TICKER_TO_COINGECKO.get(ticker)
 
     def carregar_precos(self, repo=None):
-        """Carrega preços históricos do banco (precos_diarios) com fallback para CSVs."""
+        """Carrega preços históricos do banco (precos_diarios) com fallback para APIs e CSVs."""
         df_precos = pd.DataFrame(index=self.df_aloc.index)
         idx_aloc_min = self.df_aloc.index.min() if not self.df_aloc.empty else None
         idx_aloc_max = self.df_aloc.index.max() if not self.df_aloc.empty else None
@@ -133,8 +133,21 @@ class PortfolioService:
 
         df_db = self._carregar_precos_db(repo, list(cg_ids_needed.values()))
         n_from_db = sum(1 for cg in cg_ids_needed.values() if cg in df_db)
+
+        ids_faltantes = [cg for cg in cg_ids_needed.values() if cg not in df_db]
+        n_from_api = 0
+        if ids_faltantes:
+            df_api = self._fetch_precos_api(repo, ids_faltantes)
+            df_db.update(df_api)
+            n_from_api = len(df_api)
+
         if cg_ids_needed:
-            print(f"[PortfolioService] Preços: {n_from_db}/{len(cg_ids_needed)} ativos do SQLite (precos_diarios), resto CSV/fallback", flush=True)
+            print(
+                f"[PortfolioService] Preços: {n_from_db}/{len(cg_ids_needed)} do banco"
+                + (f", {n_from_api} de APIs" if n_from_api else "")
+                + f", resto CSV/fallback",
+                flush=True,
+            )
 
         for ticker, cg_id in cg_ids_needed.items():
             df_ativo = None
@@ -246,6 +259,60 @@ class PortfolioService:
             logger.debug("[_carregar_precos_db] EXCEÇÃO %s", e, exc_info=True)
             print(f"[PortfolioService] Erro ao ler precos_diarios: {e}")
             return {}
+
+    def _fetch_precos_api(self, repo, cg_ids_faltantes):
+        """Busca preços faltantes via CotacoesService (Bitget/CoinGecko).
+
+        Os preços são salvos automaticamente na tabela precos_diarios pelo
+        CotacoesService, servindo de cache para requisições futuras.
+
+        Returns:
+            dict[str, DataFrame]: cg_id → DataFrame com DatetimeIndex e coluna 'preco'
+        """
+        if not cg_ids_faltantes:
+            return {}
+
+        db_url = getattr(repo, 'db_url', None) if repo else None
+        if not db_url or db_url.strip().lower().startswith('sqlite://'):
+            return {}
+
+        try:
+            from services.cotacoes_service import CotacoesService
+            cotacoes = CotacoesService(db_url=db_url)
+        except Exception as e:
+            print(f"[PortfolioService] Erro ao criar CotacoesService: {e}", flush=True)
+            return {}
+
+        dias = max(365, (datetime.now() - self.df_aloc.index.min()).days + 30)
+        print(
+            f"[PortfolioService] Buscando {len(cg_ids_faltantes)} ativos via APIs ({dias} dias)...",
+            flush=True,
+        )
+
+        try:
+            resultado = cotacoes.obter_historicos_batch(cg_ids_faltantes, dias=dias)
+        except Exception as e:
+            print(f"[PortfolioService] Erro em obter_historicos_batch: {e}", flush=True)
+            return {}
+
+        df_result = {}
+        for cg_id, precos_dict in resultado.items():
+            if not precos_dict:
+                continue
+            df = pd.DataFrame(
+                [{'data': d, 'preco': p} for d, p in precos_dict.items()]
+            )
+            df['data'] = pd.to_datetime(df['data'])
+            df.set_index('data', inplace=True)
+            df = df[~df.index.duplicated(keep='first')]
+            df.sort_index(inplace=True)
+            df_result[cg_id] = df
+
+        print(
+            f"[PortfolioService] APIs retornaram preços para {len(df_result)}/{len(cg_ids_faltantes)} ativos",
+            flush=True,
+        )
+        return df_result
 
     def calcular_retornos(self):
         """Calcula retornos diários simples."""
