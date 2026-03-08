@@ -4559,6 +4559,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     continue
                 if nome in _hidden_nomes_exatos or nome.upper() in ('HB', 'LC'):
                     continue
+                pf_cfg = PORTFOLIO_PRODUCTS.get(pid)
+                if pf_cfg and 'group_name' in pf_cfg:
+                    p = dict(p)
+                    p['nome'] = pf_cfg['group_name']
                 produtos_visiveis.append(p)
             contagem = repo.contar_posicoes_abertas_por_produto()
             stats = {p['id']: {'posicoes_abertas': contagem.get(p['id'], 0)} for p in produtos_visiveis}
@@ -5630,6 +5634,23 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
+def _prewarm_portfolio_cache():
+    """Pré-carrega dados dos portfolios em background para evitar timeout na primeira requisição."""
+    import time as _time
+    _time.sleep(2)
+    try:
+        repo = get_repo()
+        for key in PORTFOLIO_CONFIG:
+            try:
+                print(f"[Dashboard] Pre-warming cache: {key}...", flush=True)
+                get_portfolio_data(key, repo=repo)
+                print(f"[Dashboard] Cache pronto: {key}", flush=True)
+            except Exception as e:
+                print(f"[Dashboard] Erro pre-warming {key}: {e}", flush=True)
+    except Exception as e:
+        print(f"[Dashboard] Erro ao iniciar pre-warm: {e}", flush=True)
+
+
 def iniciar_servidor_background(host='127.0.0.1', porta=0, silent=False):
     """
     Inicia o servidor do dashboard em uma thread (para uso com Gunicorn/WSGI).
@@ -5642,6 +5663,10 @@ def iniciar_servidor_background(host='127.0.0.1', porta=0, silent=False):
     import threading
     t = threading.Thread(target=servidor.serve_forever, daemon=True)
     t.start()
+
+    t_warm = threading.Thread(target=_prewarm_portfolio_cache, daemon=True)
+    t_warm.start()
+
     return porta_efetiva
 
 

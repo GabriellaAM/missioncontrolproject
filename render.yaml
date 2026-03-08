@@ -4,7 +4,7 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     # Gunicorn: multiplos workers, mais estavel sob carga (usa app_wsgi que faz proxy ao dashboard)
-    startCommand: python productsPositions/scripts/deploy_migrate_allocations.py; gunicorn -w 2 -b 0.0.0.0:$PORT --timeout 120 productsPositions.scripts.app_wsgi:app
+    startCommand: python productsPositions/scripts/deploy_migrate_allocations.py; gunicorn -w 2 -b 0.0.0.0:$PORT --timeout 300 productsPositions.scripts.app_wsgi:app
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION

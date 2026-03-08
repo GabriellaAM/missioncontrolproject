@@ -52,7 +52,7 @@ def _proxy_to_dashboard():
         else:
             req = urllib.request.Request(url, data=request.get_data(), headers=headers, method=request.method)
 
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=300) as resp:
             resp_headers = [(k, v) for k, v in resp.headers.items()]
             return Response(resp.read(), status=resp.status, headers=resp_headers)
     except urllib.error.HTTPError as e:
