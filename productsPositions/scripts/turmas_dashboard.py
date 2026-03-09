@@ -1795,14 +1795,15 @@ def _json_serializer(obj):
     return str(obj)
 
 
-def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_alocacao=False):
+def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_alocacao=False, product_tabs=None):
     """Dashboard rico do produto com abas por turma, gráficos e tabelas interativas.
-    mostrar_caixa_alocacao: exibe Caixa no gráfico de evolução da alocação apenas para produtos com API key (Soros, Memebot)."""
+    mostrar_caixa_alocacao: exibe Caixa no gráfico de evolução da alocação apenas para produtos com API key (Soros, Memebot).
+    product_tabs: optional dict with 'tabs', 'group_name', 'primary_id' for grouped products (e.g. Soros Spot 1+2)."""
     get_navbar, _, get_base_styles = _get_shared_components()
 
     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     produto_id = produto['id']
-    nome = produto['nome']
+    nome = product_tabs['group_name'] if product_tabs else produto['nome']
     tipo = produto.get('tipo', 'Outro')
 
     turma_ativa = turmas[0] if turmas else {}
@@ -1820,9 +1821,16 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
     rentab_str = f"+{rentab:.2f}%" if rentab >= 0 else f"{rentab:.2f}%"
 
     turma_tabs_html = ""
-    for turma in turmas:
-        active = 'active' if turma['id'] == turma_ativa_id else ''
-        turma_tabs_html += f'<button class="turma-tab {active}" data-turma-id="{turma["id"]}" onclick="switchTurma({turma["id"]}, this)">{turma.get("nome", "N/A")}</button>'
+    if product_tabs:
+        primary_id = product_tabs['primary_id']
+        for i, ptab in enumerate(product_tabs['tabs']):
+            active_cls = 'active' if ptab['active'] else ''
+            href = f"/produto/{primary_id}?tab={i}"
+            turma_tabs_html += f'<a class="turma-tab {active_cls}" href="{href}">{ptab["nome"]}</a>'
+    else:
+        for turma in turmas:
+            active = 'active' if turma['id'] == turma_ativa_id else ''
+            turma_tabs_html += f'<button class="turma-tab {active}" data-turma-id="{turma["id"]}" onclick="switchTurma({turma["id"]}, this)">{turma.get("nome", "N/A")}</button>'
 
     turmas_json = json.dumps([
         {'id': t['id'], 'nome': t.get('nome', ''), 'data_inicio': str(t.get('data_inicio', ''))[:10]}
@@ -1898,6 +1906,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
         }}
         .turma-tab:hover {{ color: #ccc; background: rgba(78, 204, 163, 0.05); }}
         .turma-tab.active {{ color: #4ecca3; border-bottom-color: #4ecca3; font-weight: 600; }}
+        a.turma-tab {{ text-decoration: none; }}
 
         .dash-content {{ padding: 25px 30px; }}
 
@@ -2230,8 +2239,9 @@ var rentPeriodEndDate = null;
 
 function fmtPrice(v) {{
     if (v == null) return '\\u2014';
+    if (v === 0) return '0.0000';
     if (Math.abs(v) >= 1) return v.toLocaleString('en-US', {{minimumFractionDigits:4, maximumFractionDigits:4}});
-    var digits = Math.max(4, -Math.floor(Math.log10(Math.abs(v))) + 3);
+    var digits = Math.min(20, Math.max(4, -Math.floor(Math.log10(Math.abs(v))) + 3));
     return v.toLocaleString('en-US', {{minimumFractionDigits:digits, maximumFractionDigits:digits}});
 }}
 function fmtPnl(p) {{
@@ -2532,8 +2542,7 @@ var ALLOC_COLORS = ['#4ecca3','#e74c3c','#3498db','#f39c12','#9b59b6','#1abc9c',
 function renderAllocTimeline(cart, rentSerie) {{
     function toYMD(v) {{ return (v && String(v).slice) ? String(v).slice(0,10) : (v || ''); }}
     var today = new Date().toISOString().slice(0,10);
-    // Só considerar "aberta" se isTradeOpen (inclui ativo_atual); fechadas precisam ter data de saída para entrar no gráfico
-    var entries = cart.filter(function(t){{
+    var entries = (cart||[]).filter(function(t){{
         if(!t.data_insercao) return false;
         if(isTradeOpen(t)) return true;
         return !!(t.data_remocao || t.data_saida);
@@ -2974,28 +2983,37 @@ function preencherPrecos(produtoId, tipo) {{
 }}
 
 document.addEventListener('DOMContentLoaded', function() {{
-    applyPnlFilter();
-    renderAbertas(CARTEIRA);
-    renderFechadas(CARTEIRA);
-    renderHistorico(CARTEIRA);
-    renderAllocTimeline(CARTEIRA);
-    populateCompareCheckboxes();
+    console.log('[Dashboard] TURMA_ID='+TURMA_ID+' CARTEIRA.length='+(Array.isArray(CARTEIRA)?CARTEIRA.length:'N/A'));
+    try {{ applyPnlFilter(); }} catch(e) {{ console.error('applyPnlFilter:', e); }}
+    try {{ renderAbertas(CARTEIRA); }} catch(e) {{ console.error('renderAbertas:', e); }}
+    try {{ renderFechadas(CARTEIRA); }} catch(e) {{ console.error('renderFechadas:', e); }}
+    try {{ renderHistorico(CARTEIRA); }} catch(e) {{ console.error('renderHistorico:', e); }}
+    try {{ renderAllocTimeline(CARTEIRA); }} catch(e) {{ console.error('renderAllocTimeline:', e); }}
+    try {{ populateCompareCheckboxes(); }} catch(e) {{ console.error('populateCompareCheckboxes:', e); }}
 
-    document.getElementById('toggleTurma').addEventListener('change', function(){{ rebuildChart(); }});
-    document.getElementById('toggleBTC').addEventListener('change', function(){{ rebuildChart(); }});
+    try {{
+        document.getElementById('toggleTurma').addEventListener('change', function(){{ rebuildChart(); }});
+        document.getElementById('toggleBTC').addEventListener('change', function(){{ rebuildChart(); }});
+    }} catch(e) {{ console.error('toggles:', e); }}
 
     if(TURMA_ID){{
         var loadEl = document.getElementById('chartLoading');
         var wrapEl = document.getElementById('chartWrapper');
-        var timeoutMs = 90000;
-        var timeoutPromise = new Promise(function(_, reject){{ setTimeout(function(){{ reject(new Error('Tempo esgotado ao carregar dados.')); }}, timeoutMs); }});
+        var timeoutMs = 60000;
+        console.log('[Dashboard] Fetching /api/turma/'+TURMA_ID+'/rentabilidade ...');
+        var timeoutPromise = new Promise(function(_, reject){{ setTimeout(function(){{ reject(new Error('Tempo esgotado (60s) ao carregar dados de rentabilidade.')); }}, timeoutMs); }});
         Promise.race([
-            fetch('/api/turma/'+TURMA_ID+'/rentabilidade').then(function(r){{ return r.json(); }}),
+            fetch('/api/turma/'+TURMA_ID+'/rentabilidade').then(function(r){{
+                console.log('[Dashboard] Rentabilidade response status='+r.status);
+                if(!r.ok) throw new Error('HTTP '+r.status);
+                return r.json();
+            }}),
             timeoutPromise
         ])
             .then(function(data){{
                 loadEl.style.display = 'none';
                 wrapEl.style.display = 'block';
+                console.log('[Dashboard] Rentabilidade data tipo='+(Array.isArray(data)?'array['+data.length+']':typeof data));
                 if(data && data.erro){{
                     wrapEl.innerHTML = '<div style="padding:40px; text-align:center; color:#e74c3c;">Erro: '+String(data.erro)+'</div>';
                     return;
@@ -3004,19 +3022,26 @@ document.addEventListener('DOMContentLoaded', function() {{
                     if(typeof Chart === 'undefined'){{
                         wrapEl.innerHTML = '<div style="padding:40px; text-align:center; color:#e74c3c;">Erro: biblioteca de gr&aacute;ficos n&atilde;o carregou. Recarregue a p&aacute;gina.</div>';
                     }} else {{
-                        renderRentChart(data);
-                        renderAllocTimeline(CARTEIRA, data);
-                        fetchBtcBenchmark(DATA_INICIO_TURMA);
+                        try {{
+                            renderRentChart(data);
+                            renderAllocTimeline(CARTEIRA, data);
+                            fetchBtcBenchmark(DATA_INICIO_TURMA);
+                        }} catch(chartErr) {{
+                            console.error('[Dashboard] Erro ao renderizar charts:', chartErr);
+                            wrapEl.innerHTML = '<div style="padding:40px; text-align:center; color:#e74c3c;">Erro ao renderizar: '+chartErr.message+'</div>';
+                        }}
                     }}
                 }}
                 else{{ wrapEl.innerHTML = '<div style="padding:40px; text-align:center; color:#666;">Sem dados de rentabilidade</div>'; }}
             }})
             .catch(function(err){{
+                console.error('[Dashboard] Rentabilidade fetch error:', err);
                 loadEl.style.display = 'none';
                 wrapEl.style.display = 'block';
                 wrapEl.innerHTML = '<div style="padding:40px; text-align:center; color:#e74c3c;">Erro: '+err.message+'</div>';
             }});
     }} else {{
+        console.warn('[Dashboard] TURMA_ID is falsy, skipping rentabilidade fetch');
         document.getElementById('chartLoading').style.display = 'none';
         document.getElementById('chartWrapper').style.display = 'block';
         document.getElementById('chartWrapper').innerHTML = '<div style="padding:40px; text-align:center; color:#666;">Nenhuma turma selecionada</div>';

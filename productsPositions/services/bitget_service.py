@@ -328,7 +328,7 @@ def fetch_spot_positions(credentials: Dict[str, str]) -> List[Dict]:
 
         # Pagination: use endId for next page
         new_end_id = data.get("endId")
-        if not new_end_id or new_end_id == end_id or len(tracking_list) < 50:
+        if not new_end_id or new_end_id == end_id:
             break
         end_id = new_end_id
 
@@ -530,7 +530,7 @@ def fetch_perpetual_history(credentials: Dict[str, str], limit: int = 100, max_p
             })
 
         end_id = data_obj.get("endId")
-        if not end_id or len(items) < page_limit:
+        if not end_id:
             break
         id_less_than = end_id
         if len(all_positions) >= limit:
@@ -553,8 +553,8 @@ def fetch_spot_copy_history(credentials: Dict[str, str], limit: int = 100) -> Li
     """
     all_history = []
     end_id = None
-    max_pages = 10  # Safety limit
-    page_limit = min(limit, 100)
+    max_pages = 20
+    page_limit = min(limit, 50)
 
     for _ in range(max_pages):
         endpoint = f"/api/v2/copy/spot-trader/order-history-track?limit={page_limit}"
@@ -589,7 +589,7 @@ def fetch_spot_copy_history(credentials: Dict[str, str], limit: int = 100) -> Li
 
         # Pagination
         new_end_id = data.get("endId")
-        if not new_end_id or new_end_id == end_id or len(tracking_list) < page_limit:
+        if not new_end_id or new_end_id == end_id:
             break
         end_id = new_end_id
 

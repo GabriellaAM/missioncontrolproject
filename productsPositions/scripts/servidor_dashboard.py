@@ -66,6 +66,36 @@ PORTFOLIO_PRODUCTS = {
     3476245316: {'type': 'single', 'group_name': 'Alphacoins', 'keys': ['AC']},
 }
 
+SOROS_GROUPS = {
+    'Soros Spot': {
+        'display_name': 'Soros Spot',
+        'members': ['Soros Spot 1', 'Soros Spot 2'],
+        'tab_names': ['Soros Spot Turma 1', 'Soros Spot Turma 2'],
+    },
+}
+
+_soros_name_to_id_cache = {}
+
+def _resolve_soros_group(repo, produto_nome):
+    """Resolve group info for a Soros product by name.
+    Returns (group_cfg, member_index) or (None, -1) if not in any group."""
+    for _gkey, gcfg in SOROS_GROUPS.items():
+        if produto_nome in gcfg['members']:
+            idx = gcfg['members'].index(produto_nome)
+            return gcfg, idx
+    return None, -1
+
+def _get_soros_id_by_name(repo, nome):
+    """Look up product ID by name, with caching."""
+    if nome in _soros_name_to_id_cache:
+        return _soros_name_to_id_cache[nome]
+    produtos = repo.listar_produtos()
+    for p in produtos:
+        p_nome = (p.get('nome') or '').strip()
+        if p_nome in [m for g in SOROS_GROUPS.values() for m in g['members']]:
+            _soros_name_to_id_cache[p_nome] = int(p.get('id') or 0)
+    return _soros_name_to_id_cache.get(nome)
+
 def _enrich_carteira_trades(carteira, precos_atuais=None, repo=None):
     """Enriquece trades da carteira com campos computados (dias, PnL, preço atual, stop)."""
     hoje = date.today()
@@ -4548,6 +4578,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Não exibir HB e LC na home (são abas do Exponential Coins)
             _hidden_ids = {int(pid) for pid, cfg in PORTFOLIO_PRODUCTS.items() if cfg.get('type') == 'redirect'}
             _hidden_nomes_exatos = {'HB', 'LC', 'High Beta', 'Low Caps'}
+            _soros_secondary_names = set()
+            _soros_primary_rename = {}
+            for _gkey, gcfg in SOROS_GROUPS.items():
+                for m in gcfg['members'][1:]:
+                    _soros_secondary_names.add(m)
+                _soros_primary_rename[gcfg['members'][0]] = gcfg['display_name']
             produtos_visiveis = []
             for p in produtos:
                 try:
@@ -4559,10 +4595,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     continue
                 if nome in _hidden_nomes_exatos or nome.upper() in ('HB', 'LC'):
                     continue
+                if nome in _soros_secondary_names:
+                    continue
                 pf_cfg = PORTFOLIO_PRODUCTS.get(pid)
                 if pf_cfg and 'group_name' in pf_cfg:
                     p = dict(p)
                     p['nome'] = pf_cfg['group_name']
+                if nome in _soros_primary_rename:
+                    p = dict(p)
+                    p['nome'] = _soros_primary_rename[nome]
                 produtos_visiveis.append(p)
             contagem = repo.contar_posicoes_abertas_por_produto()
             stats = {p['id']: {'posicoes_abertas': contagem.get(p['id'], 0)} for p in produtos_visiveis}
@@ -4883,6 +4924,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         self._send_html(f"<h1>Erro</h1><p>Erro ao carregar portfolio: {str(e)}</p><pre>{traceback.format_exc()}</pre>", 500)
                         return
 
+                # Soros groups: redirect secondary members, render grouped tabs for primary
+                produto_nome = (produto.get('nome') or '').strip()
+                soros_gcfg, soros_member_idx = _resolve_soros_group(repo, produto_nome)
+                if soros_gcfg:
+                    primary_name = soros_gcfg['members'][0]
+                    if soros_member_idx > 0:
+                        primary_id = _get_soros_id_by_name(repo, primary_name)
+                        if primary_id:
+                            self.send_response(302)
+                            self.send_header('Location', f"/produto/{primary_id}?tab={soros_member_idx}")
+                            self.end_headers()
+                            return
+
+                    active_tab = int(query.get('tab', ['0'])[0]) if 'tab' in query else 0
+                    if active_tab < 0 or active_tab >= len(soros_gcfg['members']):
+                        active_tab = 0
+
+                    product_tabs_info = []
+                    primary_id = produto_id
+                    for i, member_name in enumerate(soros_gcfg['members']):
+                        mid = _get_soros_id_by_name(repo, member_name) if i > 0 else produto_id
+                        product_tabs_info.append({
+                            'nome': soros_gcfg['tab_names'][i],
+                            'produto_id': mid or 0,
+                            'active': i == active_tab,
+                        })
+
+                    active_member_name = soros_gcfg['members'][active_tab]
+                    if active_tab > 0:
+                        active_pid = _get_soros_id_by_name(repo, active_member_name)
+                        if active_pid:
+                            active_produto = repo.carregar_produto(active_pid)
+                            if active_produto:
+                                produto_id = active_pid
+                                produto = active_produto
+                                produto_nome = active_member_name
+                    product_tabs = {
+                        'tabs': product_tabs_info,
+                        'group_name': soros_gcfg['display_name'],
+                        'primary_id': primary_id,
+                    }
+                else:
+                    product_tabs = None
+
                 # Pagina do produto (default) - Dashboard rico se tiver turmas
                 turmas_produto = []
                 try:
@@ -4891,18 +4976,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"[DASHBOARD] Erro ao buscar turmas para produto {produto_id}: {e}", flush=True)
 
+                # Auto-criar turma para produtos do grupo Soros sem turmas
+                if not turmas_produto and product_tabs:
+                    try:
+                        print(f"[DASHBOARD] Auto-criando turma para produto {produto_id} ({produto_nome})...", flush=True)
+                        data_inicio_prod = str(produto.get('data_inicio', ''))[:10] or date.today().isoformat()
+                        capital_prod = produto.get('capital_inicial', 1500) or 1500
+                        if not turmas_service:
+                            turmas_service = TurmasService(db_url=repo.db_url)
+                        conn = turmas_service._get_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            INSERT INTO turmas (produto_id, nome, data_inicio, capital_base, data_criacao)
+                            VALUES (%s, %s, %s, %s, %s)
+                        """, (produto_id, produto_nome, data_inicio_prod, capital_prod, date.today().isoformat()))
+                        conn.commit()
+                        conn.close()
+                        turmas_produto = turmas_service.listar_turmas(produto_id)
+                        print(f"[DASHBOARD] Turma auto-criada. turmas={len(turmas_produto)}", flush=True)
+                    except Exception as e:
+                        print(f"[DASHBOARD] Erro ao auto-criar turma: {e}", flush=True)
+
                 if turmas_produto:
                     try:
-                        # Manter TODAS as atualizações automáticas da página clássica:
-                        # 1. Reconciliar posições com alocações (produtos de alocação livre)
                         reconciliar_posicoes_com_alocacoes(repo, produto_id)
-                        # 2. Bitget sync + ATR stops (usa cache: Bitget 5min, ATR 1h)
                         try:
                             display_posicoes_abertas(produto_id, formatar=False, filtrar_colunas=False)
                         except Exception:
                             pass
 
-                        # 3. Reconciliar posições que existem em `posicoes` mas não em carteira_turma
                         try:
                             turmas_service.reconciliar_posicoes_com_turmas(produto_id, verbose=True)
                         except Exception as e_reconciliar:
@@ -4917,7 +5019,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         resumo = rentabilidade_service.resumo_turma(primeira_turma_id, precos_atuais=precos_atuais)
 
                         mostrar_caixa_alocacao = get_bitget_credentials(produto.get('nome') or '') is not None
-                        self._send_html(get_produto_dashboard_html(produto, turmas_produto, resumo, carteira, mostrar_caixa_alocacao=mostrar_caixa_alocacao))
+                        self._send_html(get_produto_dashboard_html(
+                            produto, turmas_produto, resumo, carteira,
+                            mostrar_caixa_alocacao=mostrar_caixa_alocacao,
+                            product_tabs=product_tabs))
                         return
                     except Exception as e:
                         print(f"[DASHBOARD] Erro ao montar dashboard rico: {e}", flush=True)
@@ -5085,12 +5190,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # API: Rentabilidade de uma turma (para grafico comparativo)
         # GET /api/turma/{id}/rentabilidade ou ?inicio=YYYY-MM-DD&fim=YYYY-MM-DD
         if path.startswith('/api/turma/') and '/rentabilidade' in path:
+            import time as _time_mod
+            _t0 = _time_mod.time()
+            _turma_id_log = '?'
             try:
                 parts = path.split('/')
                 turma_id = int(parts[3]) if len(parts) > 3 else 0
+                _turma_id_log = turma_id
                 if not turma_id:
                     self._send_json({'erro': 'ID da turma inválido'}, 400)
                     return
+                print(f"[API] /api/turma/{turma_id}/rentabilidade - iniciando...", flush=True)
                 data_inicio = query.get('inicio', [None])[0]
                 data_fim = query.get('fim', [None])[0]
                 rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
@@ -5107,8 +5217,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     }
                     for p in serie
                 ]
+                _elapsed = _time_mod.time() - _t0
+                print(f"[API] /api/turma/{turma_id}/rentabilidade - OK, {len(data)} pontos em {_elapsed:.1f}s", flush=True)
                 self._send_json(data)
             except Exception as e:
+                _elapsed = _time_mod.time() - _t0
+                print(f"[API] /api/turma/{_turma_id_log}/rentabilidade - ERRO em {_elapsed:.1f}s: {e}", flush=True)
                 self._send_json({'erro': str(e)}, 400)
             return
 
