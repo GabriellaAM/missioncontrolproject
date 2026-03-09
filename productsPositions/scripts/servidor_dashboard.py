@@ -5626,7 +5626,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == '/api/diag/precos':
             try:
                 import numpy as np
-                from services.portfolio_service import TICKER_TO_COINGECKO, PortfolioService, PORTFOLIO_CONFIG, STABLECOINS
+                from services.portfolio_service import TICKER_TO_COINGECKO, PortfolioService, STABLECOINS
 
                 diag = {'timestamp': datetime.now().isoformat(), 'db_mode': 'sqlite' if repo._use_sqlite else 'postgresql'}
                 produtos_diag = {}
