@@ -135,16 +135,43 @@ class PortfolioService:
         n_from_db = sum(1 for cg in cg_ids_needed.values() if cg in df_db)
 
         ids_faltantes = [cg for cg in cg_ids_needed.values() if cg not in df_db]
+
+        # Detectar tickers presentes no banco mas com dados desatualizados
+        _STALE_DAYS = 2
+        _stale_cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=_STALE_DAYS)
+        ids_desatualizados = []
+        for cg_id, df_ativo in df_db.items():
+            if not df_ativo.empty and df_ativo.index.max() < _stale_cutoff:
+                ids_desatualizados.append(cg_id)
+
         n_from_api = 0
         if ids_faltantes:
             df_api = self._fetch_precos_api(repo, ids_faltantes)
             df_db.update(df_api)
             n_from_api = len(df_api)
 
+        n_refreshed = 0
+        if ids_desatualizados:
+            print(
+                f"[PortfolioService] {len(ids_desatualizados)} tickers desatualizados "
+                f"(dados antes de {_stale_cutoff.date()}), buscando dias recentes...",
+                flush=True,
+            )
+            df_fresh = self._fetch_precos_recentes(repo, ids_desatualizados)
+            for cg_id, df_new in df_fresh.items():
+                if cg_id in df_db and not df_new.empty:
+                    df_db[cg_id] = pd.concat([df_db[cg_id], df_new])
+                    df_db[cg_id] = df_db[cg_id][~df_db[cg_id].index.duplicated(keep='last')]
+                    df_db[cg_id].sort_index(inplace=True)
+                elif not df_new.empty:
+                    df_db[cg_id] = df_new
+            n_refreshed = len(df_fresh)
+
         if cg_ids_needed:
             print(
                 f"[PortfolioService] Preços: {n_from_db}/{len(cg_ids_needed)} do banco"
                 + (f", {n_from_api} de APIs" if n_from_api else "")
+                + (f", {n_refreshed} atualizados" if n_refreshed else "")
                 + f", resto CSV/fallback",
                 flush=True,
             )
@@ -310,6 +337,75 @@ class PortfolioService:
 
         print(
             f"[PortfolioService] APIs retornaram preços para {len(df_result)}/{len(cg_ids_faltantes)} ativos",
+            flush=True,
+        )
+        return df_result
+
+    def _fetch_precos_recentes(self, repo, cg_ids_desatualizados, dias=30):
+        """Busca apenas os últimos N dias de preço para tickers que já existem no banco
+        mas estão desatualizados. Usa CoinGecko diretamente (não obter_historicos_batch,
+        que pula tickers com >= 5 registros no banco)."""
+        if not cg_ids_desatualizados:
+            return {}
+
+        db_url = getattr(repo, 'db_url', None) if repo else None
+        if not db_url or db_url.strip().lower().startswith('sqlite://'):
+            return {}
+
+        try:
+            from services.cotacoes_service import CotacoesService
+            cotacoes = CotacoesService(db_url=db_url)
+        except Exception:
+            return {}
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _fetch_one(cg_id):
+            try:
+                historico = cotacoes.obter_historico_coingecko(cg_id, dias=dias)
+                if historico:
+                    precos = {item['data']: item['preco'] for item in historico}
+                    return cg_id, precos
+            except Exception:
+                pass
+            return cg_id, None
+
+        def _salvar(cg_id, precos_dict):
+            if not precos_dict:
+                return
+            try:
+                conn = cotacoes._get_connection()
+                cursor = conn.cursor()
+                for d, p in precos_dict.items():
+                    cursor.execute("""
+                        INSERT INTO precos_diarios (coingecko_id, data, preco, fonte)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (coingecko_id, data) DO UPDATE SET preco = EXCLUDED.preco
+                    """, (cg_id, d, p, 'coingecko_refresh'))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+
+        df_result = {}
+        max_w = min(len(cg_ids_desatualizados), 5)
+        with ThreadPoolExecutor(max_workers=max_w) as executor:
+            futures = {executor.submit(_fetch_one, cg_id): cg_id for cg_id in cg_ids_desatualizados}
+            for future in as_completed(futures):
+                cg_id, precos_dict = future.result()
+                if precos_dict:
+                    _salvar(cg_id, precos_dict)
+                    df = pd.DataFrame(
+                        [{'data': d, 'preco': p} for d, p in precos_dict.items()]
+                    )
+                    df['data'] = pd.to_datetime(df['data'])
+                    df.set_index('data', inplace=True)
+                    df = df[~df.index.duplicated(keep='first')]
+                    df.sort_index(inplace=True)
+                    df_result[cg_id] = df
+
+        print(
+            f"[PortfolioService] Refresh recente: {len(df_result)}/{len(cg_ids_desatualizados)} atualizados",
             flush=True,
         )
         return df_result
