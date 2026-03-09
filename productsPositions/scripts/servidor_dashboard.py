@@ -5622,6 +5622,115 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'status': 'error', 'erro': str(e)}, 500)
             return
 
+        # API: Diagnóstico de preços e rentabilidade (comparar local vs nuvem)
+        if path == '/api/diag/precos':
+            try:
+                import numpy as np
+                from services.portfolio_service import TICKER_TO_COINGECKO, PortfolioService, PORTFOLIO_CONFIG, STABLECOINS
+
+                diag = {'timestamp': datetime.now().isoformat(), 'db_mode': 'sqlite' if repo._use_sqlite else 'postgresql'}
+                produtos_diag = {}
+
+                for pkey in ['EXC', 'HB', 'LC', 'AC']:
+                    cfg = PORTFOLIO_CONFIG[pkey]
+                    csv_path = _root / cfg['csv']
+                    if not csv_path.exists():
+                        csv_path = _root / 'data' / 'allocations' / cfg['csv']
+                    if not csv_path.exists():
+                        produtos_diag[pkey] = {'erro': 'CSV nao encontrado'}
+                        continue
+
+                    svc = PortfolioService(nome=cfg['nome'], csv_path=str(csv_path))
+                    tickers = [c for c in svc.df_aloc.columns if TICKER_TO_COINGECKO.get(c)]
+                    cg_ids = [TICKER_TO_COINGECKO[t] for t in tickers]
+
+                    # Consultar precos_diarios do banco atual
+                    ticker_info = {}
+                    tickers_sem_preco = []
+                    try:
+                        with repo.connection() as conn:
+                            import pandas as pd
+                            placeholders = ','.join(['%s'] * len(cg_ids))
+                            df_db = pd.read_sql_query(
+                                f"SELECT coingecko_id, data, preco FROM precos_diarios WHERE coingecko_id IN ({placeholders}) ORDER BY coingecko_id, data",
+                                conn, params=cg_ids
+                            )
+
+                        for t in tickers:
+                            cg_id = TICKER_TO_COINGECKO[t]
+                            grp = df_db[df_db['coingecko_id'] == cg_id]
+                            if grp.empty:
+                                tickers_sem_preco.append(t)
+                                ticker_info[t] = {'cg_id': cg_id, 'registros': 0}
+                            else:
+                                ticker_info[t] = {
+                                    'cg_id': cg_id,
+                                    'registros': len(grp),
+                                    'min_data': str(grp['data'].min()),
+                                    'max_data': str(grp['data'].max()),
+                                }
+                    except Exception as e:
+                        ticker_info = {'erro_db': str(e)}
+
+                    # Calcular rentabilidade com os precos do banco
+                    rent_pct = None
+                    precos_carregados = 0
+                    try:
+                        svc2 = PortfolioService(nome=cfg['nome'], csv_path=str(csv_path))
+                        svc2.carregar_precos(repo=repo)
+                        precos_carregados = len(svc2.df_precos.columns)
+                        svc2.calcular_retornos()
+                        svc2.calcular_retornos_ponderados()
+                        rent_pct = round(svc2.rentabilidade_total_pct(), 4)
+                    except Exception as e:
+                        rent_pct = f"ERRO: {e}"
+
+                    prod_result = {
+                        'csv': cfg['csv'],
+                        'csv_periodo': f"{svc.df_aloc.index.min().date()} a {svc.df_aloc.index.max().date()}",
+                        'csv_dias': len(svc.df_aloc),
+                        'csv_tickers': len(svc.df_aloc.columns),
+                        'tickers_com_coingecko': len(tickers),
+                        'tickers_com_preco_no_db': len(tickers) - len(tickers_sem_preco),
+                        'tickers_sem_preco': tickers_sem_preco,
+                        'precos_carregados_final': precos_carregados,
+                        'rentabilidade_pct': rent_pct,
+                        'detalhe_tickers': ticker_info,
+                    }
+                    produtos_diag[pkey] = prod_result
+
+                diag['produtos'] = produtos_diag
+
+                # Totais do banco precos_diarios
+                try:
+                    with repo.connection() as conn:
+                        cur = conn.cursor()
+                        cur.execute("SELECT COUNT(*), COUNT(DISTINCT coingecko_id) FROM precos_diarios")
+                        row = cur.fetchone()
+                        if isinstance(row, dict):
+                            diag['db_total_registros'] = row.get('count', row.get('COUNT(*)', None))
+                        else:
+                            diag['db_total_registros'] = row[0]
+                            diag['db_total_ativos'] = row[1]
+                except Exception as e:
+                    diag['db_erro'] = str(e)
+
+                # Imprimir no console para fácil acesso nos logs do Render
+                import json as _json
+                output = _json.dumps(diag, ensure_ascii=False, default=str, indent=2)
+                print("=" * 60, flush=True)
+                print("DIAGNOSTICO DE PRECOS E RENTABILIDADE", flush=True)
+                print("=" * 60, flush=True)
+                print(output, flush=True)
+                print("=" * 60, flush=True)
+
+                self._send_json(diag)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send_json({'status': 'error', 'erro': str(e), 'trace': traceback.format_exc()}, 500)
+            return
+
         # 404
         self._send_html("<h1>404 - Pagina nao encontrada</h1>", 404)
 
