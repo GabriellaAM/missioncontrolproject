@@ -2615,7 +2615,7 @@ function renderAllocTimeline(cart, rentSerie) {{
             if(dia) caixaByDate[dia] = (p.capital_em_caixa != null) ? Number(p.capital_em_caixa) : 0;
         }});
     }}
-    var caixaPerDay = dates.map(function(day){{ return caixaByDate[day] != null ? caixaByDate[day] : 0; }});
+    var caixaPerDay = dates.map(function(day){{ return caixaByDate[day] != null ? Math.max(0, caixaByDate[day]) : 0; }});
     var totalPerDay = dates.map(function(_, i){{ return dailyTotals[i] + caixaPerDay[i]; }});
 
     var datasets = [];
