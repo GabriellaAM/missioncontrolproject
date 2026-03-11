@@ -1199,6 +1199,12 @@ def get_base_styles():
             border-color: #39fda3;
             outline: none;
         }
+        /* Icone de calendario nos inputs de data - cor #39fda3 (Chrome/Safari/Edge) */
+        input[type="date"]::-webkit-calendar-picker-indicator {
+            filter: invert(78%) sepia(62%) saturate(512%) hue-rotate(85deg) brightness(102%) contrast(98%);
+            cursor: pointer;
+            opacity: 0.9;
+        }
         .form-row { display: flex; gap: 20px; }
         .form-row .form-group { flex: 1; }
         /* Formulários compactos (cabem na tela sem scroll) */
