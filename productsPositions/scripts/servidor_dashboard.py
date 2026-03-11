@@ -19,6 +19,14 @@ import os
 import gzip
 import urllib.parse
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
+
+TZ_BRASILIA = ZoneInfo('America/Sao_Paulo')
+
+
+def _now_brasilia():
+    """Retorna datetime atual no fuso de Brasilia."""
+    return datetime.now(TZ_BRASILIA)
 import io
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1519,7 +1527,7 @@ def _build_dashboard_cards_html(produtos, stats):
 
 def get_dashboard_html(produtos, stats, repo, skip_loader=False):
     """Gera HTML da pagina principal do dashboard. skip_loader=True quando a pagina e carregada via fetch (__content=1)."""
-    timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    timestamp = _now_brasilia().strftime("%d/%m/%Y %H:%M:%S")
     cards_html = _build_dashboard_cards_html(produtos, stats)
 
     product_nav_loader_html = """
@@ -5701,7 +5709,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 produtos_visiveis, stats = _get_dashboard_data(repo)
                 cards_html = _build_dashboard_cards_html(produtos_visiveis, stats)
-                timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                timestamp = _now_brasilia().strftime("%d/%m/%Y %H:%M:%S")
                 self._send_json({'timestamp': timestamp, 'cards_html': cards_html})
             except Exception as e:
                 self._send_json({'erro': str(e)}, 500)

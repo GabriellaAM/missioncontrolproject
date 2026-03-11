@@ -8,7 +8,6 @@ Configurações lidas do .env:
 import os
 import requests
 from pathlib import Path
-from datetime import datetime
 from dotenv import load_dotenv
 
 # Carregar .env do root do projeto
@@ -18,7 +17,6 @@ load_dotenv(_project_root / '.env')
 
 def _montar_mensagem_telegram(ativo, side, preco_entrada, produto_nome, data_entrada=None):
     """Monta mensagem HTML para Telegram."""
-    agora = datetime.now().strftime("%d/%m/%Y %H:%M")
     side_display = side.upper() if side else "—"
     preco_display = f"${preco_entrada:,.2f}" if preco_entrada is not None else "—"
 
@@ -32,8 +30,6 @@ def _montar_mensagem_telegram(ativo, side, preco_entrada, produto_nome, data_ent
     ]
     if data_entrada:
         linhas.append(f"<b>Data de Entrada:</b> {data_entrada}")
-    linhas.append("")
-    linhas.append(f"<i>Detectado em: {agora}</i>")
 
     return "\n".join(linhas)
 
