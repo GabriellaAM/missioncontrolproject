@@ -4,7 +4,8 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     # Gunicorn: multiplos workers, mais estavel sob carga (usa app_wsgi que faz proxy ao dashboard)
-    startCommand: python productsPositions/scripts/deploy_migrate_precos.py; python productsPositions/scripts/deploy_migrate_allocations.py; python productsPositions/scripts/deploy_cleanup_spot1.py; python productsPositions/scripts/deploy_cleanup_spot2.py; python productsPositions/scripts/deploy_rename_soros_perpetuos.py; python productsPositions/scripts/deploy_rename_memebot_perpetuos.py; gunicorn -w 2 -b 0.0.0.0:$PORT --timeout 300 productsPositions.scripts.app_wsgi:app
+    # migrar_cdn_para_bd: importa CS e ICOs do CDN para o banco (rodar 1x no deploy; remover após migração concluída)
+    startCommand: python productsPositions/scripts/deploy_migrate_precos.py; python productsPositions/scripts/deploy_migrate_allocations.py; python productsPositions/scripts/migrar_cdn_para_bd.py --cloud -y; python productsPositions/scripts/deploy_cleanup_spot1.py; python productsPositions/scripts/deploy_cleanup_spot2.py; python productsPositions/scripts/deploy_rename_soros_perpetuos.py; python productsPositions/scripts/deploy_rename_memebot_perpetuos.py; gunicorn -w 2 -b 0.0.0.0:$PORT --timeout 300 productsPositions.scripts.app_wsgi:app
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION

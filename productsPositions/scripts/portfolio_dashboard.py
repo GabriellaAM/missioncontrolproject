@@ -200,10 +200,10 @@ def get_portfolio_dashboard_html(produto_nome, sub_portfolios, active_data,
         .dtable th:first-child, .dtable td:first-child {{ text-align: left; }}
         .dtable tr:hover {{ background: rgba(78, 204, 163, 0.06); }}
 
-        .tbl-scroll {{ max-height: 400px; overflow-y: auto; border-radius: 8px; }}
-        .tbl-scroll::-webkit-scrollbar {{ width: 6px; }}
+        .tbl-scroll {{ max-height: 400px; overflow: auto; border-radius: 8px; }}
+        .tbl-scroll::-webkit-scrollbar {{ width: 6px; height: 6px; }}
         .tbl-scroll::-webkit-scrollbar-track {{ background: rgba(0,0,0,0.2); }}
-        .tbl-scroll::-webkit-scrollbar-thumb {{ background: #4ecca3; border-radius: 3px; }}
+        .tbl-scroll::-webkit-scrollbar-thumb {{ background: rgba(78, 204, 163, 0.35); border-radius: 3px; }}
 
         .bdg {{ display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.8em; font-weight: 600; }}
         .bdg-long {{ background: rgba(78, 204, 163, 0.2); color: #4ecca3; }}

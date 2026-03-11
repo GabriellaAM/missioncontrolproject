@@ -63,6 +63,7 @@ TICKER_TO_COINGECKO = {
     'GRIFFAIN': 'griffain', 'KMNO': 'kamino', 'MCADE': 'metacade',
     'MYRIA': 'myria', 'MAMO': 'mamo', 'META': 'meta-2-2',
     'BERT': 'bertram-the-pomeranian', 'AVICI': 'avici', 'UMBRA': 'umbra',
+    'SKY': 'sky',  # Sky (MakerDAO rebrand, 2024) - NÃO confundir com Skycoin (skycoin)
 }
 
 

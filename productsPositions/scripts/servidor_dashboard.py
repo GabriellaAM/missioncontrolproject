@@ -15,6 +15,7 @@ if str(_scripts) not in sys.path:
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import json
+import os
 import gzip
 import urllib.parse
 from datetime import datetime, date, timedelta
@@ -51,6 +52,8 @@ from turmas_dashboard import (
     get_produto_dashboard_html
 )
 from portfolio_dashboard import get_portfolio_dashboard_html
+from cryptosignals_dashboard import get_cryptosignals_dashboard_html
+from icos_dashboard import get_icos_dashboard_html
 from services.portfolio_service import get_portfolio_data, get_portfolio_pnl, get_portfolio_rentabilidade_serie, PORTFOLIO_CONFIG
 from services.btc_cache_service import BTCCacheService
 
@@ -74,6 +77,33 @@ SOROS_GROUPS = {
     },
 }
 
+CUSTOM_DASHBOARD_PRODUCTS = {
+    4970919917: 'cryptosignals',
+}
+
+ICOS_PRODUCT_NAMES = ['icos', 'ico']
+
+# Nomes para identificar produtos nos formulários específicos
+CRYPTO_SIGNALS_NAMES = ['crypto signals', 'cryptosignals', 'crypto_signals']
+ICOS_FORM_NAMES = ['icos', 'ico']
+
+
+def _is_produto_crypto_signals(produto):
+    """Retorna True se o produto é Crypto Signals."""
+    if not produto:
+        return False
+    nome = (produto.get('nome') or '').strip().lower()
+    return nome in CRYPTO_SIGNALS_NAMES or 'crypto' in nome and 'signal' in nome
+
+
+def _is_produto_icos(produto):
+    """Retorna True se o produto é ICOs."""
+    if not produto:
+        return False
+    nome = (produto.get('nome') or '').strip().lower()
+    return nome in ICOS_FORM_NAMES
+
+
 _soros_name_to_id_cache = {}
 
 def _resolve_soros_group(repo, produto_nome):
@@ -95,6 +125,90 @@ def _get_soros_id_by_name(repo, nome):
         if p_nome in [m for g in SOROS_GROUPS.values() for m in g['members']]:
             _soros_name_to_id_cache[p_nome] = int(p.get('id') or 0)
     return _soros_name_to_id_cache.get(nome)
+
+
+def _enrich_carteira_cs_attributes(carteira, repo):
+    """Enrich Crypto Signals carteira with product-specific attributes (perfil, alvo1, alvo2, rr)."""
+    posicao_ids = [int(t['posicao_id']) for t in carteira if t.get('posicao_id')]
+    if not posicao_ids:
+        return
+    try:
+        with repo.connection() as conn:
+            placeholders = ','.join(['%s'] * len(posicao_ids))
+            query = f"""
+                SELECT posicao_id, motivo, perfil, alvo1, alvo2
+                FROM posicao_atributos_produto
+                WHERE posicao_id IN ({placeholders})
+            """
+            df = pd.read_sql_query(query, conn, params=posicao_ids)
+        attr_map = {}
+        for _, row in df.iterrows():
+            attr_map[int(row['posicao_id'])] = {
+                'motivo': row.get('motivo'),
+                'perfil': row.get('perfil'),
+                'alvo1': float(row['alvo1']) if pd.notna(row.get('alvo1')) else None,
+                'alvo2': float(row['alvo2']) if pd.notna(row.get('alvo2')) else None,
+            }
+        for trade in carteira:
+            pid = int(trade.get('posicao_id', 0))
+            attrs = attr_map.get(pid, {})
+            trade['perfil'] = attrs.get('perfil')
+            trade['alvo1'] = attrs.get('alvo1')
+            trade['alvo2'] = attrs.get('alvo2')
+            preco_atual = trade.get('preco_atual')
+            alvo2 = attrs.get('alvo2')
+            stop = trade.get('stop_atual')
+            if preco_atual and alvo2 and stop and stop not in (-1,) and preco_atual != 0:
+                try:
+                    denom = abs(stop / preco_atual - 1)
+                    trade['rr'] = round(abs(alvo2 / preco_atual - 1) / denom, 2) if denom > 0 else None
+                except Exception:
+                    trade['rr'] = None
+            else:
+                trade['rr'] = None
+    except Exception as e:
+        print(f"[DASHBOARD] Erro ao enriquecer atributos CS: {e}", flush=True)
+
+
+def _enrich_carteira_icos_attributes(carteira, repo):
+    """Enrich ICOs carteira with product-specific attributes (categoria, tipo_ico, resultado)."""
+    posicao_ids = [int(t['posicao_id']) for t in carteira if t.get('posicao_id')]
+    if not posicao_ids:
+        return
+    try:
+        with repo.connection() as conn:
+            colunas = repo.listar_colunas_atributos()
+            icos_cols = [c for c in colunas if c in (
+                'categoria', 'tipo_ico', 'resultado', 'local', 'ficha_tecnica',
+                'disponivel_pos_ico', 'tese', 'risco', 'atencao', 'execucao',
+                'rank', 'tipo_janela', 'por_que', 'motivo', 'perfil',
+            )]
+            if not icos_cols:
+                return
+            cols_sql = ', '.join(icos_cols)
+            placeholders = ','.join(['%s'] * len(posicao_ids))
+            query = f"""
+                SELECT posicao_id, {cols_sql}
+                FROM posicao_atributos_produto
+                WHERE posicao_id IN ({placeholders})
+            """
+            df = pd.read_sql_query(query, conn, params=posicao_ids)
+        attr_map = {}
+        for _, row in df.iterrows():
+            attrs = {}
+            for col in icos_cols:
+                val = row.get(col)
+                if pd.notna(val):
+                    attrs[col] = val
+            attr_map[int(row['posicao_id'])] = attrs
+        for trade in carteira:
+            pid = int(trade.get('posicao_id', 0))
+            attrs = attr_map.get(pid, {})
+            for col in icos_cols:
+                trade[col] = attrs.get(col)
+    except Exception as e:
+        print(f"[DASHBOARD] Erro ao enriquecer atributos ICOs: {e}", flush=True)
+
 
 def _enrich_carteira_trades(carteira, precos_atuais=None, repo=None):
     """Enriquece trades da carteira com campos computados (dias, PnL, preço atual, stop)."""
@@ -212,9 +326,20 @@ def _obter_preco_btc_bitget_coingecko_fallback(cotacoes_service):
     return cotacoes_service.obter_preco_coingecko('bitcoin') if cotacoes_service else None
 
 
+def _exchange_symbol_to_cmc_symbol(ex_sym):
+    """Extrai símbolo base para CoinMarketCap (ex: BTCUSDT -> BTC)."""
+    if not ex_sym:
+        return None
+    s = (ex_sym or '').strip().upper()
+    for suffix in ('USDT', 'USDC', 'BUSD', 'USD'):
+        if s.endswith(suffix) and len(s) > len(suffix):
+            return s[:-len(suffix)]
+    return s if len(s) <= 10 else None
+
+
 def _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=None, db_url=None):
     """
-    Busca preços atuais: Bitget primeiro (onde houver exchange_symbol), CoinGecko como fallback.
+    Busca preços atuais: Bitget primeiro, CoinGecko como fallback, CoinMarketCap como terceiro fallback.
     Para trades ativos da carteira. Indexa por _price_key (coingecko_id ou exchange_symbol).
     """
     trades_ativos = [t for t in carteira if t.get('ativo_atual')]
@@ -224,7 +349,7 @@ def _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=None
     precos = {}
     tipo_lower = (tipo_produto or '').lower()
 
-    # 1) Bitget primeiro — nunca sobrescrever com CoinGecko depois
+    # 1) Bitget primeiro — nunca sobrescrever com CoinGecko/CMC depois
     use_perp = 'perp' in tipo_lower
     use_spot = 'spot' in tipo_lower
     if not use_perp and not use_spot:
@@ -252,7 +377,7 @@ def _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=None
         except Exception:
             pass
 
-    # 2) CoinGecko apenas como fallback — só preenche o que ainda não tem preço
+    # 2) CoinGecko como fallback — só preenche o que ainda não tem preço
     coingecko_ids_faltando = list(set(
         t['coingecko_id'] for t in trades_ativos
         if t.get('coingecko_id') and t['coingecko_id'] not in precos
@@ -264,6 +389,130 @@ def _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=None
             for cg_id, preco in cg_precos.items():
                 if cg_id not in precos:
                     precos[cg_id] = preco
+        except Exception:
+            pass
+
+    # 3) CoinMarketCap como terceiro fallback — trades que ainda não têm preço
+    trades_sem_preco = [t for t in trades_ativos if _price_key(t) and _price_key(t) not in precos]
+    if trades_sem_preco and os.environ.get('COINMARKETCAP_API_KEY', '').strip():
+        try:
+            from services.portfolio_service import TICKER_TO_COINGECKO
+            COINGECKO_TO_TICKER = {v: k for k, v in TICKER_TO_COINGECKO.items()}
+
+            symbol_to_keys = {}  # symbol -> [key]
+            for t in trades_sem_preco:
+                key = _price_key(t)
+                if not key:
+                    continue
+                sym = None
+                ex_sym = (t.get('exchange_symbol') or '').strip().upper()
+                cg_id = t.get('coingecko_id')
+                ativo = (t.get('ativo') or '').strip().upper()
+                if ex_sym:
+                    sym = _exchange_symbol_to_cmc_symbol(ex_sym)
+                if not sym and cg_id:
+                    sym = COINGECKO_TO_TICKER.get(cg_id)
+                if not sym and ativo:
+                    sym = ativo if 1 <= len(ativo) <= 10 else None
+                if sym:
+                    symbol_to_keys.setdefault(sym, []).append(key)
+
+            if symbol_to_keys:
+                cotacoes_service = CotacoesService(db_url=db_url)
+                cmc_precos = cotacoes_service.obter_precos_coinmarketcap_fallback(list(symbol_to_keys.keys()))
+                for sym, preco in cmc_precos.items():
+                    for key in symbol_to_keys.get(sym, []):
+                        if key not in precos:
+                            precos[key] = preco
+        except Exception:
+            pass
+
+    return precos
+
+
+def _obter_precos_com_fonte(carteira, tipo_produto=None, db_url=None):
+    """
+    Igual a _obter_precos_bitget_primeiro_coingecko_fallback, mas retorna
+    dict[key] = {"preco": float, "fonte": "bitget_spot"|"bitget_perp"|"coingecko"|"coinmarketcap"|"db"}
+    para diagnóstico de origem dos preços.
+    """
+    trades_ativos = [t for t in carteira if t.get('ativo_atual')]
+    if not trades_ativos:
+        return {}
+
+    precos = {}
+    tipo_lower = (tipo_produto or '').lower()
+    use_perp = 'perp' in tipo_lower
+    use_spot = 'spot' in tipo_lower
+    if not use_perp and not use_spot:
+        use_perp = use_spot = True
+
+    if use_perp:
+        try:
+            tickers = fetch_bitget_tickers_perpetuals()
+            for t in trades_ativos:
+                ex_sym = (t.get('exchange_symbol') or '').strip().upper()
+                if ex_sym and ex_sym in tickers and tickers[ex_sym] > 0:
+                    key = _price_key(t)
+                    if key and key not in precos:
+                        precos[key] = {"preco": tickers[ex_sym], "fonte": "bitget_perp"}
+        except Exception:
+            pass
+    if use_spot:
+        try:
+            tickers = fetch_bitget_tickers_spot()
+            for t in trades_ativos:
+                ex_sym = (t.get('exchange_symbol') or '').strip().upper()
+                if ex_sym and ex_sym in tickers and tickers[ex_sym] > 0:
+                    key = _price_key(t)
+                    if key and key not in precos:
+                        precos[key] = {"preco": tickers[ex_sym], "fonte": "bitget_spot"}
+        except Exception:
+            pass
+
+    coingecko_ids_faltando = list(set(
+        t['coingecko_id'] for t in trades_ativos
+        if t.get('coingecko_id') and t['coingecko_id'] not in precos
+    ))
+    if coingecko_ids_faltando:
+        try:
+            cotacoes_service = CotacoesService(db_url=db_url)
+            cg_precos = cotacoes_service.obter_precos_coingecko_fallback(coingecko_ids_faltando)
+            for cg_id, preco in cg_precos.items():
+                if cg_id not in precos:
+                    precos[cg_id] = {"preco": preco, "fonte": "coingecko"}
+        except Exception:
+            pass
+
+    trades_sem_preco = [t for t in trades_ativos if _price_key(t) and _price_key(t) not in precos]
+    if trades_sem_preco and os.environ.get('COINMARKETCAP_API_KEY', '').strip():
+        try:
+            from services.portfolio_service import TICKER_TO_COINGECKO
+            COINGECKO_TO_TICKER = {v: k for k, v in TICKER_TO_COINGECKO.items()}
+            symbol_to_keys = {}
+            for t in trades_sem_preco:
+                key = _price_key(t)
+                if not key:
+                    continue
+                sym = None
+                ex_sym = (t.get('exchange_symbol') or '').strip().upper()
+                cg_id = t.get('coingecko_id')
+                ativo = (t.get('ativo') or '').strip().upper()
+                if ex_sym:
+                    sym = _exchange_symbol_to_cmc_symbol(ex_sym)
+                if not sym and cg_id:
+                    sym = COINGECKO_TO_TICKER.get(cg_id)
+                if not sym and ativo:
+                    sym = ativo if 1 <= len(ativo) <= 10 else None
+                if sym:
+                    symbol_to_keys.setdefault(sym, []).append(key)
+            if symbol_to_keys:
+                cotacoes_service = CotacoesService(db_url=db_url)
+                cmc_precos = cotacoes_service.obter_precos_coinmarketcap_fallback(list(symbol_to_keys.keys()))
+                for sym, preco in cmc_precos.items():
+                    for key in symbol_to_keys.get(sym, []):
+                        if key not in precos:
+                            precos[key] = {"preco": preco, "fonte": "coinmarketcap"}
         except Exception:
             pass
 
@@ -492,6 +741,90 @@ def _get_preencher_precos_js():
     '''
 
 
+def _get_form_modal_overlay_script(produto_id):
+    """Script e HTML para abrir formularios em modal na mesma pagina (sem recarregar o fundo)."""
+    return f'''
+    <div id="formModalOverlay" style="display:none; position:fixed; inset:0; z-index:9999;">
+        <div class="form-page-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);" onclick="formModalClose(event)"></div>
+        <div class="form-page-modal" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;overflow-y:auto;pointer-events:none;">
+            <div class="form-modal-card" style="pointer-events:auto;max-width:95%;" onclick="event.stopPropagation()">
+                <div id="formModalContent"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+    (function() {{
+        const produtoId = {produto_id};
+        function isFormLink(a) {{
+            if (!a || a.tagName !== 'A' || !a.href) return false;
+            try {{
+                const url = new URL(a.href);
+                if (url.origin !== location.origin) return false;
+                if (url.pathname.indexOf('/alocacao/') >= 0) return false;
+                const formPaths = ['/posicao/', '/posicoes/', '/stop/', '/atr/', '/produto/'];
+                return formPaths.some(p => url.pathname.indexOf(p) === 0);
+            }} catch (e) {{ return false; }}
+        }}
+        function formModalOpen(url) {{
+            const sep = url.indexOf('?') >= 0 ? '&' : '?';
+            fetch(url + sep + '_modal=1').then(r => r.text()).then(html => {{
+                const wrap = document.createElement('div');
+                wrap.innerHTML = html;
+                const scripts = wrap.querySelectorAll('script');
+                const content = document.getElementById('formModalContent');
+                content.innerHTML = '';
+                wrap.childNodes.forEach(n => {{
+                    if (n.tagName === 'SCRIPT') return;
+                    content.appendChild(n.cloneNode(true));
+                }});
+                scripts.forEach(s => {{
+                    const ns = document.createElement('script');
+                    if (s.src) ns.src = s.src;
+                    else ns.textContent = s.textContent;
+                    content.appendChild(ns);
+                }});
+                document.getElementById('formModalOverlay').style.display = 'block';
+                document.body.style.overflow = 'hidden';
+            }}).catch(e => {{
+                alert('Erro ao carregar: ' + e.message);
+            }});
+        }}
+        window.formModalClose = function(e) {{
+            if (e && e.target !== e.currentTarget) return;
+            document.getElementById('formModalOverlay').style.display = 'none';
+            document.body.style.overflow = '';
+        }};
+        function formModalCloseNow() {{
+            document.getElementById('formModalOverlay').style.display = 'none';
+            document.body.style.overflow = '';
+        }};
+        document.addEventListener('click', function(e) {{
+            const a = e.target.closest('a');
+            if (!a || !a.href) return;
+            try {{
+                const url = new URL(a.href);
+                if (url.origin !== location.origin) return;
+                const path = url.pathname;
+                const prodPath = '/produto/' + produtoId;
+                if (path === prodPath || path === prodPath + '/' || path.indexOf(prodPath + '/') === 0) {{
+                    if (document.getElementById('formModalOverlay').style.display === 'block') {{
+                        e.preventDefault();
+                        formModalCloseNow();
+                        if (path !== location.pathname) location.href = a.href;
+                    }}
+                    return;
+                }}
+                if (isFormLink(a)) {{
+                    e.preventDefault();
+                    formModalOpen(a.href);
+                }}
+            }} catch (err) {{}}
+        }}, true);
+    }})();
+    </script>
+    '''
+
+
 def get_base_styles():
     """Estilos CSS compartilhados"""
     return """
@@ -549,6 +882,14 @@ def get_base_styles():
             border-bottom-color: #4ecca3;
         }
         .container { max-width: 1400px; margin: 0 auto; padding: 30px; }
+        .container.form-page { padding: 16px 24px; }
+        /* Form modal overlay: fundo = produto, escurecido, form centralizado */
+        .form-page-bg { position: fixed; inset: 0; width: 100%; height: 100%; border: none; z-index: 0; }
+        .form-page-bg-placeholder { position: fixed; inset: 0; z-index: 0.5; background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%); pointer-events: none; transition: opacity 0.3s ease; }
+        .form-page-bg-placeholder.hidden { opacity: 0; }
+        .form-page-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 1; }
+        .form-page-modal { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 2; padding: 24px; overflow-y: auto; }
+        .form-page-modal .form-modal-card { margin: auto; }
         .card {
             background: linear-gradient(135deg, #16213e 0%, #1f2833 100%);
             border-radius: 15px;
@@ -706,6 +1047,33 @@ def get_base_styles():
         }
         .form-row { display: flex; gap: 20px; }
         .form-row .form-group { flex: 1; }
+        /* Formulários compactos (cabem na tela sem scroll) */
+        .form-compact .form-group { margin-bottom: 8px; }
+        .form-compact .form-group label { margin-bottom: 4px; font-size: 0.85em; }
+        .form-compact .form-group input,
+        .form-compact .form-group select,
+        .form-compact .form-group textarea { padding: 6px 10px; font-size: 0.9em; }
+        .form-compact .form-row { gap: 12px; margin-bottom: 8px; }
+        .form-compact .form-row .form-group { margin-bottom: 0; }
+        .form-compact .form-row-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 8px; }
+        .form-compact .form-row-3 .form-group { margin-bottom: 0; flex: none; }
+        .form-compact .form-row-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 8px; }
+        .form-compact .form-row-4 .form-group { margin-bottom: 0; flex: none; }
+        .form-compact .form-card { padding: 16px; max-width: 1200px; }
+        .form-compact .form-card h2 { margin-bottom: 10px; font-size: 1.1em; }
+        .form-compact .form-card > p { margin-bottom: 12px; font-size: 0.9em; }
+        .form-compact hr { margin: 12px 0; }
+        .form-compact .actions { margin-top: 12px; }
+        @media (max-width: 900px) {
+            .form-compact .form-row-3, .form-compact .form-row-4 {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+        @media (max-width: 600px) {
+            .form-compact .form-row-3, .form-compact .form-row-4 {
+                grid-template-columns: 1fr;
+            }
+        }
         .viz-list { list-style: none; }
         .viz-item {
             background: rgba(78, 204, 163, 0.1);
@@ -746,6 +1114,35 @@ def get_base_styles():
         .menu-item-icon { font-size: 2em; margin-bottom: 10px; }
         .menu-item-label { font-weight: bold; }
         .table-container { overflow-x: auto; }
+        .table-container::-webkit-scrollbar { height: 6px; }
+        .table-container::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
+        .table-container::-webkit-scrollbar-thumb { background: rgba(78, 204, 163, 0.35); border-radius: 3px; }
+    """
+
+
+def get_form_page_with_background(inner_content, produto_id, title="Form"):
+    """Envolve o conteúdo do formulário com fundo (página do produto escurecida) e centraliza na tela."""
+    produto_url = f"/produto/{produto_id}"
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{title}</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        <iframe class="form-page-bg" src="{produto_url}" title="Fundo" onload="document.getElementById('form-bg-placeholder').classList.add('hidden')"></iframe>
+        <div id="form-bg-placeholder" class="form-page-bg-placeholder"></div>
+        <div class="form-page-overlay"></div>
+        <div class="form-page-modal">
+            <div class="form-modal-card">
+                {inner_content}
+            </div>
+        </div>
+    </body>
+    </html>
     """
 
 
@@ -1036,9 +1433,10 @@ def get_produto_html(produto, visualizacoes, repo):
                     </div>
                 </div>
                 {content_html}
-            </div>
         </div>
+    </div>
 
+    {_get_form_modal_overlay_script(produto_id)}
     {_get_preencher_precos_js()}
     </body>
     </html>
@@ -1120,34 +1518,25 @@ def get_visualizacao_html(produto, visualizacao, df_viz):
                     </div>
                 </div>
                 {content_html}
-            </div>
         </div>
+    </div>
 
+    {_get_form_modal_overlay_script(produto_id)}
     {_get_preencher_precos_js()}
     </body>
     </html>
     """
 
 
-def get_form_produto_html(produto=None):
-    """Gera formulario para criar/editar produto"""
+def get_form_produto_html(produto=None, as_inner=False):
+    """Gera formulario para criar/editar produto. Se as_inner=True (apenas em edicao), retorna só o card (para overlay)."""
     is_edit = produto is not None
     titulo = "Editar Produto" if is_edit else "Novo Produto"
     action = f"/api/produto/{produto['id']}/editar" if is_edit else "/api/produto/criar"
+    cancel_url = f"/produto/{produto['id']}" if is_edit else "/"
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>{titulo}</title>
-        <style>{get_base_styles()}</style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 600px; margin: 0 auto;">
+    card_html = f"""
+            <div class="card" style="max-width: 600px;">
                 <h2>{titulo}</h2>
                 <div id="alert" class="alert"></div>
                 <form id="produtoForm">
@@ -1175,11 +1564,12 @@ def get_form_produto_html(produto=None):
                     </div>
                     <div class="actions">
                         <button type="submit" class="btn btn-primary">{'Salvar' if is_edit else 'Criar'}</button>
-                        <a href="/" class="btn btn-secondary">Cancelar</a>
+                        <a href="{cancel_url}" class="btn btn-secondary">Cancelar</a>
                     </div>
                 </form>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             document.getElementById('produtoForm').addEventListener('submit', async (e) => {{
                 e.preventDefault();
@@ -1208,42 +1598,153 @@ def get_form_produto_html(produto=None):
                 }}
             }});
         </script>
-    </body>
-    </html>
     """
-
-
-def get_form_posicao_html(produto_id=None, produtos=None):
-    """Gera formulario para criar posicao"""
-    produtos_options = ""
-    if produtos:
-        for p in produtos:
-            selected = 'selected' if produto_id and p['id'] == produto_id else ''
-            produtos_options += f'<option value="{p["id"]}" {selected}>{p["nome"]}</option>'
-
+    if is_edit and as_inner:
+        return card_html + script
+    if is_edit:
+        return get_form_page_with_background(card_html + script, produto['id'], 'Editar Produto')
     return f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Nova Posicao</title>
+        <title>{titulo}</title>
         <style>{get_base_styles()}</style>
     </head>
     <body>
         {get_navbar()}
         <div class="container">
-            <div class="card" style="max-width: 700px; margin: 0 auto;">
-                <h2>Nova Posicao</h2>
-                <div id="alert" class="alert"></div>
-                <form id="posicaoForm">
-                    <div class="form-group">
-                        <label>Produto</label>
-                        <select name="produto_id" required>{produtos_options}</select>
+            {card_html}
+        </div>
+        {script}
+    </body>
+    </html>
+    """
+
+
+def _get_campos_extras_nova_posicao(produto):
+    """Retorna HTML dos campos extras para Nova Posição conforme o produto."""
+    if not produto:
+        return ""
+    if _is_produto_crypto_signals(produto):
+        return """
+                    <hr style="margin: 12px 0; border-color: rgba(78,204,163,0.2);">
+                    <p style="color: #4ecca3; font-size: 0.85em; margin-bottom: 8px;">Crypto Signals</p>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>Perfil</label>
+                            <select name="perfil">
+                                <option value="">Selecione...</option>
+                                <option value="Arrojado">Arrojado</option>
+                                <option value="Moderado">Moderado</option>
+                                <option value="Conservador">Conservador</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Alvo 1 (USD)</label>
+                            <input type="number" name="alvo1" step="0.00000001" placeholder="Preço alvo 1">
+                        </div>
+                        <div class="form-group">
+                            <label>Alvo 2 (USD)</label>
+                            <input type="number" name="alvo2" step="0.00000001" placeholder="Preço alvo 2">
+                        </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Ativo (ex: BTC, ETH)</label>
+                            <label>Relatório (URL)</label>
+                            <input type="url" name="relatorio" placeholder="https://...">
+                        </div>
+                        <div class="form-group">
+                            <label>Motivo (opcional)</label>
+                            <input type="text" name="motivo" placeholder="Ex: Breakout, reversão">
+                        </div>
+                    </div>"""
+    if _is_produto_icos(produto):
+        return """
+                    <hr style="margin: 12px 0; border-color: rgba(78,204,163,0.2);">
+                    <p style="color: #4ecca3; font-size: 0.85em; margin-bottom: 8px;">ICOs</p>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>Categoria</label>
+                            <input type="text" name="categoria" placeholder="DeFi, Gaming">
+                        </div>
+                        <div class="form-group">
+                            <label>Tipo ICO</label>
+                            <input type="text" name="tipo_ico" placeholder="TGE, IDO">
+                        </div>
+                        <div class="form-group">
+                            <label>Rank</label>
+                            <input type="text" name="rank" placeholder="1, 2, 3">
+                        </div>
+                    </div>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>Tipo Janela</label>
+                            <input type="text" name="tipo_janela" placeholder="Janela">
+                        </div>
+                        <div class="form-group">
+                            <label>Tese</label>
+                            <input type="text" name="tese" placeholder="Tese">
+                        </div>
+                        <div class="form-group">
+                            <label>Risco</label>
+                            <input type="text" name="risco" placeholder="Risco">
+                        </div>
+                    </div>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>Atenção</label>
+                            <input type="text" name="atencao" placeholder="Atenção">
+                        </div>
+                        <div class="form-group">
+                            <label>Execução</label>
+                            <input type="text" name="execucao" placeholder="Execução">
+                        </div>
+                        <div class="form-group">
+                            <label>Por quê</label>
+                            <input type="text" name="por_que" placeholder="Justificativa">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Local (URL)</label>
+                            <input type="url" name="local" placeholder="https://...">
+                        </div>
+                        <div class="form-group">
+                            <label>Ficha Técnica (URL)</label>
+                            <input type="url" name="ficha_tecnica" placeholder="https://...">
+                        </div>
+                    </div>"""
+    return ""
+
+
+def get_form_posicao_html(produto_id=None, produtos=None, produto=None, as_inner=False):
+    """Gera formulario para criar posicao. Se as_inner=True, retorna só o card (para overlay)."""
+    produtos_options = ""
+    if produtos:
+        for p in produtos:
+            selected = 'selected' if produto_id and p['id'] == produto_id else ''
+            produtos_options += f'<option value="{p["id"]}" {selected}>{p["nome"]}</option>'
+
+    # Resolver produto para campos extras
+    if produto is None and produto_id and produtos:
+        produto = next((p for p in produtos if p.get('id') == produto_id), None)
+    campos_extras = _get_campos_extras_nova_posicao(produto)
+
+    cancel_url = f"/produto/{produto_id}" if produto_id else "/"
+    card_html = f"""
+            <div class="card form-card form-compact" style="max-width: 1200px;">
+                <h2>Nova Posicao</h2>
+                <div id="alert" class="alert"></div>
+                <form id="posicaoForm" class="form-compact">
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>Produto</label>
+                            <select name="produto_id" required>{produtos_options}</select>
+                        </div>
+                        <div class="form-group">
+                            <label>Ativo</label>
                             <input type="text" name="ativo" required placeholder="BTC">
                         </div>
                         <div class="form-group">
@@ -1251,9 +1752,9 @@ def get_form_posicao_html(produto_id=None, produtos=None):
                             <input type="text" name="coingecko_id" placeholder="bitcoin">
                         </div>
                     </div>
-                    <div class="form-row">
+                    <div class="form-row-3">
                         <div class="form-group">
-                            <label>Exchange Symbol (para sync)</label>
+                            <label>Exchange Symbol</label>
                             <input type="text" name="exchange_symbol" placeholder="BTCUSDT">
                         </div>
                         <div class="form-group">
@@ -1263,28 +1764,29 @@ def get_form_posicao_html(produto_id=None, produtos=None):
                                 <option value="short">Short</option>
                             </select>
                         </div>
-                    </div>
-                    <div class="form-row">
                         <div class="form-group">
                             <label>Data de Entrada</label>
                             <input type="date" name="data_entrada" value="{date.today().isoformat()}">
                         </div>
+                    </div>
+                    <div class="form-row">
                         <div class="form-group">
                             <label>Preco de Entrada (USD)</label>
                             <input type="number" name="preco_entrada" step="0.00000001" required>
                         </div>
+                        <div class="form-group">
+                            <label>Quantidade</label>
+                            <input type="number" name="quantidade" step="0.00000001" placeholder="Opcional">
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label>Quantidade (opcional)</label>
-                        <input type="number" name="quantidade" step="0.00000001">
-                    </div>
+                    {campos_extras}
                     <div class="actions">
                         <button type="submit" class="btn btn-primary">Criar Posicao</button>
-                        <a href="/" class="btn btn-secondary">Cancelar</a>
+                        <a href="{cancel_url}" class="btn btn-secondary">Cancelar</a>
                     </div>
                 </form>
-            </div>
-        </div>
+            </div>"""
+    script = f"""
         <script>
             document.getElementById('posicaoForm').addEventListener('submit', async (e) => {{
                 e.preventDefault();
@@ -1312,7 +1814,24 @@ def get_form_posicao_html(produto_id=None, produtos=None):
                     alert.textContent = 'Erro: ' + error.message;
                 }}
             }});
-        </script>
+        </script>"""
+    if as_inner:
+        return card_html + script
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Nova Posicao</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container form-page">
+            {card_html}
+        </div>
+        {script}
     </body>
     </html>
     """
@@ -1369,21 +1888,10 @@ def get_lista_produtos_html(produtos, acao="editar"):
     """
 
 
-def get_confirmar_delete_html(produto):
-    """Pagina de confirmacao de exclusao"""
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Confirmar Exclusao</title>
-        <style>{get_base_styles()}</style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 500px; margin: 0 auto; text-align: center;">
+def get_confirmar_delete_html(produto, as_inner=False):
+    """Pagina de confirmacao de exclusao. Se as_inner=True, retorna só o card (para overlay)."""
+    card_html = f"""
+            <div class="card" style="max-width: 500px; text-align: center;">
                 <h2 style="color: #ff6b6b;">Confirmar Exclusao</h2>
                 <p style="margin: 20px 0;">Tem certeza que deseja deletar o produto:</p>
                 <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{produto['nome']}</p>
@@ -1391,10 +1899,11 @@ def get_confirmar_delete_html(produto):
                 <div id="alert" class="alert"></div>
                 <div class="actions" style="justify-content: center;">
                     <button class="btn btn-danger" onclick="deletarProduto()">Sim, Deletar</button>
-                    <a href="/" class="btn btn-secondary">Cancelar</a>
+                    <a href="/produto/{produto['id']}" class="btn btn-secondary">Cancelar</a>
                 </div>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             async function deletarProduto() {{
                 const alert = document.getElementById('alert');
@@ -1416,13 +1925,14 @@ def get_confirmar_delete_html(produto):
                 }}
             }}
         </script>
-    </body>
-    </html>
     """
+    if as_inner:
+        return card_html + script
+    return get_form_page_with_background(card_html + script, produto['id'], 'Confirmar Exclusao')
 
 
-def get_lista_posicoes_html(produto, posicoes, acao="editar"):
-    """Lista posicoes de um produto para selecao (editar/stop/fechar/atr/deletar)"""
+def get_lista_posicoes_html(produto, posicoes, acao="editar", as_inner=False):
+    """Lista posicoes de um produto para selecao. Se as_inner=True, retorna só o card (para overlay)."""
     titulo_map = {
         "editar": "Editar Posicao",
         "stop": "Adicionar Stop",
@@ -1483,6 +1993,17 @@ def get_lista_posicoes_html(produto, posicoes, acao="editar"):
     else:
         items_html = '<p style="text-align: center; color: #888;">Nenhuma posicao aberta</p>'
 
+    card_html = f"""
+            <div class="card" style="max-width: 600px;">
+                <h2>{titulo}</h2>
+                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <div class="viz-list">{items_html}</div>
+                <div class="actions" style="margin-top: 20px;">
+                    <a href="/produto/{produto['id']}" class="btn btn-secondary">Voltar</a>
+                </div>
+            </div>"""
+    if as_inner:
+        return card_html
     return f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -1495,22 +2016,15 @@ def get_lista_posicoes_html(produto, posicoes, acao="editar"):
     <body>
         {get_navbar()}
         <div class="container">
-            <div class="card" style="max-width: 600px; margin: 0 auto;">
-                <h2>{titulo}</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
-                <div class="viz-list">{items_html}</div>
-                <div class="actions" style="margin-top: 20px;">
-                    <a href="/produto/{produto['id']}" class="btn btn-secondary">Voltar</a>
-                </div>
-            </div>
+            {card_html}
         </div>
     </body>
     </html>
     """
 
 
-def get_form_adicionar_stop_html(produto, posicao):
-    """Formulario para adicionar stop a uma posicao"""
+def get_form_adicionar_stop_html(produto, posicao, as_inner=False):
+    """Formulario para adicionar stop. Se as_inner=True, retorna só o card (para overlay)."""
     pos_id = posicao.get('id') or posicao.get('ID')
     ativo = posicao.get('ativo') or posicao.get('Ativo', 'N/A')
     side = posicao.get('side') or posicao.get('tipo') or posicao.get('Tipo', 'N/A')
@@ -1518,25 +2032,14 @@ def get_form_adicionar_stop_html(produto, posicao):
     is_spot = 'spot' in produto.get('tipo', '').lower()
     side_info = "" if is_spot else f" ({side})"
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Adicionar Stop - {ativo}</title>
-        <style>{get_base_styles()}</style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 600px; margin: 0 auto;">
+    card_html = f"""
+            <div class="card form-card form-compact" style="max-width: 600px;">
                 <h2>Adicionar Stop</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">
+                <p style="color: #4ecca3; margin-bottom: 12px; font-size: 0.9em;">
                     {ativo}{side_info} - Entrada: ${preco_entrada:,.4f}
                 </p>
                 <div id="alert" class="alert"></div>
-                <form id="stopForm">
+                <form id="stopForm" class="form-compact">
                     <input type="hidden" name="posicao_id" value="{pos_id}">
                     <div class="form-row">
                         <div class="form-group">
@@ -1557,8 +2060,8 @@ def get_form_adicionar_stop_html(produto, posicao):
                         <a href="/produto/{produto['id']}" class="btn btn-secondary">Cancelar</a>
                     </div>
                 </form>
-            </div>
-        </div>
+            </div>"""
+    script = f"""
         <script>
             document.getElementById('stopForm').addEventListener('submit', async (e) => {{
                 e.preventDefault();
@@ -1586,14 +2089,31 @@ def get_form_adicionar_stop_html(produto, posicao):
                     alert.textContent = 'Erro: ' + error.message;
                 }}
             }});
-        </script>
+        </script>"""
+    if as_inner:
+        return card_html + script
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Adicionar Stop - {ativo}</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container form-page">
+            {card_html}
+        </div>
+        {script}
     </body>
     </html>
     """
 
 
-def get_form_fechar_posicao_html(produto, posicao):
-    """Formulario para fechar uma posicao"""
+def get_form_fechar_posicao_html(produto, posicao, as_inner=False):
+    """Formulario para fechar uma posicao. Se as_inner=True, retorna só o card (para overlay)."""
     pos_id = posicao.get('id') or posicao.get('ID')
     ativo = posicao.get('ativo') or posicao.get('Ativo', 'N/A')
     side = posicao.get('side') or posicao.get('tipo') or posicao.get('Tipo', 'N/A')
@@ -1601,25 +2121,27 @@ def get_form_fechar_posicao_html(produto, posicao):
     is_spot = 'spot' in produto.get('tipo', '').lower()
     side_info = "" if is_spot else f" ({side})"
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Fechar Posicao - {ativo}</title>
-        <style>{get_base_styles()}</style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 600px; margin: 0 auto;">
+    # Campos extras para ICOs (Resultado)
+    resultado_field = ""
+    if _is_produto_icos(produto):
+        resultado_field = """
+                    <div class="form-group">
+                        <label>Resultado</label>
+                        <select name="resultado">
+                            <option value="">Selecione...</option>
+                            <option value="Sucesso">Sucesso</option>
+                            <option value="Não ocorreu">Não ocorreu</option>
+                        </select>
+                    </div>"""
+
+    card_html = f"""
+            <div class="card form-card form-compact" style="max-width: 600px;">
                 <h2>Fechar Posicao</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">
+                <p style="color: #4ecca3; margin-bottom: 12px; font-size: 0.9em;">
                     {ativo}{side_info} - Entrada: ${preco_entrada:,.4f}
                 </p>
                 <div id="alert" class="alert"></div>
-                <form id="fecharForm">
+                <form id="fecharForm" class="form-compact">
                     <input type="hidden" name="posicao_id" value="{pos_id}">
                     <div class="form-row">
                         <div class="form-group">
@@ -1631,6 +2153,7 @@ def get_form_fechar_posicao_html(produto, posicao):
                             <input type="date" name="data_saida" value="{date.today().isoformat()}">
                         </div>
                     </div>
+                    {resultado_field}
                     <div class="form-group">
                         <label>Motivo (opcional)</label>
                         <input type="text" name="motivo" placeholder="Ex: Stop atingido, Take profit">
@@ -1641,7 +2164,8 @@ def get_form_fechar_posicao_html(produto, posicao):
                     </div>
                 </form>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             document.getElementById('fecharForm').addEventListener('submit', async (e) => {{
                 e.preventDefault();
@@ -1670,13 +2194,120 @@ def get_form_fechar_posicao_html(produto, posicao):
                 }}
             }});
         </script>
-    </body>
-    </html>
     """
+    if as_inner:
+        return card_html + script
+    return get_form_page_with_background(card_html + script, produto['id'], 'Fechar Posicao')
 
 
-def get_form_editar_posicao_html(produto, posicao):
-    """Formulario para editar uma posicao existente"""
+def _get_campos_extras_editar_posicao(produto, posicao):
+    """Retorna HTML dos campos extras para Editar Posição conforme o produto."""
+    def _v(k, default=''):
+        v = posicao.get(k) or posicao.get(k.replace('_', ' ').title(),
+                         posicao.get(k.replace('_', ' ').title().replace(' ', '_')))
+        return (str(v) if v is not None else '').replace('"', '&quot;') or default
+
+    if not produto:
+        return ""
+    if _is_produto_crypto_signals(produto):
+        perfil = _v('perfil')
+        alvo1 = _v('alvo1')
+        alvo2 = _v('alvo2')
+        motivo = _v('motivo')
+        relatorio = _v('relatorio')
+        return f"""
+                    <hr style="margin: 12px 0; border-color: rgba(78,204,163,0.2);">
+                    <p style="color: #4ecca3; font-size: 0.85em; margin-bottom: 8px;">Crypto Signals</p>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>Perfil</label>
+                            <select name="perfil">
+                                <option value="">Selecione...</option>
+                                <option value="Arrojado" {'selected' if perfil == 'Arrojado' else ''}>Arrojado</option>
+                                <option value="Moderado" {'selected' if perfil == 'Moderado' else ''}>Moderado</option>
+                                <option value="Conservador" {'selected' if perfil == 'Conservador' else ''}>Conservador</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Alvo 1 (USD)</label>
+                            <input type="number" name="alvo1" step="0.00000001" value="{alvo1}" placeholder="Alvo 1">
+                        </div>
+                        <div class="form-group">
+                            <label>Alvo 2 (USD)</label>
+                            <input type="number" name="alvo2" step="0.00000001" value="{alvo2}" placeholder="Alvo 2">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Relatório (URL)</label>
+                            <input type="url" name="relatorio" value="{relatorio}" placeholder="https://...">
+                        </div>
+                        <div class="form-group">
+                            <label>Motivo</label>
+                            <input type="text" name="motivo" value="{motivo}" placeholder="Breakout, reversão">
+                        </div>
+                    </div>"""
+    if _is_produto_icos(produto):
+        return f"""
+                    <hr style="margin: 12px 0; border-color: rgba(78,204,163,0.2);">
+                    <p style="color: #4ecca3; font-size: 0.85em; margin-bottom: 8px;">ICOs</p>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>Categoria</label>
+                            <input type="text" name="categoria" value="{_v('categoria')}" placeholder="DeFi, Gaming">
+                        </div>
+                        <div class="form-group">
+                            <label>Tipo ICO</label>
+                            <input type="text" name="tipo_ico" value="{_v('tipo_ico')}" placeholder="TGE, IDO">
+                        </div>
+                        <div class="form-group">
+                            <label>Rank</label>
+                            <input type="text" name="rank" value="{_v('rank')}" placeholder="1, 2, 3">
+                        </div>
+                    </div>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>Tipo Janela</label>
+                            <input type="text" name="tipo_janela" value="{_v('tipo_janela')}" placeholder="Janela">
+                        </div>
+                        <div class="form-group">
+                            <label>Tese</label>
+                            <input type="text" name="tese" value="{_v('tese')}" placeholder="Tese">
+                        </div>
+                        <div class="form-group">
+                            <label>Risco</label>
+                            <input type="text" name="risco" value="{_v('risco')}" placeholder="Risco">
+                        </div>
+                    </div>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>Atenção</label>
+                            <input type="text" name="atencao" value="{_v('atencao')}" placeholder="Atenção">
+                        </div>
+                        <div class="form-group">
+                            <label>Execução</label>
+                            <input type="text" name="execucao" value="{_v('execucao')}" placeholder="Execução">
+                        </div>
+                        <div class="form-group">
+                            <label>Por quê</label>
+                            <input type="text" name="por_que" value="{_v('por_que')}" placeholder="Justificativa">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Local (URL)</label>
+                            <input type="url" name="local" value="{_v('local')}" placeholder="https://...">
+                        </div>
+                        <div class="form-group">
+                            <label>Ficha Técnica (URL)</label>
+                            <input type="url" name="ficha_tecnica" value="{_v('ficha_tecnica')}" placeholder="https://...">
+                        </div>
+                    </div>"""
+    return ""
+
+
+def get_form_editar_posicao_html(produto, posicao, as_inner=False):
+    """Formulario para editar uma posicao existente. Se as_inner=True, retorna só o card (para overlay)."""
     pos_id = posicao.get('id') or posicao.get('ID')
     ativo = posicao.get('ativo') or posicao.get('Ativo', '')
     coingecko_id = posicao.get('coingecko_id') or posicao.get('CoinGecko ID', '')
@@ -1689,6 +2320,7 @@ def get_form_editar_posicao_html(produto, posicao):
         fallback_today=True
     )
     is_spot = 'spot' in produto.get('tipo', '').lower()
+    campos_extras = _get_campos_extras_editar_posicao(produto, posicao)
 
     # Para spot, não mostra seletor de tipo
     if is_spot:
@@ -1711,26 +2343,17 @@ def get_form_editar_posicao_html(produto, posicao):
                             <label>Data de Entrada</label>
                             <input type="date" name="data_entrada" value="{data_entrada}">
                         </div>"""
+    # Editar: linha com tipo/data + preco + quantidade
+    base_row_class = "form-row-4" if not is_spot else "form-row-3"
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Editar Posicao - {ativo}</title>
-        <style>{get_base_styles()}</style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 600px; margin: 0 auto;">
+    card_html = f"""
+            <div class="card form-card form-compact" style="max-width: 1200px;">
                 <h2>Editar Posicao</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <p style="color: #4ecca3; margin-bottom: 12px; font-size: 0.9em;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
-                <form id="editarPosicaoForm">
+                <form id="editarPosicaoForm" class="form-compact">
                     <input type="hidden" name="posicao_id" value="{pos_id}">
-                    <div class="form-row">
+                    <div class="form-row-3">
                         <div class="form-group">
                             <label>Ativo</label>
                             <input type="text" name="ativo" value="{ativo}" required>
@@ -1739,15 +2362,13 @@ def get_form_editar_posicao_html(produto, posicao):
                             <label>CoinGecko ID</label>
                             <input type="text" name="coingecko_id" value="{coingecko_id or ''}">
                         </div>
-                    </div>
-                    <div class="form-row">
                         <div class="form-group">
-                            <label>Exchange Symbol (para sync)</label>
+                            <label>Exchange Symbol</label>
                             <input type="text" name="exchange_symbol" value="{exchange_symbol or ''}" placeholder="BTCUSDT">
                         </div>
-                        {tipo_field_html}
                     </div>
-                    <div class="form-row">
+                    <div class="{base_row_class}">
+                        {tipo_field_html}
                         <div class="form-group">
                             <label>Preco de Entrada</label>
                             <input type="number" name="preco_entrada" step="0.00000001" value="{preco_entrada}" required>
@@ -1757,13 +2378,14 @@ def get_form_editar_posicao_html(produto, posicao):
                             <input type="number" name="quantidade" step="0.00000001" value="{quantidade or ''}">
                         </div>
                     </div>
+                    {campos_extras}
                     <div class="actions">
                         <button type="submit" class="btn btn-primary">Salvar</button>
                         <a href="/produto/{produto['id']}" class="btn btn-secondary">Cancelar</a>
                     </div>
                 </form>
-            </div>
-        </div>
+            </div>"""
+    script_editar = f"""
         <script>
             document.getElementById('editarPosicaoForm').addEventListener('submit', async (e) => {{
                 e.preventDefault();
@@ -1791,14 +2413,31 @@ def get_form_editar_posicao_html(produto, posicao):
                     alert.textContent = 'Erro: ' + error.message;
                 }}
             }});
-        </script>
+        </script>"""
+    if as_inner:
+        return card_html + script_editar
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Editar Posicao - {ativo}</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container form-page">
+            {card_html}
+        </div>
+        {script_editar}
     </body>
     </html>
     """
 
 
-def get_form_atr_stop_html(produto, posicao):
-    """Formulario para configurar ATR Trailing Stop"""
+def get_form_atr_stop_html(produto, posicao, as_inner=False):
+    """Formulario para configurar ATR Trailing Stop. Se as_inner=True, retorna só o card (para overlay)."""
     from datetime import date as dt_date
     pos_id = posicao.get('id') or posicao.get('ID')
     ativo = posicao.get('ativo') or posicao.get('Ativo', 'N/A')
@@ -1812,46 +2451,31 @@ def get_form_atr_stop_html(produto, posicao):
         from datetime import timedelta
         current_data_inicio = (dt_date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>ATR Stop - {ativo}</title>
-        <style>{get_base_styles()}</style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 600px; margin: 0 auto;">
+    card_html = f"""
+            <div class="card form-card form-compact" style="max-width: 600px;">
                 <h2>Configurar ATR Trailing Stop</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">
+                <p style="color: #4ecca3; margin-bottom: 8px; font-size: 0.9em;">
                     {ativo} - Entrada: ${preco_entrada:,.4f} (em {data_entrada})
                 </p>
-                <p style="color: #888; font-size: 0.9em; margin-bottom: 20px;">
-                    O ATR Trailing Stop calcula automaticamente o stop baseado na volatilidade do ativo.
-                    Use a "Data de Início" para definir a partir de quando o cálculo deve considerar.
+                <p style="color: #888; font-size: 0.8em; margin-bottom: 12px;">
+                    O ATR calcula o stop pela volatilidade. Use "Data de Início" para posições antigas.
                 </p>
                 <div id="alert" class="alert"></div>
-                <form id="atrForm">
+                <form id="atrForm" class="form-compact">
                     <input type="hidden" name="posicao_id" value="{pos_id}">
-                    <div class="form-row">
+                    <div class="form-row-3">
                         <div class="form-group">
                             <label>ATR Period (dias)</label>
                             <input type="number" name="atr_period" value="{current_period}" min="1" max="100" required>
-                            <small style="color: #888;">Periodo para calculo do ATR (padrao: 14)</small>
                         </div>
                         <div class="form-group">
                             <label>ATR Multiplier</label>
                             <input type="number" name="atr_multiplier" value="{current_mult}" step="0.1" min="0.5" max="10" required>
-                            <small style="color: #888;">Multiplicador do ATR (padrao: 3.0)</small>
                         </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Data de Início do Cálculo</label>
-                        <input type="date" name="atr_data_inicio" value="{current_data_inicio}" required>
-                        <small style="color: #888;">A partir de quando calcular o trailing stop (use data recente para posições antigas)</small>
+                        <div class="form-group">
+                            <label>Data de Início</label>
+                            <input type="date" name="atr_data_inicio" value="{current_data_inicio}" required>
+                        </div>
                     </div>
                     <div class="actions">
                         <button type="submit" class="btn btn-primary">Salvar Configuracao</button>
@@ -1860,7 +2484,8 @@ def get_form_atr_stop_html(produto, posicao):
                     </div>
                 </form>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             document.getElementById('atrForm').addEventListener('submit', async (e) => {{
                 e.preventDefault();
@@ -1917,17 +2542,18 @@ def get_form_atr_stop_html(produto, posicao):
                 }}
             }}
         </script>
-    </body>
-    </html>
     """
+    if as_inner:
+        return card_html + script
+    return get_form_page_with_background(card_html + script, produto['id'], 'ATR Stop')
 
 
 # ============================================================
 # VISUALIZACOES
 # ============================================================
 
-def get_lista_visualizacoes_html(produto, visualizacoes):
-    """Lista visualizacoes de um produto para gerenciamento"""
+def get_lista_visualizacoes_html(produto, visualizacoes, as_inner=False):
+    """Lista visualizacoes de um produto para gerenciamento. Se as_inner=True, retorna só o card (para overlay)."""
     items_html = ""
 
     if visualizacoes:
@@ -1957,6 +2583,20 @@ def get_lista_visualizacoes_html(produto, visualizacoes):
     else:
         items_html = '<p style="text-align: center; color: #888; padding: 20px;">Nenhuma visualizacao cadastrada</p>'
 
+    card_html = f"""
+            <div class="card" style="max-width: 700px;">
+                <h2>Gerenciar Visualizacoes</h2>
+                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <div id="alert" class="alert"></div>
+                <div class="viz-list">{items_html}</div>
+                <div class="actions" style="margin-top: 20px;">
+                    <a href="/produto/{produto['id']}/viz/nova" class="btn btn-primary">+ Nova Visualizacao</a>
+                    <a href="/produto/{produto['id']}" class="btn btn-secondary">Voltar</a>
+                </div>
+            </div>
+        """
+    if as_inner:
+        return card_html
     return f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -1969,24 +2609,15 @@ def get_lista_visualizacoes_html(produto, visualizacoes):
     <body>
         {get_navbar()}
         <div class="container">
-            <div class="card" style="max-width: 700px; margin: 0 auto;">
-                <h2>Gerenciar Visualizacoes</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
-                <div id="alert" class="alert"></div>
-                <div class="viz-list">{items_html}</div>
-                <div class="actions" style="margin-top: 20px;">
-                    <a href="/produto/{produto['id']}/viz/nova" class="btn btn-primary">+ Nova Visualizacao</a>
-                    <a href="/produto/{produto['id']}" class="btn btn-secondary">Voltar</a>
-                </div>
-            </div>
+            {card_html}
         </div>
     </body>
     </html>
     """
 
 
-def get_form_nova_visualizacao_html(produto, colunas_disponiveis):
-    """Formulario para criar nova visualizacao"""
+def get_form_nova_visualizacao_html(produto, colunas_disponiveis, as_inner=False):
+    """Formulario para criar nova visualizacao. Se as_inner=True, retorna só o card (para overlay)."""
     colunas_html = ""
     for i, col in enumerate(colunas_disponiveis):
         origem_badge = f'<span class="badge badge-outro" style="font-size: 0.7em;">{col["origem"]}</span>'
@@ -2003,48 +2634,14 @@ def get_form_nova_visualizacao_html(produto, colunas_disponiveis):
     for col in colunas_disponiveis:
         colunas_ordenacao += f'<option value="{col["nome"]}">{col["label"]}</option>'
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Nova Visualizacao - {produto['nome']}</title>
-        <style>
-            {get_base_styles()}
-            .colunas-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-                gap: 8px;
-                max-height: 400px;
-                overflow-y: auto;
-                padding: 10px;
-                background: #1a1a2e;
-                border-radius: 8px;
-                border: 1px solid #2a2a4a;
-            }}
-            .filtros-container {{ margin-top: 15px; }}
-            .filtro-item {{
-                display: flex;
-                gap: 10px;
-                margin-bottom: 10px;
-                padding: 10px;
-                background: #16213e;
-                border-radius: 8px;
-            }}
-            .filtro-item select, .filtro-item input {{
-                padding: 8px;
-                border: 1px solid #2a2a4a;
-                border-radius: 5px;
-                background: #1a1a2e;
-                color: #eee;
-            }}
-        </style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 800px; margin: 0 auto;">
+    extra_styles = """
+            .colunas-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; max-height: 400px; overflow-y: auto; padding: 10px; background: #1a1a2e; border-radius: 8px; border: 1px solid #2a2a4a; }
+            .filtros-container { margin-top: 15px; }
+            .filtro-item { display: flex; gap: 10px; margin-bottom: 10px; padding: 10px; background: #16213e; border-radius: 8px; }
+            .filtro-item select, .filtro-item input { padding: 8px; border: 1px solid #2a2a4a; border-radius: 5px; background: #1a1a2e; color: #eee; }
+    """
+    card_html = f"""
+            <div class="card" style="max-width: 800px;">
                 <h2>Nova Visualizacao</h2>
                 <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
@@ -2097,7 +2694,8 @@ def get_form_nova_visualizacao_html(produto, colunas_disponiveis):
                     </div>
                 </form>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             function selecionarTodas() {{
                 document.querySelectorAll('input[name="colunas"]').forEach(cb => cb.checked = true);
@@ -2164,13 +2762,31 @@ def get_form_nova_visualizacao_html(produto, colunas_disponiveis):
                 }}
             }});
         </script>
+    """
+    if as_inner:
+        return f"<style>{extra_styles}</style>" + card_html + script
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Nova Visualizacao - {produto['nome']}</title>
+        <style>{get_base_styles()}{extra_styles}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            {card_html}
+        </div>
+        {script}
     </body>
     </html>
     """
 
 
-def get_form_editar_visualizacao_html(produto, visualizacao, colunas_disponiveis):
-    """Formulario para editar visualizacao existente"""
+def get_form_editar_visualizacao_html(produto, visualizacao, colunas_disponiveis, as_inner=False):
+    """Formulario para editar visualizacao existente. Se as_inner=True, retorna só o card (para overlay)."""
     colunas_selecionadas = visualizacao.get('colunas', [])
 
     colunas_html = ""
@@ -2203,32 +2819,11 @@ def get_form_editar_visualizacao_html(produto, visualizacao, colunas_disponiveis
             filtro_status = f.get('valor', '')
             break
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Editar Visualizacao - {visualizacao['nome']}</title>
-        <style>
-            {get_base_styles()}
-            .colunas-grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-                gap: 8px;
-                max-height: 400px;
-                overflow-y: auto;
-                padding: 10px;
-                background: #1a1a2e;
-                border-radius: 8px;
-                border: 1px solid #2a2a4a;
-            }}
-        </style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 800px; margin: 0 auto;">
+    extra_styles = """
+            .colunas-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; max-height: 400px; overflow-y: auto; padding: 10px; background: #1a1a2e; border-radius: 8px; border: 1px solid #2a2a4a; }
+    """
+    card_html = f"""
+            <div class="card" style="max-width: 800px;">
                 <h2>Editar Visualizacao</h2>
                 <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
@@ -2280,7 +2875,8 @@ def get_form_editar_visualizacao_html(produto, visualizacao, colunas_disponiveis
                     </div>
                 </form>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             function selecionarTodas() {{
                 document.querySelectorAll('input[name="colunas"]').forEach(cb => cb.checked = true);
@@ -2348,13 +2944,31 @@ def get_form_editar_visualizacao_html(produto, visualizacao, colunas_disponiveis
                 }}
             }});
         </script>
+    """
+    if as_inner:
+        return f"<style>{extra_styles}</style>" + card_html + script
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Editar Visualizacao - {visualizacao['nome']}</title>
+        <style>{get_base_styles()}{extra_styles}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            {card_html}
+        </div>
+        {script}
     </body>
     </html>
     """
 
 
-def get_confirmar_delete_posicao_html(produto, posicao):
-    """Pagina de confirmacao para deletar posicao"""
+def get_confirmar_delete_posicao_html(produto, posicao, as_inner=False):
+    """Pagina de confirmacao para deletar posicao. Se as_inner=True, retorna só o card (para overlay)."""
     pos_id = posicao.get('id') or posicao.get('ID')
     ativo = posicao.get('ativo') or posicao.get('Ativo', 'N/A')
     side = posicao.get('side') or posicao.get('tipo', 'N/A')
@@ -2363,19 +2977,8 @@ def get_confirmar_delete_posicao_html(produto, posicao):
     is_spot = 'spot' in produto.get('tipo', '').lower()
     side_info = "" if is_spot else f" ({side})"
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Deletar Posicao - {ativo}</title>
-        <style>{get_base_styles()}</style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 500px; margin: 0 auto; text-align: center;">
+    card_html = f"""
+            <div class="card" style="max-width: 500px; text-align: center;">
                 <h2 style="color: #ff6b6b;">Deletar Posicao</h2>
                 <p style="margin: 20px 0;">Tem certeza que deseja deletar:</p>
                 <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{ativo}{side_info}</p>
@@ -2389,7 +2992,8 @@ def get_confirmar_delete_posicao_html(produto, posicao):
                     <a href="/produto/{produto['id']}" class="btn btn-secondary">Cancelar</a>
                 </div>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             async function deletarPosicao() {{
                 const alert = document.getElementById('alert');
@@ -2413,13 +3017,14 @@ def get_confirmar_delete_posicao_html(produto, posicao):
                 }}
             }}
         </script>
-    </body>
-    </html>
     """
+    if as_inner:
+        return card_html + script
+    return get_form_page_with_background(card_html + script, produto['id'], 'Deletar Posicao')
 
 
-def get_lista_atributos_html(produto, configs, colunas_orfas):
-    """Lista atributos de um produto para gerenciamento"""
+def get_lista_atributos_html(produto, configs, colunas_orfas, as_inner=False):
+    """Lista atributos de um produto para gerenciamento. Se as_inner=True, retorna só o card (para overlay)."""
     items_html = ""
 
     if configs:
@@ -2454,19 +3059,8 @@ def get_lista_atributos_html(produto, configs, colunas_orfas):
         </div>
         """
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Atributos - {produto['nome']}</title>
-        <style>{get_base_styles()}</style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 700px; margin: 0 auto;">
+    card_html = f"""
+            <div class="card" style="max-width: 700px;">
                 <h2>Gerenciar Atributos</h2>
                 <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
@@ -2477,7 +3071,8 @@ def get_lista_atributos_html(produto, configs, colunas_orfas):
                     <a href="/produto/{produto['id']}" class="btn btn-secondary">Voltar</a>
                 </div>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             async function limparOrfas() {{
                 if (!confirm('Remover todas as colunas orfas?')) return;
@@ -2501,13 +3096,31 @@ def get_lista_atributos_html(produto, configs, colunas_orfas):
                 }}
             }}
         </script>
+    """
+    if as_inner:
+        return card_html + script
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Atributos - {produto['nome']}</title>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        {get_navbar()}
+        <div class="container">
+            {card_html}
+        </div>
+        {script}
     </body>
     </html>
     """
 
 
-def get_form_atributo_html(produto, config=None, colunas_existentes=None):
-    """Formulario para criar/editar atributo"""
+def get_form_atributo_html(produto, config=None, colunas_existentes=None, as_inner=False):
+    """Formulario para criar/editar atributo. Se as_inner=True, retorna só o card (para overlay)."""
     is_edit = config is not None
     titulo = "Editar Atributo" if is_edit else "Novo Atributo"
 
@@ -2529,19 +3142,8 @@ def get_form_atributo_html(produto, config=None, colunas_existentes=None):
         <small style="color: #888;">Use colunas existentes ou crie uma nova</small>
     """ if not is_edit else f'<input type="text" name="nome" value="{nome_value}" readonly>'
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>{titulo} - {produto['nome']}</title>
-        <style>{get_base_styles()}</style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 600px; margin: 0 auto;">
+    card_html = f"""
+            <div class="card" style="max-width: 600px;">
                 <h2>{titulo}</h2>
                 <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
@@ -2577,7 +3179,8 @@ def get_form_atributo_html(produto, config=None, colunas_existentes=None):
                     </div>
                 </form>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             document.getElementById('atributoForm').addEventListener('submit', async (e) => {{
                 e.preventDefault();
@@ -2614,26 +3217,33 @@ def get_form_atributo_html(produto, config=None, colunas_existentes=None):
                 }}
             }});
         </script>
-    </body>
-    </html>
     """
-
-
-def get_confirmar_remover_atributo_html(produto, config):
-    """Pagina de confirmacao para remover atributo do produto"""
+    if as_inner:
+        return card_html + script
     return f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Remover Atributo</title>
+        <title>{titulo} - {produto['nome']}</title>
         <style>{get_base_styles()}</style>
     </head>
     <body>
         {get_navbar()}
         <div class="container">
-            <div class="card" style="max-width: 500px; margin: 0 auto; text-align: center;">
+            {card_html}
+        </div>
+        {script}
+    </body>
+    </html>
+    """
+
+
+def get_confirmar_remover_atributo_html(produto, config, as_inner=False):
+    """Pagina de confirmacao para remover atributo do produto. Se as_inner=True, retorna só o card (para overlay)."""
+    card_html = f"""
+            <div class="card" style="max-width: 500px; text-align: center;">
                 <h2 style="color: #ff6b6b;">Remover Atributo</h2>
                 <p style="margin: 20px 0;">Remover atributo do produto {produto['nome']}:</p>
                 <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{config['atributo_label'] or config['atributo_nome']}</p>
@@ -2646,7 +3256,8 @@ def get_confirmar_remover_atributo_html(produto, config):
                     <a href="/produto/{produto['id']}/atributos" class="btn btn-secondary">Cancelar</a>
                 </div>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             async function removerAtributo() {{
                 const alert = document.getElementById('alert');
@@ -2673,9 +3284,10 @@ def get_confirmar_remover_atributo_html(produto, config):
                 }}
             }}
         </script>
-    </body>
-    </html>
     """
+    if as_inner:
+        return card_html + script
+    return get_form_page_with_background(card_html + script, produto['id'], 'Remover Atributo')
 
 
 def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
@@ -2723,6 +3335,9 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                 overflow-x: auto; border-radius: 12px;
                 border: 1px solid #2a2a4a; max-height: 65vh; overflow-y: auto;
             }}
+            .sheet-wrap::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+            .sheet-wrap::-webkit-scrollbar-track {{ background: rgba(0,0,0,0.2); }}
+            .sheet-wrap::-webkit-scrollbar-thumb {{ background: rgba(78, 204, 163, 0.35); border-radius: 3px; }}
             .sheet {{
                 border-collapse: separate; border-spacing: 0;
                 width: max-content; min-width: 100%; font-size: .85rem;
@@ -3162,21 +3777,10 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
     """
 
 
-def get_confirmar_delete_visualizacao_html(produto, visualizacao):
-    """Pagina de confirmacao para deletar visualizacao"""
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Deletar Visualizacao</title>
-        <style>{get_base_styles()}</style>
-    </head>
-    <body>
-        {get_navbar()}
-        <div class="container">
-            <div class="card" style="max-width: 500px; margin: 0 auto; text-align: center;">
+def get_confirmar_delete_visualizacao_html(produto, visualizacao, as_inner=False):
+    """Pagina de confirmacao para deletar visualizacao. Se as_inner=True, retorna só o card (para overlay)."""
+    card_html = f"""
+            <div class="card" style="max-width: 500px; text-align: center;">
                 <h2 style="color: #ff6b6b;">Deletar Visualizacao</h2>
                 <p style="margin: 20px 0;">Tem certeza que deseja deletar:</p>
                 <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{visualizacao['nome']}</p>
@@ -3187,7 +3791,8 @@ def get_confirmar_delete_visualizacao_html(produto, visualizacao):
                     <a href="/produto/{produto['id']}/visualizacoes" class="btn btn-secondary">Cancelar</a>
                 </div>
             </div>
-        </div>
+        """
+    script = f"""
         <script>
             async function deletarVisualizacao() {{
                 const alert = document.getElementById('alert');
@@ -3211,9 +3816,10 @@ def get_confirmar_delete_visualizacao_html(produto, visualizacao):
                 }}
             }}
         </script>
-    </body>
-    </html>
     """
+    if as_inner:
+        return card_html + script
+    return get_form_page_with_background(card_html + script, produto['id'], 'Deletar Visualizacao')
 
 
 # ============================================================
@@ -3904,12 +4510,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     exchange_symbol=data.get('exchange_symbol') or None
                 )
                 posicao_id = repo.salvar_posicao(produto_id, posicao)
-                # Salvar quantidade como atributo se fornecida
+                # Atributos: quantidade + campos específicos por produto
+                attrs = {}
                 if data.get('quantidade'):
+                    attrs['quantidade'] = float(data.get('quantidade'))
+                for k in ('perfil', 'alvo1', 'alvo2', 'motivo', 'relatorio',
+                         'categoria', 'tipo_ico', 'rank', 'tipo_janela', 'tese',
+                         'risco', 'atencao', 'execucao', 'por_que', 'local',
+                         'ficha_tecnica', 'disponivel_pos_ico'):
+                    v = data.get(k)
+                    if v is not None and str(v).strip():
+                        if k in ('alvo1', 'alvo2'):
+                            try:
+                                attrs[k] = float(v)
+                            except (ValueError, TypeError):
+                                pass
+                        else:
+                            attrs[k] = str(v).strip()
+                if attrs:
                     repo.salvar_atributos_posicao(
                         posicao_id=posicao_id,
                         produto_id=produto_id,
-                        quantidade=float(data.get('quantidade'))
+                        **attrs
                     )
 
                 # Sincronizar com turmas existentes
@@ -3942,14 +4564,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     coingecko_id=data.get('coingecko_id') or None,
                     exchange_symbol=data.get('exchange_symbol') or None
                 )
-                # Atualizar quantidade como atributo se fornecida
-                if data.get('quantidade'):
-                    posicao = repo.carregar_posicao(posicao_id)
-                    if posicao:
+                posicao = repo.carregar_posicao(posicao_id)
+                if posicao:
+                    attrs = {}
+                    qty = data.get('quantidade')
+                    if qty is not None and str(qty).strip() != '':
+                        try:
+                            attrs['quantidade'] = float(qty)
+                        except (ValueError, TypeError):
+                            pass
+                    for k in ('perfil', 'alvo1', 'alvo2', 'motivo', 'relatorio',
+                             'categoria', 'tipo_ico', 'rank', 'tipo_janela', 'tese',
+                             'risco', 'atencao', 'execucao', 'por_que', 'local',
+                             'ficha_tecnica', 'disponivel_pos_ico'):
+                        v = data.get(k)
+                        if v is not None and str(v).strip():
+                            if k in ('alvo1', 'alvo2'):
+                                try:
+                                    attrs[k] = float(v)
+                                except (ValueError, TypeError):
+                                    pass
+                            else:
+                                attrs[k] = str(v).strip()
+                    if attrs:
                         repo.salvar_atributos_posicao(
                             posicao_id=posicao_id,
                             produto_id=posicao['produto_id'],
-                            quantidade=float(data.get('quantidade'))
+                            **attrs
                         )
                 self._send_json({'sucesso': True})
             except Exception as e:
@@ -3967,6 +4608,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     preco_saida=float(data.get('preco_saida')),
                     status='closed'
                 )
+                # Salvar atributos (resultado para ICOs, motivo)
+                posicao = repo.carregar_posicao(posicao_id)
+                if posicao:
+                    attrs = {}
+                    for k in ('resultado', 'motivo'):
+                        v = data.get(k)
+                        if v is not None and str(v).strip():
+                            attrs[k] = str(v).strip()
+                    if attrs:
+                        repo.salvar_atributos_posicao(
+                            posicao_id=posicao_id,
+                            produto_id=posicao['produto_id'],
+                            **attrs
+                        )
 
                 # Sincronizar fechamento com turmas
                 try:
@@ -4637,17 +5292,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == '/posicao/nova':
             produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
             produtos = repo.listar_produtos()
-            self._send_html(get_form_posicao_html(produto_id, produtos))
+            is_modal = query.get('_modal', [''])[0] == '1'
+            if produto_id:
+                inner = get_form_posicao_html(produto_id, produtos, as_inner=True)
+                self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Nova Posicao"))
+            else:
+                self._send_html(get_form_posicao_html(produto_id, produtos))
             return
 
         # Lista posicoes para editar
         if path == '/posicoes/editar':
             produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
+            is_modal = query.get('_modal', [''])[0] == '1'
             if produto_id:
                 produto = repo.carregar_produto(produto_id)
                 if produto:
                     posicoes = repo.carregar_posicoes_abertas(produto_id)
-                    self._send_html(get_lista_posicoes_html(produto, posicoes, "editar"))
+                    inner = get_lista_posicoes_html(produto, posicoes, "editar", as_inner=True)
+                    self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Editar Posicao"))
                     return
             self._send_html("<h1>Produto nao encontrado</h1>", 404)
             return
@@ -4655,11 +5317,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Lista posicoes para adicionar stop
         if path == '/stop/novo':
             produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
+            is_modal = query.get('_modal', [''])[0] == '1'
             if produto_id:
                 produto = repo.carregar_produto(produto_id)
                 if produto:
                     posicoes = repo.carregar_posicoes_abertas(produto_id)
-                    self._send_html(get_lista_posicoes_html(produto, posicoes, "stop"))
+                    inner = get_lista_posicoes_html(produto, posicoes, "stop", as_inner=True)
+                    self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Adicionar Stop"))
                     return
             self._send_html("<h1>Produto nao encontrado</h1>", 404)
             return
@@ -4667,11 +5331,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Lista posicoes para fechar
         if path == '/posicao/fechar':
             produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
+            is_modal = query.get('_modal', [''])[0] == '1'
             if produto_id:
                 produto = repo.carregar_produto(produto_id)
                 if produto:
                     posicoes = repo.carregar_posicoes_abertas(produto_id)
-                    self._send_html(get_lista_posicoes_html(produto, posicoes, "fechar"))
+                    inner = get_lista_posicoes_html(produto, posicoes, "fechar", as_inner=True)
+                    self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Fechar Posicao"))
                     return
             self._send_html("<h1>Produto nao encontrado</h1>", 404)
             return
@@ -4679,11 +5345,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Lista posicoes para configurar ATR
         if path == '/atr/config':
             produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
+            is_modal = query.get('_modal', [''])[0] == '1'
             if produto_id:
                 produto = repo.carregar_produto(produto_id)
                 if produto:
                     posicoes = repo.carregar_posicoes_abertas(produto_id)
-                    self._send_html(get_lista_posicoes_html(produto, posicoes, "atr"))
+                    inner = get_lista_posicoes_html(produto, posicoes, "atr", as_inner=True)
+                    self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "ATR Stop"))
                     return
             self._send_html("<h1>Produto nao encontrado</h1>", 404)
             return
@@ -4691,11 +5359,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Lista posicoes para deletar
         if path == '/posicoes/deletar':
             produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
+            is_modal = query.get('_modal', [''])[0] == '1'
             if produto_id:
                 produto = repo.carregar_produto(produto_id)
                 if produto:
                     posicoes = repo.carregar_posicoes_abertas(produto_id)
-                    self._send_html(get_lista_posicoes_html(produto, posicoes, "deletar"))
+                    inner = get_lista_posicoes_html(produto, posicoes, "deletar", as_inner=True)
+                    self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Deletar Posicao"))
                     return
             self._send_html("<h1>Produto nao encontrado</h1>", 404)
             return
@@ -4734,26 +5404,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     posicao_id = int(parts[2])
                     acao = parts[3]
                     produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else None
+                    is_modal = query.get('_modal', [''])[0] == '1'
 
                     if produto_id:
                         produto = repo.carregar_produto(produto_id)
                         posicao = repo.carregar_posicao(posicao_id)
 
                         if produto and posicao:
+                            pid = produto['id']
                             if acao == 'editar':
-                                self._send_html(get_form_editar_posicao_html(produto, posicao))
+                                attrs = repo.carregar_atributos_posicao(posicao_id)
+                                if attrs:
+                                    for k, v in attrs.items():
+                                        if k not in ('posicao_id', 'produto_id') and posicao.get(k) is None:
+                                            posicao[k] = v
+                                inner = get_form_editar_posicao_html(produto, posicao, as_inner=True)
+                                self._send_html(inner if is_modal else get_form_page_with_background(inner, pid, "Editar Posicao"))
                                 return
                             elif acao == 'stop':
-                                self._send_html(get_form_adicionar_stop_html(produto, posicao))
+                                inner = get_form_adicionar_stop_html(produto, posicao, as_inner=True)
+                                self._send_html(inner if is_modal else get_form_page_with_background(inner, pid, "Adicionar Stop"))
                                 return
                             elif acao == 'atr':
-                                self._send_html(get_form_atr_stop_html(produto, posicao))
+                                inner = get_form_atr_stop_html(produto, posicao, as_inner=True)
+                                self._send_html(inner if is_modal else get_form_page_with_background(inner, pid, "ATR Stop"))
                                 return
                             elif acao == 'fechar':
-                                self._send_html(get_form_fechar_posicao_html(produto, posicao))
+                                inner = get_form_fechar_posicao_html(produto, posicao, as_inner=True)
+                                self._send_html(inner if is_modal else get_form_page_with_background(inner, pid, "Fechar Posicao"))
                                 return
                             elif acao == 'deletar':
-                                self._send_html(get_confirmar_delete_posicao_html(produto, posicao))
+                                inner = get_confirmar_delete_posicao_html(produto, posicao, as_inner=True)
+                                self._send_html(inner if is_modal else get_form_page_with_background(inner, pid, "Deletar Posicao"))
                                 return
                 except ValueError:
                     pass
@@ -4777,20 +5459,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._send_html("<h1>Produto nao encontrado</h1>", 404)
                     return
 
+                is_modal = query.get('_modal', [''])[0] == '1'
+
                 # Editar produto
                 if len(parts) >= 4 and parts[3] == 'editar':
-                    self._send_html(get_form_produto_html(produto))
+                    inner = get_form_produto_html(produto, as_inner=True)
+                    self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Editar Produto"))
                     return
 
                 # Confirmar delete
                 if len(parts) >= 4 and parts[3] == 'deletar':
-                    self._send_html(get_confirmar_delete_html(produto))
+                    inner = get_confirmar_delete_html(produto, as_inner=True)
+                    self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Confirmar Exclusao"))
                     return
 
                 # Gerenciar visualizacoes - lista
                 if len(parts) >= 4 and parts[3] == 'visualizacoes':
                     visualizacoes = repo.listar_visualizacoes(produto_id)
-                    self._send_html(get_lista_visualizacoes_html(produto, visualizacoes))
+                    inner = get_lista_visualizacoes_html(produto, visualizacoes, as_inner=True)
+                    self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Visualizacoes"))
                     return
 
                 # Gerenciar atributos
@@ -4798,7 +5485,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     # Novo atributo
                     if len(parts) >= 5 and parts[4] == 'novo':
                         colunas_existentes = repo.listar_colunas_atributos()
-                        self._send_html(get_form_atributo_html(produto, None, colunas_existentes))
+                        inner = get_form_atributo_html(produto, None, colunas_existentes, as_inner=True)
+                        self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Novo Atributo"))
                         return
 
                     # Atributo especifico
@@ -4810,16 +5498,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
                         if config:
                             if acao == 'editar':
-                                self._send_html(get_form_atributo_html(produto, config))
+                                inner = get_form_atributo_html(produto, config, as_inner=True)
+                                self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Editar Atributo"))
                                 return
                             elif acao == 'remover':
-                                self._send_html(get_confirmar_remover_atributo_html(produto, config))
+                                inner = get_confirmar_remover_atributo_html(produto, config, as_inner=True)
+                                self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Remover Atributo"))
                                 return
 
                     # Lista de atributos (default)
                     configs = repo.carregar_atributos_config(produto_id)
                     colunas_orfas = repo.listar_colunas_orfas()
-                    self._send_html(get_lista_atributos_html(produto, configs, colunas_orfas))
+                    inner = get_lista_atributos_html(produto, configs, colunas_orfas, as_inner=True)
+                    self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Atributos"))
                     return
 
                 # Visualizacoes - criar/editar/deletar/ver
@@ -4827,7 +5518,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     # Nova visualizacao
                     if parts[4] == 'nova':
                         colunas_disponiveis = repo.obter_colunas_disponiveis(produto_id)
-                        self._send_html(get_form_nova_visualizacao_html(produto, colunas_disponiveis))
+                        inner = get_form_nova_visualizacao_html(produto, colunas_disponiveis, as_inner=True)
+                        self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Nova Visualizacao"))
                         return
 
                     # Visualizacao especifica
@@ -4838,12 +5530,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             # Editar visualizacao
                             if len(parts) >= 6 and parts[5] == 'editar':
                                 colunas_disponiveis = repo.obter_colunas_disponiveis(produto_id)
-                                self._send_html(get_form_editar_visualizacao_html(produto, viz, colunas_disponiveis))
+                                inner = get_form_editar_visualizacao_html(produto, viz, colunas_disponiveis, as_inner=True)
+                                self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Editar Visualizacao"))
                                 return
 
                             # Deletar visualizacao
                             if len(parts) >= 6 and parts[5] == 'deletar':
-                                self._send_html(get_confirmar_delete_visualizacao_html(produto, viz))
+                                inner = get_confirmar_delete_visualizacao_html(produto, viz, as_inner=True)
+                                self._send_html(inner if is_modal else get_form_page_with_background(inner, produto_id, "Deletar Visualizacao"))
                                 return
 
                             # Ver visualizacao
@@ -4967,6 +5661,63 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     }
                 else:
                     product_tabs = None
+
+                # Dashboard customizado: Crypto Signals
+                if produto_id in CUSTOM_DASHBOARD_PRODUCTS and CUSTOM_DASHBOARD_PRODUCTS[produto_id] == 'cryptosignals':
+                    try:
+                        turmas_service = TurmasService(db_url=repo.db_url)
+                        turmas_produto = turmas_service.listar_turmas(produto_id)
+                        if turmas_produto:
+                            reconciliar_posicoes_com_alocacoes(repo, produto_id)
+                            try:
+                                display_posicoes_abertas(produto_id, formatar=False, filtrar_colunas=False)
+                            except Exception:
+                                pass
+                            try:
+                                turmas_service.reconciliar_posicoes_com_turmas(produto_id, verbose=True)
+                            except Exception:
+                                pass
+                            primeira_turma_id = turmas_produto[0]['id']
+                            carteira = turmas_service.listar_carteira_turma(primeira_turma_id)
+                            precos_atuais = _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=produto.get('tipo', ''), db_url=repo.db_url)
+                            _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
+                            _enrich_carteira_cs_attributes(carteira, repo)
+                            self._send_html(get_cryptosignals_dashboard_html(
+                                produto.get('nome', 'Crypto Signals'), carteira,
+                                produto_id=produto_id))
+                            return
+                    except Exception as e:
+                        print(f"[DASHBOARD] Erro ao montar dashboard Crypto Signals: {e}", flush=True)
+                        import traceback; traceback.print_exc()
+
+                # Dashboard customizado: ICOs
+                produto_nome_lower = (produto.get('nome') or '').strip().lower()
+                if produto_nome_lower in ICOS_PRODUCT_NAMES:
+                    try:
+                        turmas_service = TurmasService(db_url=repo.db_url)
+                        turmas_icos = turmas_service.listar_turmas(produto_id)
+                        if turmas_icos:
+                            reconciliar_posicoes_com_alocacoes(repo, produto_id)
+                            try:
+                                display_posicoes_abertas(produto_id, formatar=False, filtrar_colunas=False)
+                            except Exception:
+                                pass
+                            try:
+                                turmas_service.reconciliar_posicoes_com_turmas(produto_id, verbose=True)
+                            except Exception:
+                                pass
+                            primeira_turma_id = turmas_icos[0]['id']
+                            carteira = turmas_service.listar_carteira_turma(primeira_turma_id)
+                            precos_atuais = _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=produto.get('tipo', ''), db_url=repo.db_url)
+                            _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
+                            _enrich_carteira_icos_attributes(carteira, repo)
+                            self._send_html(get_icos_dashboard_html(
+                                produto.get('nome', 'ICOs'), carteira,
+                                produto_id=produto_id))
+                            return
+                    except Exception as e:
+                        print(f"[DASHBOARD] Erro ao montar dashboard ICOs: {e}", flush=True)
+                        import traceback; traceback.print_exc()
 
                 # Pagina do produto (default) - Dashboard rico se tiver turmas
                 turmas_produto = []
@@ -5736,6 +6487,92 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'status': 'error', 'erro': str(e)}, 500)
             return
 
+        # API: Diagnóstico de PnL - origem dos preços e dados usados (Crypto Signals / ICOs)
+        if path.startswith('/api/diag/pnl'):
+            try:
+                produto_id = int(query.get('produto_id', [0])[0]) if query.get('produto_id') else 0
+                if not produto_id:
+                    self._send_json({'erro': 'produto_id obrigatório. Ex: /api/diag/pnl?produto_id=123'}, 400)
+                    return
+
+                produto = None
+                for p in repo.listar_produtos():
+                    if p.get('id') == produto_id:
+                        produto = p
+                        break
+                if not produto:
+                    self._send_json({'erro': f'Produto {produto_id} não encontrado'}, 404)
+                    return
+
+                turmas_service = TurmasService(db_url=repo.db_url)
+                turmas = turmas_service.listar_turmas(produto_id)
+                if not turmas:
+                    self._send_json({
+                        'produto': produto.get('nome'),
+                        'produto_id': produto_id,
+                        'erro': 'Nenhuma turma encontrada',
+                        'posicoes': []
+                    })
+                    return
+
+                turma_id = turmas[0]['id']
+                carteira = turmas_service.listar_carteira_turma(turma_id)
+                precos_com_fonte = _obter_precos_com_fonte(
+                    carteira, tipo_produto=produto.get('tipo', ''), db_url=repo.db_url
+                )
+                precos_atuais = {k: v["preco"] for k, v in precos_com_fonte.items()}
+                _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
+
+                posicoes_diag = []
+                for t in carteira:
+                    key = _price_key(t)
+                    info = precos_com_fonte.get(key) if key else None
+                    fonte = info["fonte"] if info else None
+                    data_remocao = t.get('data_remocao')
+                    data_saida = t.get('data_saida')
+                    status = (t.get('status_posicao') or '').strip().lower()
+                    is_closed = bool(data_remocao or data_saida or status == 'closed')
+
+                    if is_closed:
+                        fonte = "db"  # preco_saida vem do banco (posicoes.preco_saida)
+                    elif not fonte:
+                        fonte = "db_fallback"  # preco_entrada quando API nao retornou preco
+
+                    pe = t.get('preco_entrada_turma') or t.get('preco_entrada_original')
+                    pa = t.get('preco_atual')
+                    pnl = t.get('pnl_pct')
+                    formula = ""
+                    if pe and pa and pe != 0:
+                        formula = f"(({pa:.6f} / {pe:.6f}) - 1) * 100 = {pnl:.2f}%"
+                    elif t.get('preco_entrada_total') and t.get('preco_saida_total'):
+                        pet = t['preco_entrada_total']
+                        pst = t['preco_saida_total']
+                        formula = f"(({pst:.6f} / {pet:.6f}) - 1) * 100 = {pnl:.2f}%"
+
+                    posicoes_diag.append({
+                        "ativo": t.get('ativo'),
+                        "status": "fechado" if is_closed else "aberto",
+                        "preco_entrada": float(pe) if pe is not None else None,
+                        "preco_atual_ou_saida": float(pa) if pa is not None else None,
+                        "pnl_pct": round(float(pnl), 2) if pnl is not None else None,
+                        "fonte_preco": fonte,
+                        "exchange_symbol": t.get('exchange_symbol'),
+                        "coingecko_id": t.get('coingecko_id'),
+                        "formula_pnl": formula or "(dados insuficientes)",
+                    })
+
+                self._send_json({
+                    "produto": produto.get('nome'),
+                    "produto_id": produto_id,
+                    "turma_id": turma_id,
+                    "ordem_apis_preco": ["bitget_perp", "bitget_spot", "coingecko", "coinmarketcap", "db"],
+                    "posicoes": posicoes_diag,
+                })
+            except Exception as e:
+                import traceback
+                self._send_json({'erro': str(e), 'trace': traceback.format_exc()}, 500)
+            return
+
         # API: Diagnóstico de preços e rentabilidade (comparar local vs nuvem)
         if path == '/api/diag/precos':
             try:
@@ -5922,6 +6759,8 @@ def iniciar_servidor(porta=8080, host='localhost'):
     print(f"    /posicao/nova      - Criar posicao")
     print(f"    /produto/ID        - Ver produto")
     print(f"    /produto/ID/viz/X  - Visualizacao salva")
+    print(f"\n  Diagnóstico PnL (origem preços/APIs):")
+    print(f"    /api/diag/pnl?produto_id=ID  - Crypto Signals / ICOs")
     print(f"\n  Turmas & Rentabilidade:")
     print(f"    /turmas            - Lista de turmas")
     print(f"    /turmas/nova       - Criar turma")
@@ -5953,6 +6792,22 @@ if __name__ == "__main__":
             format='%(asctime)s %(name)s %(levelname)s %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
+
+    # Migração CDN → BD: defina MIGRAR_CDN=1 nas env vars do Render para
+    # deletar posições antigas de CS/ICOs e reimportar dos CSVs do CDN.
+    # Após o deploy bem-sucedido, remova a variável para não rodar novamente.
+    if os.environ.get('MIGRAR_CDN'):
+        print("[MIGRAÇÃO] MIGRAR_CDN detectado — iniciando migração CDN → BD ...", flush=True)
+        try:
+            from migrar_cdn_para_bd import importar_crypto_signals, importar_icos
+            _migr_repo = get_repo()
+            importar_crypto_signals(_migr_repo)
+            importar_icos(_migr_repo)
+            print("[MIGRAÇÃO] Concluída com sucesso!", flush=True)
+        except Exception as _migr_err:
+            print(f"[MIGRAÇÃO] ERRO: {_migr_err}", flush=True)
+            import traceback; traceback.print_exc()
+
     porta = int(os.environ.get('PORT', sys.argv[1] if len(sys.argv) > 1 else 8080))
     host = os.environ.get('HOST', '0.0.0.0' if os.environ.get('PORT') else 'localhost')
     iniciar_servidor(porta, host)

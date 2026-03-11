@@ -579,6 +579,56 @@ class CotacoesService:
 
         return resultado
 
+    def obter_precos_coinmarketcap_fallback(
+        self, symbols: List[str]
+    ) -> Dict[str, float]:
+        """
+        Busca preços atuais via CoinMarketCap Pro API (quotes/latest).
+        Usado como terceiro fallback após Bitget e CoinGecko.
+
+        Args:
+            symbols: Lista de símbolos (ex: ['BTC', 'ETH', 'SOL'])
+
+        Returns:
+            Dict mapeando symbol (uppercase) -> preço USD. Símbolos não encontrados são omitidos.
+        """
+        api_key = (os.environ.get('COINMARKETCAP_API_KEY') or '').strip()
+        if not api_key or not symbols:
+            return {}
+
+        unique = list(set((s or '').strip().upper() for s in symbols if s))
+        if not unique:
+            return {}
+
+        try:
+            response = requests.get(
+                'https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest',
+                params={'symbol': ','.join(unique), 'convert': 'USD'},
+                headers={
+                    'X-CMC_PRO_API_KEY': api_key,
+                    'Accept': 'application/json',
+                },
+                timeout=15,
+            )
+            if response.status_code != 200:
+                return {}
+
+            data = response.json().get('data') or {}
+            result = {}
+            for sym in unique:
+                quote = (data.get(sym) or {}).get('quote', {}).get('USD')
+                if quote and quote.get('price') is not None:
+                    try:
+                        p = float(quote['price'])
+                        if not (p != p):  # not NaN
+                            result[sym] = p
+                    except (TypeError, ValueError):
+                        pass
+            return result
+        except Exception as e:
+            logger.debug("CoinMarketCap fallback: %s", e)
+            return {}
+
     def obter_preco_coingecko_com_status(self, coingecko_id: str) -> tuple:
         """
         Obtém preço atual de um ativo no CoinGecko com informação de status.
