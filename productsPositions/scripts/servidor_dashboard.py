@@ -1028,6 +1028,30 @@ def get_base_styles():
             background: rgba(78, 204, 163, 0.15);
             border-color: rgba(78, 204, 163, 0.4);
         }
+        .product-nav-loader {
+            position: fixed; inset: 0; z-index: 99999;
+            background: #1a1a2e;
+            display: none; flex-direction: column;
+            align-items: center; justify-content: center;
+            transition: opacity 0.2s;
+        }
+        .product-nav-loader.show {
+            display: flex;
+            opacity: 1;
+        }
+        .product-nav-loader .loader-spinner {
+            width: 40px; height: 40px;
+            border: 3px solid rgba(78,204,163,0.15);
+            border-top-color: #39fda3;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        .product-nav-loader .loader-text {
+            margin-top: 16px;
+            color: #5a6a7a;
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 0.9em;
+        }
         .badge {
             display: inline-block;
             padding: 4px 12px;
@@ -1348,12 +1372,31 @@ def get_loader_only_html():
     """
 
 
+def _produto_sort_key(p):
+    """Retorna chave de ordenacao para cards: soros, memebot, exponential coins, alphacoins, crypto signals, icos."""
+    nome = (p.get('nome') or '').strip().lower()
+    if 'soros' in nome:
+        return 0
+    if 'memebot' in nome:
+        return 1
+    if 'exponential' in nome:
+        return 2
+    if 'alphacoins' in nome or 'alpha coins' in nome:
+        return 3
+    if 'crypto signals' in nome:
+        return 4
+    if 'icos' in nome or (nome == 'ico'):
+        return 5
+    return 6
+
+
 def get_dashboard_html(produtos, stats, repo, skip_loader=False):
     """Gera HTML da pagina principal do dashboard. skip_loader=True quando a pagina e carregada via fetch (__content=1)."""
     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
+    produtos_ordenados = sorted(produtos, key=_produto_sort_key)
     cards_html = ""
-    for p in produtos:
+    for p in produtos_ordenados:
         prod_stats = stats.get(p['id'], {})
         posicoes_abertas = prod_stats.get('posicoes_abertas', 0)
         posicoes_fechadas = prod_stats.get('posicoes_fechadas', 0)
@@ -1398,6 +1441,25 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
         </div>
         """
 
+    product_nav_loader_html = """
+        <div class="product-nav-loader" id="productNavLoader">
+            <div class="loader-spinner"></div>
+            <div class="loader-text">Carregando produto...</div>
+        </div>
+        <script>
+        (function() {
+            document.addEventListener('click', function(e) {
+                var a = e.target.closest('a[href^="/produto/"]');
+                if (a && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                    e.preventDefault();
+                    var loader = document.getElementById('productNavLoader');
+                    if (loader) loader.classList.add('show');
+                    window.location.href = a.getAttribute('href');
+                }
+            });
+        })();
+        </script>
+    """
     if skip_loader:
         return f"""
     <!DOCTYPE html>
@@ -1410,6 +1472,7 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
         <style>{get_base_styles()}</style>
     </head>
     <body>
+        {product_nav_loader_html}
         {get_navbar('home')}
         <div class="container">
             <p class="timestamp">Ultima atualizacao: {timestamp}</p>
@@ -1467,6 +1530,7 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
                 <div class="product-grid">{cards_html}</div>
             </div>
         </div>
+        {product_nav_loader_html}
         <script>
             document.getElementById('pageLoader').classList.add('hide');
             document.getElementById('pageContent').classList.add('show');
