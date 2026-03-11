@@ -72,12 +72,12 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
         .dash-header {{
             background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
             padding: 20px 30px;
-            border-bottom: 2px solid #4ecca3;
+            border-bottom: 2px solid #39fda3;
             display: flex;
             align-items: center;
             gap: 15px;
         }}
-        .dash-header h1 {{ color: #4ecca3; font-size: 1.8em; letter-spacing: 1px; margin: 0; }}
+        .dash-header h1 {{ color: #39fda3; font-size: 1.8em; letter-spacing: 1px; margin: 0; }}
         .dash-header .tipo-badge {{
             padding: 4px 14px; border-radius: 20px; font-size: 0.8em; font-weight: bold;
         }}
@@ -85,7 +85,7 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
         .dash-header .date-badge {{
             margin-left: auto;
             background: rgba(78, 204, 163, 0.15);
-            color: #4ecca3;
+            color: #39fda3;
             padding: 8px 16px;
             border-radius: 20px;
             font-size: 0.85em;
@@ -104,7 +104,7 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
             font-size: 1em; cursor: pointer; transition: all 0.3s; font-family: inherit;
         }}
         .turma-tab:hover {{ color: #ccc; background: rgba(78, 204, 163, 0.05); }}
-        .turma-tab.active {{ color: #4ecca3; border-bottom-color: #4ecca3; font-weight: 600; }}
+        .turma-tab.active {{ color: #39fda3; border-bottom-color: #39fda3; font-weight: 600; }}
         a.turma-tab {{ text-decoration: none; }}
 
         .dash-content {{ padding: 25px 30px; }}
@@ -121,7 +121,7 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
             border: 1px solid rgba(255,255,255,0.05);
         }}
         .summary-card .s-value {{ font-size: 1.5em; font-weight: bold; color: #fff; margin-bottom: 5px; }}
-        .summary-card .s-value.positive {{ color: #4ecca3; }}
+        .summary-card .s-value.positive {{ color: #39fda3; }}
         .summary-card .s-value.negative {{ color: #e74c3c; }}
         .summary-card .s-label {{ color: #888; font-size: 0.85em; }}
 
@@ -130,7 +130,7 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
             border-radius: 10px; padding: 25px; margin-bottom: 20px;
             border: 1px solid rgba(255,255,255,0.05);
         }}
-        .dash-section h3 {{ color: #4ecca3; margin-bottom: 18px; font-size: 1.2em; }}
+        .dash-section h3 {{ color: #39fda3; margin-bottom: 18px; font-size: 1.2em; }}
 
         .chart-box {{ position: relative; height: 350px; width: 100%; }}
 
@@ -141,8 +141,8 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
             color: #888; cursor: pointer; transition: all 0.3s; font-size: 0.9em;
             font-family: inherit;
         }}
-        .sub-tab:hover {{ border-color: #4ecca3; color: #4ecca3; }}
-        .sub-tab.active {{ background: rgba(78, 204, 163, 0.2); border-color: #4ecca3; color: #4ecca3; }}
+        .sub-tab:hover {{ border-color: #39fda3; color: #39fda3; }}
+        .sub-tab.active {{ background: rgba(78, 204, 163, 0.2); border-color: #39fda3; color: #39fda3; }}
         .sub-content {{ display: none; }}
         .sub-content.active {{ display: block; }}
 
@@ -152,7 +152,7 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
             border-bottom: 1px solid rgba(255,255,255,0.07); white-space: nowrap;
         }}
         .dtable th {{
-            background: #0d1025; color: #4ecca3; font-weight: 600;
+            background: #0d1025; color: #39fda3; font-weight: 600;
             position: sticky; top: 0; z-index: 2;
             cursor: pointer; user-select: none; transition: color 0.2s;
         }}
@@ -174,7 +174,7 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
         .bdg-open {{ background: rgba(52, 152, 219, 0.2); color: #3498db; }}
         .bdg-closed {{ background: rgba(149, 165, 166, 0.2); color: #95a5a6; }}
         .bdg-stop {{ background: rgba(231, 76, 60, 0.15); color: #e74c3c; border: 1px solid rgba(231, 76, 60, 0.3); }}
-        .pnl-pos {{ color: #4ecca3; font-weight: 600; }}
+        .pnl-pos {{ color: #39fda3; font-weight: 600; }}
         .pnl-neg {{ color: #e74c3c; font-weight: 600; }}
 
         .result-badge {{
@@ -184,8 +184,8 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
         .result-badge__dot {{
             width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
         }}
-        .result-sucesso {{ background: rgba(78,204,163,0.2); color: #4ecca3; }}
-        .result-sucesso .result-badge__dot {{ background: #4ecca3; }}
+        .result-sucesso {{ background: rgba(78,204,163,0.2); color: #39fda3; }}
+        .result-sucesso .result-badge__dot {{ background: #39fda3; }}
         .result-nao-ocorreu {{ background: rgba(245,158,11,0.2); color: #f59e0b; }}
         .result-nao-ocorreu .result-badge__dot {{ background: #f59e0b; }}
 
@@ -197,7 +197,7 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
         .gear-btn:hover {{ background: rgba(78,204,163,0.12); }}
         .gear-btn.open {{ transform: rotate(90deg); }}
         .gear-btn svg {{ width: 22px; height: 22px; fill: #888; transition: fill 0.2s; }}
-        .gear-btn:hover svg, .gear-btn.open svg {{ fill: #4ecca3; }}
+        .gear-btn:hover svg, .gear-btn.open svg {{ fill: #39fda3; }}
         .gear-panel {{
             display: none; position: absolute; right: 0; top: calc(100% + 8px);
             background: #16213e; border: 1px solid rgba(78,204,163,0.35); border-radius: 12px;
@@ -216,13 +216,13 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
             color: #ccc; text-decoration: none; font-size: 0.85em; border: none;
             background: none; cursor: pointer; text-align: left; transition: background 0.15s, color 0.15s;
         }}
-        .gear-panel a:hover, .gear-panel button.gear-item:hover {{ background: rgba(78,204,163,0.1); color: #4ecca3; }}
+        .gear-panel a:hover, .gear-panel button.gear-item:hover {{ background: rgba(78,204,163,0.1); color: #39fda3; }}
         .gear-panel .gear-icon {{ width: 16px; text-align: center; font-size: 1em; flex-shrink: 0; }}
-        .gear-panel .gear-accent {{ color: #4ecca3; }}
+        .gear-panel .gear-accent {{ color: #39fda3; }}
 
         .loading-overlay {{ text-align: center; padding: 60px 20px; color: #888; }}
         .loading-overlay .spinner {{
-            border: 3px solid #2a2a4a; border-top: 3px solid #4ecca3;
+            border: 3px solid #2a2a4a; border-top: 3px solid #39fda3;
             border-radius: 50%; width: 30px; height: 30px;
             animation: spn 0.8s linear infinite; margin: 0 auto 15px;
         }}
@@ -617,7 +617,7 @@ function renderPnlChart(cart) {{
     }}
     var labels = open.map(function(t) {{ return t.ativo; }});
     var values = open.map(function(t) {{ return t.pnl_pct != null ? t.pnl_pct : 0; }});
-    var colors = values.map(function(v) {{ return v >= 0 ? '#4ecca3' : '#e74c3c'; }});
+    var colors = values.map(function(v) {{ return v >= 0 ? '#39fda3' : '#e74c3c'; }});
     new Chart(ctx, {{
         type: 'bar',
         data: {{
@@ -629,7 +629,7 @@ function renderPnlChart(cart) {{
             plugins: {{
                 legend: {{ display: false }},
                 tooltip: {{
-                    backgroundColor: 'rgba(26,26,46,0.95)', titleColor: '#4ecca3', bodyColor: '#e0e0e0',
+                    backgroundColor: 'rgba(26,26,46,0.95)', titleColor: '#39fda3', bodyColor: '#e0e0e0',
                     callbacks: {{ label: function(c) {{ return (c.raw >= 0 ? '+' : '') + c.raw.toFixed(2) + '%'; }} }}
                 }}
             }},
@@ -656,7 +656,7 @@ async function atualizarCotacoes() {{
         var data = await response.json();
         if (data.sucesso) {{
             status.textContent = '\\u2713 ' + data.dias_preenchidos + ' dias preenchidos';
-            status.style.color = '#4ecca3';
+            status.style.color = '#39fda3';
             setTimeout(function() {{ window.location.reload(); }}, 1500);
         }} else {{
             status.textContent = '\\u2717 ' + data.erro; status.style.color = '#e74c3c';

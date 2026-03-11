@@ -549,6 +549,18 @@ class SQLiteRepo:
                 GROUP BY produto_id
             """)
             return {row[0]: row[1] for row in cursor.fetchall()}
+
+    def contar_posicoes_fechadas_por_produto(self):
+        """Conta posicoes fechadas de todos os produtos em uma unica query"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT produto_id, COUNT(*) as count
+                FROM posicoes
+                WHERE status = 'closed'
+                GROUP BY produto_id
+            """)
+            return {row[0]: row[1] for row in cursor.fetchall()}
     
     def obter_produto_por_nome(self, nome):
         """Obtem um produto por nome"""

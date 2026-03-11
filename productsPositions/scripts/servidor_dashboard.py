@@ -685,15 +685,15 @@ def _get_preencher_precos_btn(produto_id):
             <button type="button" class="btn btn-sm btn-secondary" onclick="this.nextElementSibling.classList.toggle('show')">
                 Preencher Precos &#9662;
             </button>
-            <div class="dropdown-precos-menu" style="display:none; position:absolute; right:0; top:100%; margin-top:4px; background:#16213e; border:1px solid #4ecca3; border-radius:8px; min-width:220px; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,.4);">
+            <div class="dropdown-precos-menu" style="display:none; position:absolute; right:0; top:100%; margin-top:4px; background:#16213e; border:1px solid #39fda3; border-radius:8px; min-width:220px; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,.4);">
                 <a href="#" onclick="return preencherPrecos({produto_id},'entrada')" style="display:block;padding:10px 16px;color:#eee;text-decoration:none;font-size:.85em;border-bottom:1px solid #2a2a4a;">
-                    Precos de <b style="color:#4ecca3;">Entrada</b>
+                    Precos de <b style="color:#39fda3;">Entrada</b>
                 </a>
                 <a href="#" onclick="return preencherPrecos({produto_id},'saida')" style="display:block;padding:10px 16px;color:#eee;text-decoration:none;font-size:.85em;border-bottom:1px solid #2a2a4a;">
-                    Precos de <b style="color:#4ecca3;">Saida</b>
+                    Precos de <b style="color:#39fda3;">Saida</b>
                 </a>
                 <a href="#" onclick="return preencherPrecos({produto_id},'ambos')" style="display:block;padding:10px 16px;color:#eee;text-decoration:none;font-size:.85em;">
-                    <b style="color:#4ecca3;">Todos</b> (Entrada + Saida)
+                    <b style="color:#39fda3;">Todos</b> (Entrada + Saida)
                 </a>
             </div>
         </div>
@@ -718,7 +718,7 @@ def _get_preencher_precos_js():
         var nomes = {entrada: 'preços de entrada', saida: 'preços de saída', ambos: 'todos os preços'};
         if (!confirm('Preencher ' + nomes[tipo] + ' faltantes? O processo roda em background.')) return false;
         var toast = document.createElement('div');
-        toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#16213e;border:1px solid #4ecca3;color:#4ecca3;padding:14px 24px;border-radius:10px;z-index:9999;font-size:.9em;box-shadow:0 4px 16px rgba(0,0,0,.5);';
+        toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#16213e;border:1px solid #39fda3;color:#39fda3;padding:14px 24px;border-radius:10px;z-index:9999;font-size:.9em;box-shadow:0 4px 16px rgba(0,0,0,.5);';
         toast.textContent = 'Iniciando preenchimento de ' + nomes[tipo] + '...';
         document.body.appendChild(toast);
         fetch('/api/posicoes/preencher-precos?produto_id=' + produtoId + '&tipo=' + tipo)
@@ -825,6 +825,11 @@ def _get_form_modal_overlay_script(produto_id):
     '''
 
 
+def get_favicon_tag():
+    """Tag link do favicon para incluir no head"""
+    return '<link rel="icon" type="image/png" href="/assets/favicon.png?v=1">'
+
+
 def get_base_styles():
     """Estilos CSS compartilhados"""
     return """
@@ -837,7 +842,7 @@ def get_base_styles():
         }
         .navbar {
             background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
-            padding: 15px 30px;
+            padding: 15px 25px;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -846,17 +851,27 @@ def get_base_styles():
             top: 0;
             z-index: 100;
         }
-        .navbar h1 { font-size: 1.5em; color: #4ecca3; }
-        .navbar a, .navbar-links a {
-            color: #4ecca3;
+        .navbar .navbar-brand {
+            display: flex; align-items: center; gap: 10px;
+            text-decoration: none;
+            padding: 0; margin: 0; border-radius: 0;
+            background: none !important;
+        }
+        .navbar .navbar-brand:hover { background: none !important; }
+        .navbar .navbar-logo { height: 40px; width: auto; display: block; }
+        .navbar .navbar-brand h1 { font-size: 1.5em; color: #39fda3; margin: 0; transition: color 0.2s; }
+        .navbar .navbar-brand:hover h1 { color: #2edb8d; }
+; }
+        .navbar-links a {
+            color: #39fda3;
             text-decoration: none;
             padding: 8px 16px;
             border-radius: 5px;
             transition: all 0.3s;
             margin-left: 5px;
         }
-        .navbar a:hover, .navbar-links a:hover {
-            background-color: #4ecca3;
+        .navbar-links a:hover {
+            background-color: #39fda3;
             color: #1a1a2e;
         }
         .navbar-links { display: flex; gap: 5px; flex-wrap: wrap; }
@@ -878,8 +893,8 @@ def get_base_styles():
         }
         .turmas-subnav a:hover { color: #ccc; }
         .turmas-subnav a.active {
-            color: #4ecca3;
-            border-bottom-color: #4ecca3;
+            color: #39fda3;
+            border-bottom-color: #39fda3;
         }
         .container { max-width: 1400px; margin: 0 auto; padding: 30px; }
         .container.form-page { padding: 16px 24px; }
@@ -900,11 +915,118 @@ def get_base_styles():
         .card:hover {
             box-shadow: 0 8px 25px rgba(78, 204, 163, 0.15);
         }
-        .card h2 { color: #4ecca3; margin-bottom: 15px; font-size: 1.3em; }
+        .card h2 { color: #39fda3; margin-bottom: 15px; font-size: 1.3em; }
         .card-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
             gap: 20px;
+        }
+        /* Product cards */
+        .product-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 16px;
+        }
+        .product-card {
+            background: #16213e;
+            border-radius: 10px;
+            padding: 18px 20px;
+            border-left: 3px solid #39fda3;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+            transition: transform 0.2s, box-shadow 0.2s;
+            display: flex;
+            flex-direction: column;
+        }
+        .product-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+        }
+        .product-card-new {
+            background: transparent;
+            border: 2px dashed #2a3a5a;
+            border-left: 2px dashed #2a3a5a;
+            box-shadow: none;
+            align-items: center;
+            justify-content: center;
+            text-decoration: none;
+            gap: 8px;
+            min-height: 120px;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s, transform 0.2s;
+        }
+        .product-card-new:hover {
+            border-color: #39fda3;
+            background: rgba(57, 253, 163, 0.05);
+            transform: translateY(-2px);
+            box-shadow: none;
+        }
+        .product-card-new-icon {
+            font-size: 2em;
+            color: #3a4a6a;
+            font-weight: 300;
+            line-height: 1;
+            transition: color 0.2s;
+        }
+        .product-card-new:hover .product-card-new-icon { color: #39fda3; }
+        .product-card-new-label {
+            font-size: 0.85em;
+            color: #4a5a6a;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+        .product-card-new:hover .product-card-new-label { color: #39fda3; }
+        .product-card-name {
+            color: #39fda3;
+            font-size: 1.05em;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+        .product-rentab {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .product-rentab-value {
+            font-size: 1.15em;
+            font-weight: 700;
+        }
+        .product-rentab-value.positive { color: #39fda3; }
+        .product-rentab-value.negative { color: #e74c3c; }
+        .product-rentab-label {
+            font-size: 0.78em;
+            color: #5a6a7a;
+        }
+        .product-meta {
+            color: #6b7b8d;
+            font-size: 0.88em;
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .product-meta span { white-space: nowrap; }
+        .product-meta .dot { color: #3a4a5a; }
+        .product-actions {
+            margin-top: auto;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+        }
+        .product-actions a {
+            display: block;
+            padding: 9px 16px;
+            border-radius: 6px;
+            text-align: center;
+            text-decoration: none;
+            font-size: 0.85em;
+            font-weight: 500;
+            color: #39fda3;
+            background: rgba(78, 204, 163, 0.08);
+            border: 1px solid rgba(78, 204, 163, 0.2);
+            transition: all 0.2s;
+        }
+        .product-actions a:hover {
+            background: rgba(78, 204, 163, 0.15);
+            border-color: rgba(78, 204, 163, 0.4);
         }
         .badge {
             display: inline-block;
@@ -913,10 +1035,10 @@ def get_base_styles():
             font-size: 0.8em;
             font-weight: bold;
         }
-        .badge-spot { background-color: #4ecca3; color: #1a1a2e; }
+        .badge-spot { background-color: #39fda3; color: #1a1a2e; }
         .badge-perpetuos { background-color: #ff6b6b; color: white; }
         .badge-outro { background-color: #ffd93d; color: #1a1a2e; }
-        .badge-success { background-color: #4ecca3; color: #1a1a2e; }
+        .badge-success { background-color: #39fda3; color: #1a1a2e; }
         .badge-danger { background-color: #ff6b6b; color: white; }
         .bdg-stop {
             display: inline-block; padding: 3px 10px; border-radius: 12px;
@@ -929,12 +1051,12 @@ def get_base_styles():
             background: rgba(78, 204, 163, 0.1);
             padding: 10px 15px;
             border-radius: 8px;
-            border-left: 3px solid #4ecca3;
+            border-left: 3px solid #39fda3;
             flex: 1;
             min-width: 100px;
         }
         .stat-label { font-size: 0.75em; color: #888; }
-        .stat-value { font-size: 1.1em; font-weight: bold; color: #4ecca3; }
+        .stat-value { font-size: 1.1em; font-weight: bold; color: #39fda3; }
         .btn {
             display: inline-block;
             padding: 10px 20px;
@@ -946,14 +1068,14 @@ def get_base_styles():
             border: none;
             font-size: 0.9em;
         }
-        .btn-primary { background-color: #4ecca3; color: #1a1a2e; }
+        .btn-primary { background-color: #39fda3; color: #1a1a2e; }
         .btn-primary:hover { background-color: #3db892; }
         .btn-secondary {
             background-color: transparent;
-            color: #4ecca3;
-            border: 2px solid #4ecca3;
+            color: #39fda3;
+            border: 2px solid #39fda3;
         }
-        .btn-secondary:hover { background-color: #4ecca3; color: #1a1a2e; }
+        .btn-secondary:hover { background-color: #39fda3; color: #1a1a2e; }
         .btn-danger { background-color: #ff6b6b; color: white; }
         .btn-danger:hover { background-color: #ff5252; }
         .btn-warning { background-color: #ffa726; color: #1a1a2e; }
@@ -970,7 +1092,7 @@ def get_base_styles():
             font-size: 0.9em;
         }
         th {
-            background: linear-gradient(135deg, #4ecca3 0%, #3db892 100%);
+            background: linear-gradient(135deg, #39fda3 0%, #3db892 100%);
             color: #1a1a2e;
             padding: 12px 10px;
             text-align: left;
@@ -982,13 +1104,13 @@ def get_base_styles():
         .loading {
             text-align: center;
             padding: 40px;
-            color: #4ecca3;
+            color: #39fda3;
             display: none;
         }
         .loading.show { display: block; }
         .loading-spinner {
             border: 4px solid #2a2a4a;
-            border-top: 4px solid #4ecca3;
+            border-top: 4px solid #39fda3;
             border-radius: 50%;
             width: 40px;
             height: 40px;
@@ -1010,7 +1132,7 @@ def get_base_styles():
             color: #888;
             text-decoration: none;
         }
-        .tab:hover, .tab.active { border-color: #4ecca3; color: #4ecca3; }
+        .tab:hover, .tab.active { border-color: #39fda3; color: #39fda3; }
         .tab.active { background: rgba(78, 204, 163, 0.2); }
         .timestamp { color: #666; font-size: 0.9em; margin-bottom: 20px; }
         .empty-state { text-align: center; padding: 40px; color: #666; }
@@ -1022,14 +1144,14 @@ def get_base_styles():
             display: none;
         }
         .alert.show { display: block; }
-        .alert-success { background: rgba(78, 204, 163, 0.2); border: 1px solid #4ecca3; color: #4ecca3; }
+        .alert-success { background: rgba(78, 204, 163, 0.2); border: 1px solid #39fda3; color: #39fda3; }
         .alert-error { background: rgba(255, 107, 107, 0.2); border: 1px solid #ff6b6b; color: #ff6b6b; }
         /* Forms */
         .form-group { margin-bottom: 20px; }
         .form-group label {
             display: block;
             margin-bottom: 8px;
-            color: #4ecca3;
+            color: #39fda3;
             font-weight: bold;
         }
         .form-group input, .form-group select, .form-group textarea {
@@ -1042,7 +1164,7 @@ def get_base_styles():
             font-size: 1em;
         }
         .form-group input:focus, .form-group select:focus {
-            border-color: #4ecca3;
+            border-color: #39fda3;
             outline: none;
         }
         .form-row { display: flex; gap: 20px; }
@@ -1087,7 +1209,7 @@ def get_base_styles():
         .viz-item:hover { background: rgba(78, 204, 163, 0.2); }
         .menu-section { margin-bottom: 30px; }
         .menu-section h3 {
-            color: #4ecca3;
+            color: #39fda3;
             margin-bottom: 15px;
             padding-bottom: 10px;
             border-bottom: 1px solid #2a2a4a;
@@ -1108,7 +1230,7 @@ def get_base_styles():
             transition: all 0.3s;
         }
         .menu-item:hover {
-            border-color: #4ecca3;
+            border-color: #39fda3;
             transform: translateY(-3px);
         }
         .menu-item-icon { font-size: 2em; margin-bottom: 10px; }
@@ -1129,6 +1251,7 @@ def get_form_page_with_background(inner_content, produto_id, title="Form"):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>{title}</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -1147,15 +1270,13 @@ def get_form_page_with_background(inner_content, produto_id, title="Form"):
 
 
 def get_navbar(current_page=""):
-    """Gera a barra de navegacao principal (padronizada para todas as paginas)"""
-    return f"""
+    """Gera a barra de navegacao principal (logo + titulo Empiricus Crypto, sem links)."""
+    return """
     <nav class="navbar">
-        <a href="/" style="text-decoration: none;"><h1>Products & Positions</h1></a>
-        <div class="navbar-links">
-            <a href="/" class="{'active' if current_page == 'home' else ''}">Dashboard</a>
-            <a href="/menu" class="{'active' if current_page == 'menu' else ''}">Menu</a>
-            <a href="/turmas" class="{'active' if current_page in ('turmas', 'historico', 'comparar') else ''}">Turmas</a>
-        </div>
+        <a href="/" class="navbar-brand">
+            <img src="/assets/empiricus_crypto_logo.png?v=2" alt="Empiricus Crypto" class="navbar-logo">
+            <h1>Empiricus Crypto</h1>
+        </a>
     </nav>
     """
 
@@ -1171,26 +1292,104 @@ def get_turmas_subnav(current_sub=""):
     """
 
 
-def get_dashboard_html(produtos, stats, repo):
-    """Gera HTML da pagina principal do dashboard"""
+def get_loader_only_html():
+    """Pagina minima com loader; o JS busca o conteudo completo e substitui o documento."""
+    return """
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        """ + get_favicon_tag() + """
+        <title>Carregando...</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+                min-height: 100vh;
+                background: #1a1a2e;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            }
+            .loader-spinner {
+                width: 40px; height: 40px;
+                border: 3px solid rgba(78,204,163,0.2);
+                border-top-color: #39fda3;
+                border-radius: 50%;
+                animation: spin 0.8s linear infinite;
+            }
+            .loader-text {
+                margin-top: 16px;
+                color: #5a6a7a;
+                font-size: 0.9em;
+            }
+            @keyframes spin { to { transform: rotate(360deg); } }
+        </style>
+    </head>
+    <body>
+        <div class="loader-spinner"></div>
+        <div class="loader-text">Carregando...</div>
+        <script>
+            fetch(window.location.pathname + '?__content=1')
+                .then(function(r) { return r.text(); })
+                .then(function(html) {
+                    document.open();
+                    document.write(html);
+                    document.close();
+                })
+                .catch(function() {
+                    document.body.innerHTML = '<p style="color:#e74c3c;">Falha ao carregar. <a href="/" style="color:#39fda3;">Tentar de novo</a></p>';
+                });
+        </script>
+    </body>
+    </html>
+    """
+
+
+def get_dashboard_html(produtos, stats, repo, skip_loader=False):
+    """Gera HTML da pagina principal do dashboard. skip_loader=True quando a pagina e carregada via fetch (__content=1)."""
     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
     cards_html = ""
     for p in produtos:
         prod_stats = stats.get(p['id'], {})
         posicoes_abertas = prod_stats.get('posicoes_abertas', 0)
+        posicoes_fechadas = prod_stats.get('posicoes_fechadas', 0)
+        rentabilidade_pct = prod_stats.get('rentabilidade_acumulada_pct')
+
+        rentab_html = ""
+        if rentabilidade_pct is not None:
+            rentab_class = 'positive' if rentabilidade_pct >= 0 else 'negative'
+            rentab_str = f"+{rentabilidade_pct:.2f}%" if rentabilidade_pct >= 0 else f"{rentabilidade_pct:.2f}%"
+            rentab_html = f"""<div class="product-rentab">
+                    <div class="product-rentab-value {rentab_class}">{rentab_str}</div>
+                </div>"""
 
         cards_html += f"""
-        <div class="card">
-            <h2>{p['nome']}</h2>
-            <p style="color: #888; margin: 10px 0;">{posicoes_abertas} posicoes abertas</p>
-            <div class="actions">
-                <a href="/produto/{p['id']}" class="btn btn-primary">Ver Detalhes</a>
+        <div class="product-card">
+            <div class="product-card-name">{p['nome']}</div>
+            {rentab_html}
+            <div class="product-meta">
+                <span>{posicoes_abertas} ativos</span>
+                <span class="dot">&middot;</span>
+                <span>{posicoes_fechadas} fechados</span>
+            </div>
+            <div class="product-actions">
+                <a href="/produto/{p['id']}">Ver Detalhes</a>
             </div>
         </div>
         """
 
-    if not cards_html:
+    cards_html += """
+        <a href="/produto/novo" class="product-card product-card-new">
+            <div class="product-card-new-icon">+</div>
+            <div class="product-card-new-label">Novo Produto</div>
+        </a>
+        """
+
+    if not cards_html.strip():
         cards_html = """
         <div class="empty-state">
             <h3>Nenhum produto encontrado</h3>
@@ -1199,26 +1398,81 @@ def get_dashboard_html(produtos, stats, repo):
         </div>
         """
 
-    return f"""
+    if skip_loader:
+        return f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Dashboard - Products & Positions</title>
+        {get_favicon_tag()}
+        <title>Dashboard - Empiricus Crypto</title>
         <style>{get_base_styles()}</style>
     </head>
     <body>
         {get_navbar('home')}
         <div class="container">
             <p class="timestamp">Ultima atualizacao: {timestamp}</p>
-            <div class="actions" style="margin-bottom: 20px;">
-                <a href="/produto/novo" class="btn btn-primary">+ Novo Produto</a>
-                <a href="/menu" class="btn btn-secondary">Menu Completo</a>
-            </div>
-            <div class="card-grid">{cards_html}</div>
+            <div class="product-grid">{cards_html}</div>
         </div>
-        <script>setTimeout(() => location.reload(), 300000);</script>
+        <script>setTimeout(function() {{ location.reload(); }}, 300000);</script>
+    </body>
+    </html>
+    """
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
+        <title>Dashboard - Empiricus Crypto</title>
+        <style>
+            .page-loader {{
+                position: fixed; inset: 0; z-index: 9999;
+                background: #1a1a2e;
+                display: flex; flex-direction: column;
+                align-items: center; justify-content: center;
+                transition: opacity 0.3s;
+            }}
+            .page-loader.hide {{ opacity: 0; pointer-events: none; }}
+            .loader-spinner {{
+                width: 36px; height: 36px;
+                border: 3px solid rgba(78,204,163,0.15);
+                border-top-color: #39fda3;
+                border-radius: 50%;
+                animation: spin 0.8s linear infinite;
+            }}
+            .loader-text {{
+                margin-top: 14px;
+                color: #5a6a7a;
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 0.85em;
+            }}
+            @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+            .page-content {{ opacity: 0; transition: opacity 0.3s; }}
+            .page-content.show {{ opacity: 1; }}
+        </style>
+        <style>{get_base_styles()}</style>
+    </head>
+    <body>
+        <div class="page-loader" id="pageLoader">
+            <div class="loader-spinner"></div>
+            <div class="loader-text">Carregando...</div>
+        </div>
+        <div class="page-content" id="pageContent">
+            {get_navbar('home')}
+            <div class="container">
+                <p class="timestamp">Ultima atualizacao: {timestamp}</p>
+                <div class="product-grid">{cards_html}</div>
+            </div>
+        </div>
+        <script>
+            document.getElementById('pageLoader').classList.add('hide');
+            document.getElementById('pageContent').classList.add('show');
+            setTimeout(function() {{ document.getElementById('pageLoader').remove(); }}, 400);
+            setTimeout(function() {{ location.reload(); }}, 300000);
+        </script>
     </body>
     </html>
     """
@@ -1232,13 +1486,14 @@ def get_menu_html():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>Menu - Products & Positions</title>
         <style>{get_base_styles()}</style>
     </head>
     <body>
         {get_navbar('menu')}
         <div class="container">
-            <h2 style="color: #4ecca3; margin-bottom: 30px;">Menu de Operacoes</h2>
+            <h2 style="color: #39fda3; margin-bottom: 30px;">Menu de Operacoes</h2>
 
             <div class="menu-section">
                 <h3>Produtos</h3>
@@ -1291,7 +1546,7 @@ def get_menu_html():
             </div>
 
             <div class="menu-section">
-                <h3>Alocacoes</h3>
+                <h3>Alocações</h3>
                 <div class="menu-grid">
                     <a href="/alocacao/nova" class="menu-item">
                         <div class="menu-item-icon">+</div>
@@ -1388,6 +1643,7 @@ def get_produto_html(produto, visualizacoes, repo):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>{nome} - Dashboard</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -1473,6 +1729,7 @@ def get_visualizacao_html(produto, visualizacao, df_viz):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>{nome_viz} - {nome_produto}</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -1609,6 +1866,7 @@ def get_form_produto_html(produto=None, as_inner=False):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>{titulo}</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -1630,7 +1888,7 @@ def _get_campos_extras_nova_posicao(produto):
     if _is_produto_crypto_signals(produto):
         return """
                     <hr style="margin: 12px 0; border-color: rgba(78,204,163,0.2);">
-                    <p style="color: #4ecca3; font-size: 0.85em; margin-bottom: 8px;">Crypto Signals</p>
+                    <p style="color: #39fda3; font-size: 0.85em; margin-bottom: 8px;">Crypto Signals</p>
                     <div class="form-row-3">
                         <div class="form-group">
                             <label>Perfil</label>
@@ -1663,7 +1921,7 @@ def _get_campos_extras_nova_posicao(produto):
     if _is_produto_icos(produto):
         return """
                     <hr style="margin: 12px 0; border-color: rgba(78,204,163,0.2);">
-                    <p style="color: #4ecca3; font-size: 0.85em; margin-bottom: 8px;">ICOs</p>
+                    <p style="color: #39fda3; font-size: 0.85em; margin-bottom: 8px;">ICOs</p>
                     <div class="form-row-3">
                         <div class="form-group">
                             <label>Categoria</label>
@@ -1823,6 +2081,7 @@ def get_form_posicao_html(produto_id=None, produtos=None, produto=None, as_inner
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>Nova Posicao</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -1868,6 +2127,7 @@ def get_lista_produtos_html(produtos, acao="editar"):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>{titulo}</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -1894,7 +2154,7 @@ def get_confirmar_delete_html(produto, as_inner=False):
             <div class="card" style="max-width: 500px; text-align: center;">
                 <h2 style="color: #ff6b6b;">Confirmar Exclusao</h2>
                 <p style="margin: 20px 0;">Tem certeza que deseja deletar o produto:</p>
-                <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{produto['nome']}</p>
+                <p style="font-size: 1.3em; color: #39fda3; font-weight: bold;">{produto['nome']}</p>
                 <p style="color: #ff6b6b; margin: 20px 0;">Esta acao ira deletar todas as posicoes, stops e visualizacoes associadas!</p>
                 <div id="alert" class="alert"></div>
                 <div class="actions" style="justify-content: center;">
@@ -1996,7 +2256,7 @@ def get_lista_posicoes_html(produto, posicoes, acao="editar", as_inner=False):
     card_html = f"""
             <div class="card" style="max-width: 600px;">
                 <h2>{titulo}</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <p style="color: #39fda3; margin-bottom: 20px;">{produto['nome']}</p>
                 <div class="viz-list">{items_html}</div>
                 <div class="actions" style="margin-top: 20px;">
                     <a href="/produto/{produto['id']}" class="btn btn-secondary">Voltar</a>
@@ -2010,6 +2270,7 @@ def get_lista_posicoes_html(produto, posicoes, acao="editar", as_inner=False):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>{titulo} - {produto['nome']}</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -2035,7 +2296,7 @@ def get_form_adicionar_stop_html(produto, posicao, as_inner=False):
     card_html = f"""
             <div class="card form-card form-compact" style="max-width: 600px;">
                 <h2>Adicionar Stop</h2>
-                <p style="color: #4ecca3; margin-bottom: 12px; font-size: 0.9em;">
+                <p style="color: #39fda3; margin-bottom: 12px; font-size: 0.9em;">
                     {ativo}{side_info} - Entrada: ${preco_entrada:,.4f}
                 </p>
                 <div id="alert" class="alert"></div>
@@ -2098,6 +2359,7 @@ def get_form_adicionar_stop_html(produto, posicao, as_inner=False):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>Adicionar Stop - {ativo}</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -2137,7 +2399,7 @@ def get_form_fechar_posicao_html(produto, posicao, as_inner=False):
     card_html = f"""
             <div class="card form-card form-compact" style="max-width: 600px;">
                 <h2>Fechar Posicao</h2>
-                <p style="color: #4ecca3; margin-bottom: 12px; font-size: 0.9em;">
+                <p style="color: #39fda3; margin-bottom: 12px; font-size: 0.9em;">
                     {ativo}{side_info} - Entrada: ${preco_entrada:,.4f}
                 </p>
                 <div id="alert" class="alert"></div>
@@ -2217,7 +2479,7 @@ def _get_campos_extras_editar_posicao(produto, posicao):
         relatorio = _v('relatorio')
         return f"""
                     <hr style="margin: 12px 0; border-color: rgba(78,204,163,0.2);">
-                    <p style="color: #4ecca3; font-size: 0.85em; margin-bottom: 8px;">Crypto Signals</p>
+                    <p style="color: #39fda3; font-size: 0.85em; margin-bottom: 8px;">Crypto Signals</p>
                     <div class="form-row-3">
                         <div class="form-group">
                             <label>Perfil</label>
@@ -2250,7 +2512,7 @@ def _get_campos_extras_editar_posicao(produto, posicao):
     if _is_produto_icos(produto):
         return f"""
                     <hr style="margin: 12px 0; border-color: rgba(78,204,163,0.2);">
-                    <p style="color: #4ecca3; font-size: 0.85em; margin-bottom: 8px;">ICOs</p>
+                    <p style="color: #39fda3; font-size: 0.85em; margin-bottom: 8px;">ICOs</p>
                     <div class="form-row-3">
                         <div class="form-group">
                             <label>Categoria</label>
@@ -2349,7 +2611,7 @@ def get_form_editar_posicao_html(produto, posicao, as_inner=False):
     card_html = f"""
             <div class="card form-card form-compact" style="max-width: 1200px;">
                 <h2>Editar Posicao</h2>
-                <p style="color: #4ecca3; margin-bottom: 12px; font-size: 0.9em;">{produto['nome']}</p>
+                <p style="color: #39fda3; margin-bottom: 12px; font-size: 0.9em;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
                 <form id="editarPosicaoForm" class="form-compact">
                     <input type="hidden" name="posicao_id" value="{pos_id}">
@@ -2422,6 +2684,7 @@ def get_form_editar_posicao_html(produto, posicao, as_inner=False):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>Editar Posicao - {ativo}</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -2454,7 +2717,7 @@ def get_form_atr_stop_html(produto, posicao, as_inner=False):
     card_html = f"""
             <div class="card form-card form-compact" style="max-width: 600px;">
                 <h2>Configurar ATR Trailing Stop</h2>
-                <p style="color: #4ecca3; margin-bottom: 8px; font-size: 0.9em;">
+                <p style="color: #39fda3; margin-bottom: 8px; font-size: 0.9em;">
                     {ativo} - Entrada: ${preco_entrada:,.4f} (em {data_entrada})
                 </p>
                 <p style="color: #888; font-size: 0.8em; margin-bottom: 12px;">
@@ -2586,7 +2849,7 @@ def get_lista_visualizacoes_html(produto, visualizacoes, as_inner=False):
     card_html = f"""
             <div class="card" style="max-width: 700px;">
                 <h2>Gerenciar Visualizacoes</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <p style="color: #39fda3; margin-bottom: 20px;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
                 <div class="viz-list">{items_html}</div>
                 <div class="actions" style="margin-top: 20px;">
@@ -2603,6 +2866,7 @@ def get_lista_visualizacoes_html(produto, visualizacoes, as_inner=False):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>Visualizacoes - {produto['nome']}</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -2643,7 +2907,7 @@ def get_form_nova_visualizacao_html(produto, colunas_disponiveis, as_inner=False
     card_html = f"""
             <div class="card" style="max-width: 800px;">
                 <h2>Nova Visualizacao</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <p style="color: #39fda3; margin-bottom: 20px;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
                 <form id="vizForm">
                     <div class="form-group">
@@ -2771,6 +3035,7 @@ def get_form_nova_visualizacao_html(produto, colunas_disponiveis, as_inner=False
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>Nova Visualizacao - {produto['nome']}</title>
         <style>{get_base_styles()}{extra_styles}</style>
     </head>
@@ -2825,7 +3090,7 @@ def get_form_editar_visualizacao_html(produto, visualizacao, colunas_disponiveis
     card_html = f"""
             <div class="card" style="max-width: 800px;">
                 <h2>Editar Visualizacao</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <p style="color: #39fda3; margin-bottom: 20px;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
                 <form id="vizForm">
                     <div class="form-group">
@@ -2953,6 +3218,7 @@ def get_form_editar_visualizacao_html(produto, visualizacao, colunas_disponiveis
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>Editar Visualizacao - {visualizacao['nome']}</title>
         <style>{get_base_styles()}{extra_styles}</style>
     </head>
@@ -2981,7 +3247,7 @@ def get_confirmar_delete_posicao_html(produto, posicao, as_inner=False):
             <div class="card" style="max-width: 500px; text-align: center;">
                 <h2 style="color: #ff6b6b;">Deletar Posicao</h2>
                 <p style="margin: 20px 0;">Tem certeza que deseja deletar:</p>
-                <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{ativo}{side_info}</p>
+                <p style="font-size: 1.3em; color: #39fda3; font-weight: bold;">{ativo}{side_info}</p>
                 <p style="color: #888;">Entrada: ${preco_entrada:,.4f} | Status: {status}</p>
                 <p style="color: #ff6b6b; margin: 20px 0; font-size: 0.9em;">
                     Esta acao ira deletar a posicao e todos os stops e alocacoes associados!
@@ -3062,7 +3328,7 @@ def get_lista_atributos_html(produto, configs, colunas_orfas, as_inner=False):
     card_html = f"""
             <div class="card" style="max-width: 700px;">
                 <h2>Gerenciar Atributos</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <p style="color: #39fda3; margin-bottom: 20px;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
                 <div class="viz-list">{items_html}</div>
                 {orfas_html}
@@ -3105,6 +3371,7 @@ def get_lista_atributos_html(produto, configs, colunas_orfas, as_inner=False):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>Atributos - {produto['nome']}</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -3145,7 +3412,7 @@ def get_form_atributo_html(produto, config=None, colunas_existentes=None, as_inn
     card_html = f"""
             <div class="card" style="max-width: 600px;">
                 <h2>{titulo}</h2>
-                <p style="color: #4ecca3; margin-bottom: 20px;">{produto['nome']}</p>
+                <p style="color: #39fda3; margin-bottom: 20px;">{produto['nome']}</p>
                 <div id="alert" class="alert"></div>
                 <form id="atributoForm">
                     <div class="form-group">
@@ -3226,6 +3493,7 @@ def get_form_atributo_html(produto, config=None, colunas_existentes=None, as_inn
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        {get_favicon_tag()}
         <title>{titulo} - {produto['nome']}</title>
         <style>{get_base_styles()}</style>
     </head>
@@ -3246,7 +3514,7 @@ def get_confirmar_remover_atributo_html(produto, config, as_inner=False):
             <div class="card" style="max-width: 500px; text-align: center;">
                 <h2 style="color: #ff6b6b;">Remover Atributo</h2>
                 <p style="margin: 20px 0;">Remover atributo do produto {produto['nome']}:</p>
-                <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{config['atributo_label'] or config['atributo_nome']}</p>
+                <p style="font-size: 1.3em; color: #39fda3; font-weight: bold;">{config['atributo_label'] or config['atributo_nome']}</p>
                 <p style="color: #888; margin: 20px 0; font-size: 0.9em;">
                     A coluna permanecera no banco de dados e podera ser usada por outros produtos.
                 </p>
@@ -3304,7 +3572,8 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Alocacoes - Tabela</title>
+        {get_favicon_tag()}
+        <title>Alocações - Tabela</title>
         <style>
             {get_base_styles()}
 
@@ -3318,15 +3587,15 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                 border: 2px solid #2a2a4a; background: #16213e;
                 color: #eee; font-size: 1em; min-width: 200px;
             }}
-            .aloc-header select:focus {{ border-color: #4ecca3; outline: none; }}
-            .aloc-header label {{ color: #4ecca3; font-weight: bold; }}
+            .aloc-header select:focus {{ border-color: #39fda3; outline: none; }}
+            .aloc-header label {{ color: #39fda3; font-weight: bold; }}
             .aloc-meta {{
                 display: flex; gap: 1rem; flex-wrap: wrap;
                 margin-bottom: 1rem; align-items: center;
             }}
             .aloc-meta .pill {{
                 background: rgba(78,204,163,.12); border: 1px solid rgba(78,204,163,.25);
-                color: #4ecca3; padding: 5px 14px; border-radius: 20px; font-size: .85em;
+                color: #39fda3; padding: 5px 14px; border-radius: 20px; font-size: .85em;
             }}
             .aloc-meta .pill b {{ color: #fff; }}
 
@@ -3348,7 +3617,7 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
             }}
             .sheet thead {{ position: sticky; top: 0; z-index: 3; }}
             .sheet thead th {{
-                background: linear-gradient(135deg, #4ecca3 0%, #3db892 100%);
+                background: linear-gradient(135deg, #39fda3 0%, #3db892 100%);
                 color: #1a1a2e; font-weight: 700; text-align: center;
             }}
             .sheet thead th:first-child {{ text-align: left; }}
@@ -3363,32 +3632,33 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
             .sheet .cell-editing input {{
                 width: 100%; min-width: 50px; text-align: right;
                 padding: 4px 6px; font-size: .85rem;
-                background: #16213e; color: #4ecca3;
-                border: 1px solid #4ecca3; border-radius: 4px;
+                background: #16213e; color: #39fda3;
+                border: 1px solid #39fda3; border-radius: 4px;
                 outline: none; box-shadow: 0 0 0 2px rgba(78,204,163,.25);
             }}
 
             /* Celulas com valor > 0 ganham destaque */
-            .sheet .val-pos {{ color: #4ecca3; }}
+            .sheet .val-pos {{ color: #39fda3; }}
             .sheet .val-zero {{ color: #444; }}
 
             /* Coluna Data fixa */
             .sheet .col-data {{
                 position: sticky; left: 0; z-index: 2;
-                border-right: 2px solid #4ecca3;
+                border-right: 2px solid #39fda3;
             }}
             .sheet thead .col-data {{ z-index: 4; }}
 
             /* Coluna Total */
             .sheet .col-total {{
-                font-weight: 700; color: #ffd93d !important;
-                border-left: 2px solid #4ecca3;
+                font-weight: 700; border-left: 2px solid #39fda3;
             }}
+            .sheet thead .col-total {{ color: #1a1a2e !important; }}
+            .sheet tbody .col-total {{ color: #39fda3 !important; }}
 
             /* Nova linha (inputs) */
             .sheet tr.nova-linha td {{
                 background: rgba(78,204,163,.08) !important;
-                border-top: 2px solid #4ecca3;
+                border-top: 2px solid #39fda3;
             }}
             .sheet .nova-linha input[type="date"],
             .sheet .nova-linha input[type="number"] {{
@@ -3397,7 +3667,7 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                 padding: 5px 7px; font-size: .85rem;
             }}
             .sheet .nova-linha input:focus {{
-                border-color: #4ecca3; outline: none;
+                border-color: #39fda3; outline: none;
                 box-shadow: 0 0 0 2px rgba(78,204,163,.25);
             }}
             .sheet .nova-linha input[type="date"] {{ width: 135px; }}
@@ -3409,10 +3679,10 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                 margin-top: 1rem; flex-wrap: wrap;
             }}
             .pag-bar button {{
-                background: #16213e; color: #4ecca3; border: 1px solid #2a2a4a;
+                background: #16213e; color: #39fda3; border: 1px solid #2a2a4a;
                 padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: .85em;
             }}
-            .pag-bar button:hover {{ border-color: #4ecca3; }}
+            .pag-bar button:hover {{ border-color: #39fda3; }}
             .pag-bar button:disabled {{ opacity: .35; cursor: default; }}
             .pag-bar span {{ color: #888; font-size: .85em; }}
 
@@ -3424,24 +3694,21 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
 
             /* Loading */
             .sheet-loading {{
-                text-align: center; padding: 3rem; color: #4ecca3;
+                text-align: center; padding: 3rem; color: #39fda3;
             }}
             .sheet-loading .spinner {{
                 width: 36px; height: 36px; margin: 0 auto 1rem;
-                border: 3px solid #2a2a4a; border-top-color: #4ecca3;
+                border: 3px solid #2a2a4a; border-top-color: #39fda3;
                 border-radius: 50%; animation: spin .8s linear infinite;
             }}
             @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
         </style>
     </head>
     <body>
-        {get_navbar()}
+        {get_navbar('alocacao')}
         <div class="container">
             <div class="card">
-                <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:1rem; margin-bottom:8px;">
-                    <h2 style="margin:0;">Alocacoes</h2>
-                    <a href="/" class="btn btn-secondary btn-sm">Voltar ao Dashboard</a>
-                </div>
+                <h2 style="margin:0 0 8px 0;">Alocações</h2>
                 <p style="color:#718096; margin-bottom:1.2rem; font-size:.9em;">
                     Tabela estilo planilha: uma linha por data, colunas por ativo (%).
                     Para <b>adicionar um novo ativo (nova coluna)</b>, use o campo abaixo. Depois preencha o % na nova coluna e salve a linha.
@@ -3456,7 +3723,7 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                 </div>
 
                 <div id="addAtivoBar" style="display:none; margin-bottom:1rem; padding:14px; background:rgba(78,204,163,.08); border:1px solid rgba(78,204,163,.25); border-radius:8px;">
-                    <div style="color:#4ecca3; font-weight:bold; margin-bottom:10px;">Adicionar ativo (nova coluna)</div>
+                    <div style="color:#39fda3; font-weight:bold; margin-bottom:10px;">Adicionar ativo (nova coluna)</div>
                     <div style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:8px;">
                         <input type="text" id="novoAtivoInput" placeholder="Ativo (ex: BTC, ETH)" style="width:120px; padding:8px 10px; border-radius:6px; border:1px solid #2a2a4a; background:#16213e; color:#eee;">
                         <input type="text" id="novoAtivoCoingecko" placeholder="CoinGecko ID (opcional, ex: bitcoin)" style="width:180px; padding:8px 10px; border-radius:6px; border:1px solid #2a2a4a; background:#16213e; color:#eee;">
@@ -3753,7 +4020,7 @@ def get_form_alocacao_html(produto_id=None, produtos=None, posicoes=None):
                     }});
                     const res = await r.json();
                     if (res.sucesso) {{
-                        if (msgEl) {{ msgEl.textContent = res.mensagem || 'Ok'; msgEl.style.color = '#4ecca3'; }}
+                        if (msgEl) {{ msgEl.textContent = res.mensagem || 'Ok'; msgEl.style.color = '#39fda3'; }}
                         if (inp) inp.value = '';
                         if (inpCg) inpCg.value = '';
                         if (inpSym) inpSym.value = '';
@@ -3783,7 +4050,7 @@ def get_confirmar_delete_visualizacao_html(produto, visualizacao, as_inner=False
             <div class="card" style="max-width: 500px; text-align: center;">
                 <h2 style="color: #ff6b6b;">Deletar Visualizacao</h2>
                 <p style="margin: 20px 0;">Tem certeza que deseja deletar:</p>
-                <p style="font-size: 1.3em; color: #4ecca3; font-weight: bold;">{visualizacao['nome']}</p>
+                <p style="font-size: 1.3em; color: #39fda3; font-weight: bold;">{visualizacao['nome']}</p>
                 <p style="color: #888; margin: 20px 0;">Esta acao nao pode ser desfeita.</p>
                 <div id="alert" class="alert"></div>
                 <div class="actions" style="justify-content: center;">
@@ -5076,6 +5343,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
+        # Favicon na raiz (navegadores solicitam /favicon.ico automaticamente)
+        if path == '/favicon.ico' or path == '/favicon.png':
+            from pathlib import Path as _Path
+            _assets_dir = _Path(__file__).resolve().parent.parent / 'assets'
+            _file_path = _assets_dir / 'favicon.png'
+            if _file_path.is_file():
+                with open(_file_path, 'rb') as f:
+                    self._send_body('image/png', f.read(), cache_control='public, max-age=86400')
+                return
+            self._send_html('', 404)
+            return
+
         # Health check (sem conexao ao banco - para Render/cloud)
         if path == '/health':
             self._send_json(
@@ -5229,6 +5508,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Dashboard principal
         if path == '/' or path == '':
+            if query.get('__content', [''])[0] != '1':
+                self._send_html(get_loader_only_html())
+                return
             produtos = repo.listar_produtos()
             # Não exibir HB e LC na home (são abas do Exponential Coins)
             _hidden_ids = {int(pid) for pid, cfg in PORTFOLIO_PRODUCTS.items() if cfg.get('type') == 'redirect'}
@@ -5260,9 +5542,55 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     p = dict(p)
                     p['nome'] = _soros_primary_rename[nome]
                 produtos_visiveis.append(p)
-            contagem = repo.contar_posicoes_abertas_por_produto()
-            stats = {p['id']: {'posicoes_abertas': contagem.get(p['id'], 0)} for p in produtos_visiveis}
-            html = get_dashboard_html(produtos_visiveis, stats, repo)
+            contagem_abertas = repo.contar_posicoes_abertas_por_produto()
+            contagem_fechadas = repo.contar_posicoes_fechadas_por_produto()
+            rentabilidade_por_produto = {}
+            try:
+                rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
+                for p in produtos_visiveis:
+                    pid = p.get('id')
+                    if _is_produto_crypto_signals(p) or _is_produto_icos(p):
+                        continue
+                    pf_cfg = PORTFOLIO_PRODUCTS.get(pid)
+                    if pf_cfg and pf_cfg.get('type') in ('group', 'single') and pf_cfg.get('keys'):
+                        try:
+                            data, _ = get_portfolio_data(pf_cfg['keys'][0], repo=repo)
+                            rentab = data['resumo'].get('rentabilidade_acumulada_pct', 0)
+                            if rentab is not None:
+                                rentabilidade_por_produto[pid] = rentab
+                        except Exception:
+                            pass
+                    else:
+                        resumos = rentabilidade_service.obter_rentabilidade_resumida_todas_turmas(produto_id=pid)
+                        if resumos:
+                            primeira_turma = resumos[-1]
+                            rentab = primeira_turma.get('rentabilidade_atual_pct') or primeira_turma.get('rentabilidade_acumulada_pct')
+                            if rentab is not None:
+                                rentabilidade_por_produto[pid] = rentab
+            except Exception:
+                pass
+
+            # Agregar trades de sub-produtos redirecionados para grupos
+            _redirect_to_group = {}
+            for _pid, _cfg in PORTFOLIO_PRODUCTS.items():
+                if _cfg.get('type') == 'redirect':
+                    _redirect_to_group[_pid] = _cfg['target_id']
+
+            stats = {}
+            for p in produtos_visiveis:
+                pid = p['id']
+                abertas = contagem_abertas.get(pid, 0)
+                fechadas = contagem_fechadas.get(pid, 0)
+                for sub_pid, group_pid in _redirect_to_group.items():
+                    if group_pid == pid:
+                        abertas += contagem_abertas.get(sub_pid, 0)
+                        fechadas += contagem_fechadas.get(sub_pid, 0)
+                stats[pid] = {
+                    'posicoes_abertas': abertas,
+                    'posicoes_fechadas': fechadas,
+                    'rentabilidade_acumulada_pct': rentabilidade_por_produto.get(pid),
+                }
+            html = get_dashboard_html(produtos_visiveis, stats, repo, skip_loader=True)
             self._send_html(html)
             return
 
