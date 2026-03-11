@@ -1390,10 +1390,88 @@ def _produto_sort_key(p):
     return 6
 
 
-def get_dashboard_html(produtos, stats, repo, skip_loader=False):
-    """Gera HTML da pagina principal do dashboard. skip_loader=True quando a pagina e carregada via fetch (__content=1)."""
-    timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+def _get_dashboard_data(repo):
+    """Retorna (produtos_visiveis, stats) para a home do dashboard. Reutilizado pela rota / e /api/dashboard/home."""
+    produtos = repo.listar_produtos()
+    _hidden_ids = {int(pid) for pid, cfg in PORTFOLIO_PRODUCTS.items() if cfg.get('type') == 'redirect'}
+    _hidden_nomes_exatos = {'HB', 'LC', 'High Beta', 'Low Caps'}
+    _soros_secondary_names = set()
+    _soros_primary_rename = {}
+    for _gkey, gcfg in SOROS_GROUPS.items():
+        for m in gcfg['members'][1:]:
+            _soros_secondary_names.add(m)
+        _soros_primary_rename[gcfg['members'][0]] = gcfg['display_name']
+    produtos_visiveis = []
+    for p in produtos:
+        try:
+            pid = int(p.get('id') or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        nome = (p.get('nome') or '').strip()
+        if pid in _hidden_ids:
+            continue
+        if nome in _hidden_nomes_exatos or nome.upper() in ('HB', 'LC'):
+            continue
+        if nome in _soros_secondary_names:
+            continue
+        pf_cfg = PORTFOLIO_PRODUCTS.get(pid)
+        if pf_cfg and 'group_name' in pf_cfg:
+            p = dict(p)
+            p['nome'] = pf_cfg['group_name']
+        if nome in _soros_primary_rename:
+            p = dict(p)
+            p['nome'] = _soros_primary_rename[nome]
+        produtos_visiveis.append(p)
+    contagem_abertas = repo.contar_posicoes_abertas_por_produto()
+    contagem_fechadas = repo.contar_posicoes_fechadas_por_produto()
+    rentabilidade_por_produto = {}
+    try:
+        rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
+        for p in produtos_visiveis:
+            pid = p.get('id')
+            if _is_produto_crypto_signals(p) or _is_produto_icos(p):
+                continue
+            pf_cfg = PORTFOLIO_PRODUCTS.get(pid)
+            if pf_cfg and pf_cfg.get('type') in ('group', 'single') and pf_cfg.get('keys'):
+                try:
+                    data, _ = get_portfolio_data(pf_cfg['keys'][0], repo=repo)
+                    rentab = data['resumo'].get('rentabilidade_acumulada_pct', 0)
+                    if rentab is not None:
+                        rentabilidade_por_produto[pid] = rentab
+                except Exception:
+                    pass
+            else:
+                resumos = rentabilidade_service.obter_rentabilidade_resumida_todas_turmas(produto_id=pid)
+                if resumos:
+                    primeira_turma = resumos[-1]
+                    rentab = primeira_turma.get('rentabilidade_atual_pct') or primeira_turma.get('rentabilidade_acumulada_pct')
+                    if rentab is not None:
+                        rentabilidade_por_produto[pid] = rentab
+    except Exception:
+        pass
+    _redirect_to_group = {}
+    for _pid, _cfg in PORTFOLIO_PRODUCTS.items():
+        if _cfg.get('type') == 'redirect':
+            _redirect_to_group[_pid] = _cfg['target_id']
+    stats = {}
+    for p in produtos_visiveis:
+        pid = p['id']
+        abertas = contagem_abertas.get(pid, 0)
+        fechadas = contagem_fechadas.get(pid, 0)
+        for sub_pid, group_pid in _redirect_to_group.items():
+            if group_pid == pid:
+                abertas += contagem_abertas.get(sub_pid, 0)
+                fechadas += contagem_fechadas.get(sub_pid, 0)
+        stats[pid] = {
+            'posicoes_abertas': abertas,
+            'posicoes_fechadas': fechadas,
+            'rentabilidade_acumulada_pct': rentabilidade_por_produto.get(pid),
+        }
+    return produtos_visiveis, stats
 
+
+def _build_dashboard_cards_html(produtos, stats):
+    """Gera o HTML dos cards do dashboard. Usado por get_dashboard_html e /api/dashboard/home."""
     produtos_ordenados = sorted(produtos, key=_produto_sort_key)
     cards_html = ""
     for p in produtos_ordenados:
@@ -1401,7 +1479,6 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
         posicoes_abertas = prod_stats.get('posicoes_abertas', 0)
         posicoes_fechadas = prod_stats.get('posicoes_fechadas', 0)
         rentabilidade_pct = prod_stats.get('rentabilidade_acumulada_pct')
-
         rentab_html = ""
         if rentabilidade_pct is not None:
             rentab_class = 'positive' if rentabilidade_pct >= 0 else 'negative'
@@ -1409,7 +1486,6 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
             rentab_html = f"""<div class="product-rentab">
                     <div class="product-rentab-value {rentab_class}">{rentab_str}</div>
                 </div>"""
-
         cards_html += f"""
         <div class="product-card">
             <div class="product-card-name">{p['nome']}</div>
@@ -1424,14 +1500,12 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
             </div>
         </div>
         """
-
     cards_html += """
         <a href="/produto/novo" class="product-card product-card-new">
             <div class="product-card-new-icon">+</div>
             <div class="product-card-new-label">Novo Produto</div>
         </a>
         """
-
     if not cards_html.strip():
         cards_html = """
         <div class="empty-state">
@@ -1440,6 +1514,13 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
             <a href="/produto/novo" class="btn btn-primary" style="margin-top: 20px;">Criar Produto</a>
         </div>
         """
+    return cards_html
+
+
+def get_dashboard_html(produtos, stats, repo, skip_loader=False):
+    """Gera HTML da pagina principal do dashboard. skip_loader=True quando a pagina e carregada via fetch (__content=1)."""
+    timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    cards_html = _build_dashboard_cards_html(produtos, stats)
 
     product_nav_loader_html = """
         <div class="product-nav-loader" id="productNavLoader">
@@ -1451,10 +1532,12 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
             document.addEventListener('click', function(e) {
                 var a = e.target.closest('a[href^="/produto/"]');
                 if (a && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                    var href = a.getAttribute('href');
+                    if (href === '/produto/novo') return;
                     e.preventDefault();
                     var loader = document.getElementById('productNavLoader');
                     if (loader) loader.classList.add('show');
-                    window.location.href = a.getAttribute('href');
+                    window.location.href = href;
                 }
             });
         })();
@@ -1475,10 +1558,27 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
         {product_nav_loader_html}
         {get_navbar('home')}
         <div class="container">
-            <p class="timestamp">Ultima atualizacao: {timestamp}</p>
-            <div class="product-grid">{cards_html}</div>
+            <p class="timestamp" id="dashboardTimestamp">Ultima atualizacao: {timestamp}</p>
+            <div class="product-grid" id="dashboardProductGrid">{cards_html}</div>
         </div>
-        <script>setTimeout(function() {{ location.reload(); }}, 300000);</script>
+        {_get_form_modal_overlay_script(0)}
+        <script>
+        (function() {{
+            var REFRESH_MS = 300000;
+            function refreshDashboard() {{
+                fetch('/api/dashboard/home')
+                    .then(function(r) {{ return r.json(); }})
+                    .then(function(data) {{
+                        var ts = document.getElementById('dashboardTimestamp');
+                        var grid = document.getElementById('dashboardProductGrid');
+                        if (ts) ts.textContent = 'Ultima atualizacao: ' + data.timestamp;
+                        if (grid) grid.innerHTML = data.cards_html;
+                    }})
+                    .catch(function() {{}});
+            }}
+            setInterval(refreshDashboard, REFRESH_MS);
+        }})();
+        </script>
     </body>
     </html>
     """
@@ -1526,16 +1626,31 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
         <div class="page-content" id="pageContent">
             {get_navbar('home')}
             <div class="container">
-                <p class="timestamp">Ultima atualizacao: {timestamp}</p>
-                <div class="product-grid">{cards_html}</div>
+                <p class="timestamp" id="dashboardTimestamp">Ultima atualizacao: {timestamp}</p>
+                <div class="product-grid" id="dashboardProductGrid">{cards_html}</div>
             </div>
         </div>
         {product_nav_loader_html}
+        {_get_form_modal_overlay_script(0)}
         <script>
             document.getElementById('pageLoader').classList.add('hide');
             document.getElementById('pageContent').classList.add('show');
             setTimeout(function() {{ document.getElementById('pageLoader').remove(); }}, 400);
-            setTimeout(function() {{ location.reload(); }}, 300000);
+            (function() {{
+                var REFRESH_MS = 300000;
+                function refreshDashboard() {{
+                    fetch('/api/dashboard/home')
+                        .then(function(r) {{ return r.json(); }})
+                        .then(function(data) {{
+                            var ts = document.getElementById('dashboardTimestamp');
+                            var grid = document.getElementById('dashboardProductGrid');
+                            if (ts) ts.textContent = 'Ultima atualizacao: ' + data.timestamp;
+                            if (grid) grid.innerHTML = data.cards_html;
+                        }})
+                        .catch(function() {{}});
+                }}
+                setInterval(refreshDashboard, REFRESH_MS);
+            }})();
         </script>
     </body>
     </html>
@@ -1651,6 +1766,7 @@ def get_menu_html():
                 </div>
             </div>
         </div>
+        {_get_form_modal_overlay_script(0)}
     </body>
     </html>
     """
@@ -1920,7 +2036,7 @@ def get_form_produto_html(produto=None, as_inner=False):
             }});
         </script>
     """
-    if is_edit and as_inner:
+    if as_inner:
         return card_html + script
     if is_edit:
         return get_form_page_with_background(card_html + script, produto['id'], 'Editar Produto')
@@ -5575,87 +5691,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if query.get('__content', [''])[0] != '1':
                 self._send_html(get_loader_only_html())
                 return
-            produtos = repo.listar_produtos()
-            # Não exibir HB e LC na home (são abas do Exponential Coins)
-            _hidden_ids = {int(pid) for pid, cfg in PORTFOLIO_PRODUCTS.items() if cfg.get('type') == 'redirect'}
-            _hidden_nomes_exatos = {'HB', 'LC', 'High Beta', 'Low Caps'}
-            _soros_secondary_names = set()
-            _soros_primary_rename = {}
-            for _gkey, gcfg in SOROS_GROUPS.items():
-                for m in gcfg['members'][1:]:
-                    _soros_secondary_names.add(m)
-                _soros_primary_rename[gcfg['members'][0]] = gcfg['display_name']
-            produtos_visiveis = []
-            for p in produtos:
-                try:
-                    pid = int(p.get('id') or 0)
-                except (TypeError, ValueError):
-                    pid = 0
-                nome = (p.get('nome') or '').strip()
-                if pid in _hidden_ids:
-                    continue
-                if nome in _hidden_nomes_exatos or nome.upper() in ('HB', 'LC'):
-                    continue
-                if nome in _soros_secondary_names:
-                    continue
-                pf_cfg = PORTFOLIO_PRODUCTS.get(pid)
-                if pf_cfg and 'group_name' in pf_cfg:
-                    p = dict(p)
-                    p['nome'] = pf_cfg['group_name']
-                if nome in _soros_primary_rename:
-                    p = dict(p)
-                    p['nome'] = _soros_primary_rename[nome]
-                produtos_visiveis.append(p)
-            contagem_abertas = repo.contar_posicoes_abertas_por_produto()
-            contagem_fechadas = repo.contar_posicoes_fechadas_por_produto()
-            rentabilidade_por_produto = {}
-            try:
-                rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
-                for p in produtos_visiveis:
-                    pid = p.get('id')
-                    if _is_produto_crypto_signals(p) or _is_produto_icos(p):
-                        continue
-                    pf_cfg = PORTFOLIO_PRODUCTS.get(pid)
-                    if pf_cfg and pf_cfg.get('type') in ('group', 'single') and pf_cfg.get('keys'):
-                        try:
-                            data, _ = get_portfolio_data(pf_cfg['keys'][0], repo=repo)
-                            rentab = data['resumo'].get('rentabilidade_acumulada_pct', 0)
-                            if rentab is not None:
-                                rentabilidade_por_produto[pid] = rentab
-                        except Exception:
-                            pass
-                    else:
-                        resumos = rentabilidade_service.obter_rentabilidade_resumida_todas_turmas(produto_id=pid)
-                        if resumos:
-                            primeira_turma = resumos[-1]
-                            rentab = primeira_turma.get('rentabilidade_atual_pct') or primeira_turma.get('rentabilidade_acumulada_pct')
-                            if rentab is not None:
-                                rentabilidade_por_produto[pid] = rentab
-            except Exception:
-                pass
-
-            # Agregar trades de sub-produtos redirecionados para grupos
-            _redirect_to_group = {}
-            for _pid, _cfg in PORTFOLIO_PRODUCTS.items():
-                if _cfg.get('type') == 'redirect':
-                    _redirect_to_group[_pid] = _cfg['target_id']
-
-            stats = {}
-            for p in produtos_visiveis:
-                pid = p['id']
-                abertas = contagem_abertas.get(pid, 0)
-                fechadas = contagem_fechadas.get(pid, 0)
-                for sub_pid, group_pid in _redirect_to_group.items():
-                    if group_pid == pid:
-                        abertas += contagem_abertas.get(sub_pid, 0)
-                        fechadas += contagem_fechadas.get(sub_pid, 0)
-                stats[pid] = {
-                    'posicoes_abertas': abertas,
-                    'posicoes_fechadas': fechadas,
-                    'rentabilidade_acumulada_pct': rentabilidade_por_produto.get(pid),
-                }
+            produtos_visiveis, stats = _get_dashboard_data(repo)
             html = get_dashboard_html(produtos_visiveis, stats, repo, skip_loader=True)
             self._send_html(html)
+            return
+
+        # API: dados da home para atualizacao parcial (fetch sem reload)
+        if path == '/api/dashboard/home':
+            try:
+                produtos_visiveis, stats = _get_dashboard_data(repo)
+                cards_html = _build_dashboard_cards_html(produtos_visiveis, stats)
+                timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                self._send_json({'timestamp': timestamp, 'cards_html': cards_html})
+            except Exception as e:
+                self._send_json({'erro': str(e)}, 500)
             return
 
         # Menu completo
@@ -5665,7 +5714,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Formulario novo produto
         if path == '/produto/novo':
-            self._send_html(get_form_produto_html())
+            is_modal = query.get('_modal', [''])[0] == '1'
+            inner = get_form_produto_html(as_inner=True)
+            self._send_html(inner if is_modal else get_form_produto_html())
             return
 
         # Lista para editar produtos
