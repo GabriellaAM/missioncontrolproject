@@ -6835,6 +6835,105 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json({'sucesso': False, 'erro': str(e)}, 500)
             return
 
+        # API: Export Excel completo (rentabilidade + posições) por produto
+        if path.startswith('/api/export/excel'):
+            try:
+                from services.export_excel_service import gerar_excel_completo
+
+                produto_id = None
+                produto_nome = 'Produto'
+                if '?' in self.path:
+                    query = self.path.split('?')[1]
+                    params = dict(p.split('=') for p in query.split('&') if '=' in p)
+                    if 'produto_id' in params:
+                        produto_id = int(params['produto_id'])
+
+                if produto_id is None:
+                    self._send_json({'erro': 'produto_id obrigatório. Ex: /api/export/excel?produto_id=123'}, 400)
+                    return
+
+                produto = None
+                for p in repo.listar_produtos():
+                    if p.get('id') == produto_id:
+                        produto = p
+                        produto_nome = (p.get('nome') or 'Produto').strip()
+                        break
+
+                dados_posicoes = None
+                pf_cfg = PORTFOLIO_PRODUCTS.get(produto_id)
+                is_portfolio = pf_cfg and pf_cfg.get('type') in ('group', 'single')
+                is_crypto = _is_produto_crypto_signals(produto)
+                is_icos = _is_produto_icos(produto)
+
+                if is_portfolio:
+                    portfolio_keys = pf_cfg.get('keys', []) if pf_cfg.get('type') != 'redirect' else (PORTFOLIO_PRODUCTS.get(pf_cfg.get('target_id')) or {}).get('keys', [])
+                    nomes = {'EXC': 'Principal', 'HB': 'High Beta', 'LC': 'Low Caps', 'AC': 'Alphacoins'}
+                    abertas_all, fechadas_all, hist_all = [], [], []
+                    for key in portfolio_keys:
+                        try:
+                            data, _ = get_portfolio_data(key, repo=repo)
+                        except Exception:
+                            continue
+                        sub = nomes.get(key, key)
+                        for t in data.get('posicoes_abertas', []):
+                            r = dict(t)
+                            if len(portfolio_keys) > 1:
+                                r['sub_portfolio'] = sub
+                            abertas_all.append(r)
+                        for t in data.get('posicoes_fechadas', []):
+                            r = dict(t)
+                            if len(portfolio_keys) > 1:
+                                r['sub_portfolio'] = sub
+                            fechadas_all.append(r)
+                    hist_all = abertas_all + fechadas_all
+                    dados_posicoes = {
+                        'tipo': 'portfolio',
+                        'abertas': abertas_all,
+                        'fechadas': fechadas_all,
+                        'historico': hist_all,
+                    }
+                else:
+                    turmas_service = TurmasService(db_url=repo.db_url)
+                    turmas = turmas_service.listar_turmas(produto_id)
+                    if turmas:
+                        carteira_agg = []
+                        tipo_produto = (produto or {}).get('tipo', '')
+                        for turma in turmas:
+                            carteira = turmas_service.listar_carteira_turma(turma['id'])
+                            precos_atuais = _obter_precos_bitget_primeiro_coingecko_fallback(
+                                carteira, tipo_produto=tipo_produto, db_url=repo.db_url
+                            )
+                            _enrich_carteira_trades(carteira, precos_atuais=precos_atuais, repo=repo)
+                            if is_crypto:
+                                _enrich_carteira_cs_attributes(carteira, repo)
+                            elif is_icos:
+                                _enrich_carteira_icos_attributes(carteira, repo)
+                            for t in carteira:
+                                t_copy = dict(t)
+                                t_copy['turma'] = turma.get('nome', '')
+                                carteira_agg.append(t_copy)
+                        if carteira_agg:
+                            dados_posicoes = {
+                                'tipo': 'crypto' if is_crypto else 'icos' if is_icos else 'turmas',
+                                'historico': carteira_agg,
+                            }
+
+                buffer = gerar_excel_completo(
+                    produto_id=produto_id,
+                    produto_nome=produto_nome,
+                    db_url=repo.db_url,
+                    repo=repo,
+                    dados_posicoes=dados_posicoes,
+                )
+                safe_name = "".join(c if c.isalnum() or c in ' -_' else '_' for c in produto_nome)
+                filename = f"export_{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                self._send_excel(buffer, filename)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send_json({'erro': str(e)}, 500)
+            return
+
         # API: Download Excel com rentabilidade histórica
         if path == '/api/rentabilidade/excel':
             try:

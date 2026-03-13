@@ -2063,6 +2063,10 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
                         <a href="/posicao/fechar?produto_id={produto_id}"><span class="gear-icon">&#10006;</span> Fechar Posi&ccedil;&atilde;o</a>
                     </div>
                     <div class="gear-panel-group">
+                        <div class="gear-panel-title">Exportar</div>
+                        <a href="/api/export/excel?produto_id={produto_id}" download><span class="gear-icon">&#8595;</span> Baixar Excel (Rentab. + Posi&ccedil;&otilde;es)</a>
+                    </div>
+                    <div class="gear-panel-group">
                         <div class="gear-panel-title">Aloca&ccedil;&atilde;o &amp; Turmas</div>
                         <a href="/alocacao/nova?produto_id={produto_id}"><span class="gear-icon gear-accent">+</span> Nova Aloca&ccedil;&atilde;o</a>
                         <a href="/turmas/nova"><span class="gear-icon gear-accent">+</span> Nova Turma</a>

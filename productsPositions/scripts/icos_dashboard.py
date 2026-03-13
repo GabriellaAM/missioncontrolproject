@@ -257,6 +257,10 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
                         <a href="/posicao/fechar?produto_id={produto_id}"><span class="gear-icon">&#10006;</span> Fechar Posi&ccedil;&atilde;o</a>
                     </div>
                     <div class="gear-panel-group">
+                        <div class="gear-panel-title">Exportar</div>
+                        <a href="/api/export/excel?produto_id={produto_id}" download><span class="gear-icon">&#8595;</span> Baixar Excel (Rentab. + Posi&ccedil;&otilde;es)</a>
+                    </div>
+                    <div class="gear-panel-group">
                         <div class="gear-panel-title">Produto</div>
                         <a href="/produto/{produto_id}/editar"><span class="gear-icon">&#9998;</span> Editar Produto</a>
                         <a href="/produto/{produto_id}/atributos"><span class="gear-icon">&#9776;</span> Atributos</a>

@@ -285,6 +285,10 @@ def get_portfolio_dashboard_html(produto_nome, sub_portfolios, active_data,
                         </button>
                     </div>
                     <div class="gear-panel-group">
+                        <div class="gear-panel-title">Exportar</div>
+                        <a href="/api/export/excel?produto_id={produto_id}" download><span class="gear-icon">&#8595;</span> Baixar Excel (Rentab. + Posi&ccedil;&otilde;es)</a>
+                    </div>
+                    <div class="gear-panel-group">
                         <div class="gear-panel-title">Produto</div>
                         <a href="/produto/{produto_id}/editar"><span class="gear-icon">&#9998;</span> Editar Produto</a>
                         <a href="/alocacao/nova?produto_id={produto_id}"><span class="gear-icon gear-accent">+</span> Criar Aloca&ccedil;&atilde;o</a>

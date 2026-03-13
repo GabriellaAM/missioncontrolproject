@@ -2,7 +2,8 @@
 Deploy migration: Renomeia o produto "Soros Perpétuos 1" para "Soros Perpétuos"
 e suas turmas para incluir "Perpétuos" no nome, renumerando de 2→1, 3→2, etc.
 
-Idempotente: verifica se o nome já foi alterado antes de executar.
+Idempotente: verifica se o produto e as turmas já foram alterados antes de executar.
+Turmas já no formato "Soros Perpétuos Turma N" são ignoradas (evita duplicatas em deploys).
 
 Uso:
   python -m productsPositions.scripts.deploy_rename_soros_perpetuos [--dry-run]
@@ -98,10 +99,19 @@ try:
             print(f"  id={tid}, nome='{tnome}'")
 
         # 4) Renomear turmas: extrair o número, decrementar 1, e incluir "Perpétuos"
+        # IMPORTANTE: Só aplicar em turmas com formato ANTIGO. Turmas já no formato
+        # "Soros Perpétuos Turma N" devem ser ignoradas, senão o script (rodado a cada
+        # deploy) reaplicaria o decremento e criaria duplicatas (Turma 2→1, Turma 3→2...).
+        PADRAO_JA_MIGRADO = re.compile(r'^Soros Perp[eé]tuos Turma \d+$')
         print(f"\n{TAG} Renumerando turmas:")
         for t in turmas:
             tid = t[0] if isinstance(t, (list, tuple)) else t['id']
             tnome = (t[1] if isinstance(t, (list, tuple)) else t['nome']).strip()
+
+            # Pular turmas já no formato final (evita reaplicar em cada deploy)
+            if PADRAO_JA_MIGRADO.match(tnome):
+                print(f"  SKIP id={tid}: '{tnome}' -> já no formato final")
+                continue
 
             # Extrair o número da turma atual
             # Padrões possíveis: "Soros Turma 2", "Soros Perpétuos Turma 2", "Turma 2", etc.
