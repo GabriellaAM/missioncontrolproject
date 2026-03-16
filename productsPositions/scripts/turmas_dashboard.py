@@ -340,7 +340,6 @@ def get_lista_turmas_html(turmas, resumos):
 
     <div class="page-header">
         <h2>Turmas ({len(turmas)})</h2>
-        <a href="/turmas/nova" class="btn-criar">+ Nova Turma</a>
     </div>
 
     <div class="product-tabs">

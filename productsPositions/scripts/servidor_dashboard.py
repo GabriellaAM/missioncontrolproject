@@ -56,7 +56,6 @@ from turmas_dashboard import (
     get_turma_detalhes_html,
     get_rentabilidade_chart_html,
     get_comparar_turmas_html,
-    get_rentabilidade_historica_html,
     get_produto_dashboard_html
 )
 from portfolio_dashboard import get_portfolio_dashboard_html
@@ -1189,7 +1188,27 @@ def get_base_styles():
         }
         .tab:hover, .tab.active { border-color: #39fda3; color: #39fda3; }
         .tab.active { background: rgba(78, 204, 163, 0.2); }
-        .timestamp { color: #666; font-size: 0.9em; margin-bottom: 20px; }
+        .timestamp { color: #666; font-size: 0.9em; margin: 0; }
+        .dashboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .btn-turmas {
+            padding: 8px 16px;
+            background: rgba(78, 204, 163, 0.15);
+            color: #39fda3;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 0.9em;
+            border: 1px solid rgba(78, 204, 163, 0.4);
+            transition: all 0.2s;
+        }
+        .btn-turmas:hover {
+            background: rgba(78, 204, 163, 0.25);
+            border-color: #39fda3;
+        }
         .empty-state { text-align: center; padding: 40px; color: #666; }
         .empty-state h3 { color: #888; margin-bottom: 10px; }
         .alert {
@@ -1348,7 +1367,6 @@ def get_turmas_subnav(current_sub=""):
     return f"""
     <div class="turmas-subnav">
         <a href="/turmas" class="{'active' if current_sub == 'turmas' else ''}">Turmas</a>
-        <a href="/turmas/historico" class="{'active' if current_sub == 'historico' else ''}">Histórico</a>
         <a href="/turmas/comparar" class="{'active' if current_sub == 'comparar' else ''}">Comparar</a>
     </div>
     """
@@ -1596,7 +1614,10 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
         {product_nav_loader_html}
         {get_navbar('home')}
         <div class="container">
-            <p class="timestamp" id="dashboardTimestamp">Ultima atualizacao: {timestamp}</p>
+            <div class="dashboard-header">
+                <p class="timestamp" id="dashboardTimestamp">Ultima atualizacao: {timestamp}</p>
+                <a href="/turmas" class="btn-turmas">Ver Turmas</a>
+            </div>
             <div class="product-grid" id="dashboardProductGrid">{cards_html}</div>
         </div>
         {_get_form_modal_overlay_script(0)}
@@ -1664,7 +1685,10 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
         <div class="page-content" id="pageContent">
             {get_navbar('home')}
             <div class="container">
-                <p class="timestamp" id="dashboardTimestamp">Ultima atualizacao: {timestamp}</p>
+                <div class="dashboard-header">
+                    <p class="timestamp" id="dashboardTimestamp">Ultima atualizacao: {timestamp}</p>
+                    <a href="/turmas" class="btn-turmas">Ver Turmas</a>
+                </div>
                 <div class="product-grid" id="dashboardProductGrid">{cards_html}</div>
             </div>
         </div>
@@ -1778,10 +1802,6 @@ def get_menu_html():
                     <a href="/turmas" class="menu-item">
                         <div class="menu-item-icon">T</div>
                         <div class="menu-item-label">Ver Turmas</div>
-                    </a>
-                    <a href="/turmas/historico" class="menu-item">
-                        <div class="menu-item-icon">📊</div>
-                        <div class="menu-item-label">Rentab. Histórica</div>
                     </a>
                     <a href="/turmas/nova" class="menu-item">
                         <div class="menu-item-icon">+</div>
@@ -6100,49 +6120,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         self._send_html(f"<h1>Erro</h1><p>Erro ao carregar portfolio: {str(e)}</p><pre>{traceback.format_exc()}</pre>", 500)
                         return
 
-                # Soros groups: redirect secondary members, render grouped tabs for primary
+                # Soros groups: Soros Spot 2 aparece como Turma 2 dentro da página de Soros Spot 1
                 produto_nome = (produto.get('nome') or '').strip()
                 soros_gcfg, soros_member_idx = _resolve_soros_group(repo, produto_nome)
                 if soros_gcfg:
                     primary_name = soros_gcfg['members'][0]
+                    primary_id = _get_soros_id_by_name(repo, primary_name) or produto_id
                     if soros_member_idx > 0:
-                        primary_id = _get_soros_id_by_name(repo, primary_name)
-                        if primary_id:
+                        # Redireciona Soros Spot 2 para Soros Spot 1 com turma pré-selecionada
+                        turmas_service_soros = TurmasService(db_url=repo.db_url)
+                        spot2_id = _get_soros_id_by_name(repo, soros_gcfg['members'][1])
+                        if primary_id and spot2_id:
+                            turmas_spot2 = turmas_service_soros.listar_turmas(spot2_id)
+                            turma_id_redirect = turmas_spot2[0]['id'] if turmas_spot2 else None
+                            loc = f"/produto/{primary_id}"
+                            if turma_id_redirect:
+                                loc += f"?turma={turma_id_redirect}"
                             self.send_response(302)
-                            self.send_header('Location', f"/produto/{primary_id}?tab={soros_member_idx}")
+                            self.send_header('Location', loc)
                             self.end_headers()
                             return
 
-                    active_tab = int(query.get('tab', ['0'])[0]) if 'tab' in query else 0
-                    if active_tab < 0 or active_tab >= len(soros_gcfg['members']):
-                        active_tab = 0
-
-                    product_tabs_info = []
-                    primary_id = produto_id
-                    for i, member_name in enumerate(soros_gcfg['members']):
-                        mid = _get_soros_id_by_name(repo, member_name) if i > 0 else produto_id
-                        product_tabs_info.append({
-                            'nome': soros_gcfg['tab_names'][i],
-                            'produto_id': mid or 0,
-                            'active': i == active_tab,
-                        })
-
-                    active_member_name = soros_gcfg['members'][active_tab]
-                    if active_tab > 0:
-                        active_pid = _get_soros_id_by_name(repo, active_member_name)
-                        if active_pid:
-                            active_produto = repo.carregar_produto(active_pid)
-                            if active_produto:
-                                produto_id = active_pid
-                                produto = active_produto
-                                produto_nome = active_member_name
-                    product_tabs = {
-                        'tabs': product_tabs_info,
-                        'group_name': soros_gcfg['display_name'],
-                        'primary_id': primary_id,
-                    }
-                else:
-                    product_tabs = None
+                    # Usar produto primário (Soros Spot 1) e agregar turmas de todos os members
+                    produto_id = primary_id
+                    produto = repo.carregar_produto(produto_id) or produto
+                    produto_nome = primary_name
+                product_tabs = None
 
                 # Dashboard customizado: Crypto Signals
                 if produto_id in CUSTOM_DASHBOARD_PRODUCTS and CUSTOM_DASHBOARD_PRODUCTS[produto_id] == 'cryptosignals':
@@ -6205,12 +6208,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 turmas_produto = []
                 try:
                     turmas_service = TurmasService(db_url=repo.db_url)
-                    turmas_produto = turmas_service.listar_turmas(produto_id)
+                    if soros_gcfg:
+                        # Agregar turmas de Soros Spot 1 + Soros Spot 2 como Turma 1 e Turma 2
+                        for i, member_name in enumerate(soros_gcfg['members']):
+                            mid = _get_soros_id_by_name(repo, member_name) if i > 0 else produto_id
+                            if not mid:
+                                continue
+                            turmas_member = turmas_service.listar_turmas(mid)
+                            for j, t in enumerate(turmas_member):
+                                t_copy = dict(t)
+                                if i < len(soros_gcfg['tab_names']) and j == 0:
+                                    t_copy['nome'] = soros_gcfg['tab_names'][i]
+                                turmas_produto.append(t_copy)
+                    else:
+                        turmas_produto = turmas_service.listar_turmas(produto_id)
                 except Exception as e:
                     print(f"[DASHBOARD] Erro ao buscar turmas para produto {produto_id}: {e}", flush=True)
 
+                # Pré-selecionar turma via ?turma=ID (ex: redirect de Soros Spot 2)
+                turma_query = query.get('turma', [''])[0]
+                if turma_query and turmas_produto:
+                    try:
+                        tid = int(turma_query)
+                        idx = next((i for i, t in enumerate(turmas_produto) if t['id'] == tid), None)
+                        if idx is not None and idx > 0:
+                            t = turmas_produto.pop(idx)
+                            turmas_produto.insert(0, t)
+                    except (ValueError, TypeError):
+                        pass
+
                 # Auto-criar turma para produtos do grupo Soros sem turmas
-                if not turmas_produto and product_tabs:
+                if not turmas_produto and soros_gcfg:
                     try:
                         print(f"[DASHBOARD] Auto-criando turma para produto {produto_id} ({produto_nome})...", flush=True)
                         data_inicio_prod = str(produto.get('data_inicio', ''))[:10] or date.today().isoformat()
@@ -6286,6 +6314,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             turmas = turmas_service.listar_turmas()
 
+            # Agrupar Soros Spot 1 e Soros Spot 2 na mesma aba
+            for gcfg in SOROS_GROUPS.values():
+                soros_members = set(gcfg['members'])
+                soros_display = gcfg.get('display_name', 'Soros Spot')
+                for i, t in enumerate(turmas):
+                    pnome = (t.get('produto_nome') or '').strip()
+                    if pnome in soros_members:
+                        t = dict(t)
+                        t['produto_nome'] = soros_display
+                        idx = gcfg['members'].index(pnome)
+                        if idx < len(gcfg.get('tab_names', [])):
+                            t['nome'] = gcfg['tab_names'][idx]
+                        turmas[i] = t
+                break
+
             # Batch otimizado: uma query SQL + uma chamada API para preços em tempo real
             resumos_lista = rentabilidade_service.obter_rentabilidade_resumida_todas_turmas()
             resumos = {r['turma_id']: r for r in resumos_lista}
@@ -6312,18 +6355,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             turmas_service = TurmasService(db_url=repo.db_url)
             turmas = turmas_service.listar_turmas()
             self._send_html(get_comparar_turmas_html(turmas, {}))
-            return
-
-        # Rentabilidade histórica de todas as turmas (página HTML)
-        if path == '/turmas/historico':
-            rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
-
-            # OTIMIZAÇÃO: Não chama preencher_historico_faltante() no carregamento
-            # Use /api/cotacoes/atualizar para atualizar preços quando necessário
-
-            # Obter resumo de todas as turmas (inclui rentabilidade max/min)
-            turmas_resumo = rentabilidade_service.obter_rentabilidade_resumida_todas_turmas()
-            self._send_html(get_rentabilidade_historica_html(turmas_resumo))
             return
 
         # Rotas de turma especifica: /turmas/{id}, /turmas/{id}/abertas, /turmas/{id}/fechadas, /turmas/{id}/historico, /turmas/{id}/rentabilidade
