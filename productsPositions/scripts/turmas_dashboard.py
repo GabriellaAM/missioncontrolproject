@@ -167,7 +167,7 @@ def get_turmas_styles():
 
 def get_lista_turmas_html(turmas, resumos):
     """Gera HTML da lista de turmas com abas por produto"""
-    get_navbar, get_turmas_subnav, get_base_styles, _ = _get_shared_components()
+    get_navbar, get_turmas_subnav, get_base_styles, _get_form_modal_overlay_script = _get_shared_components()
     styles = get_turmas_styles()
 
     # Agrupar turmas por produto
@@ -376,46 +376,66 @@ def get_lista_turmas_html(turmas, resumos):
         cards.forEach(function(card) {{ grid.appendChild(card); }});
     }}
     </script>
+    {_get_form_modal_overlay_script(0)}
 </body>
 </html>"""
 
 
-def get_form_nova_turma_html(produtos):
-    """Gera HTML do formulário para criar nova turma"""
+def get_form_nova_turma_html(produtos, as_inner=False, return_url='/'):
+    """Gera HTML do formulário para criar nova turma. Se as_inner=True, retorna só o conteúdo para overlay modal. return_url: URL para onde o Cancelar leva."""
     get_navbar, get_turmas_subnav, get_base_styles, _ = _get_shared_components()
 
     options_html = ""
     for p in produtos:
         options_html += f'<option value="{p["id"]}">{p["nome"]}</option>'
 
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Nova Turma - Dashboard</title>
-    <style>
-        {get_base_styles()}
-        .form-container {{
+    form_styles = """
+        .form-nova-turma.form-container,
+        .form-container.form-nova-turma {
+            width: 100%;
             max-width: 600px;
-            margin: 40px auto;
+            min-width: 0;
+            margin: 0 auto;
             padding: 30px;
+            box-sizing: border-box;
             background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
             border-radius: 10px;
-        }}
-        .form-container h2 {{
+        }
+        .form-nova-turma.form-container h2,
+        .form-container.form-nova-turma h2 {
             color: #39fda3;
             margin-bottom: 25px;
-        }}
-        .form-group {{
+        }
+        .form-group {
             margin-bottom: 20px;
-        }}
-        .form-group label {{
+        }
+        /* Layout responsivo: 2-3 colunas conforme largura */
+        .form-nova-turma.form-container form,
+        .form-container.form-nova-turma form {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px 20px;
+            min-width: 0;
+        }
+        @media (min-width: 700px) {
+            .form-nova-turma form,
+            .form-container.form-nova-turma form { grid-template-columns: 1fr 1fr 1fr; gap: 12px 16px; }
+        }
+        .form-nova-turma form .form-group,
+        .form-container.form-nova-turma form .form-group { margin-bottom: 0; }
+        .form-nova-turma form .form-group.form-group-full,
+        .form-container.form-nova-turma form .form-group.form-group-full { grid-column: 1 / -1; }
+        .form-nova-turma form .btn-submit,
+        .form-container.form-nova-turma form .btn-submit { grid-column: 1 / -1; }
+        .form-nova-turma form .btn-cancel,
+        .form-container.form-nova-turma form .btn-cancel { grid-column: 1 / -1; margin-top: 0; }
+        .form-group label {
             display: block;
             color: #888;
             margin-bottom: 8px;
             font-size: 0.9em;
-        }}
-        .form-group input, .form-group select, .form-group textarea {{
+        }
+        .form-group input, .form-group select, .form-group textarea {
             width: 100%;
             padding: 12px;
             border: 1px solid rgba(255,255,255,0.1);
@@ -423,12 +443,12 @@ def get_form_nova_turma_html(produtos):
             background: rgba(0,0,0,0.3);
             color: #fff;
             font-size: 1em;
-        }}
-        .form-group input:focus, .form-group select:focus {{
+        }
+        .form-group input:focus, .form-group select:focus {
             outline: none;
             border-color: #39fda3;
-        }}
-        .btn-submit {{
+        }
+        .btn-submit {
             width: 100%;
             padding: 15px;
             background: #39fda3;
@@ -439,60 +459,60 @@ def get_form_nova_turma_html(produtos):
             font-weight: bold;
             cursor: pointer;
             transition: all 0.3s;
-        }}
-        .btn-submit:hover {{ background: #3db892; }}
-        .btn-cancel {{
+        }
+        .btn-submit:hover { background: #3db892; }
+        .btn-cancel {
             display: block;
             text-align: center;
             margin-top: 15px;
             color: #888;
             text-decoration: none;
-        }}
-        .btn-cancel:hover {{ color: #fff; }}
-        .alert {{
+        }
+        .btn-cancel:hover { color: #fff; }
+        .alert {
             padding: 15px;
             border-radius: 5px;
             margin-bottom: 20px;
             display: none;
-        }}
-        .alert-error {{ background: rgba(231, 76, 60, 0.2); color: #e74c3c; }}
-        .alert-success {{ background: rgba(78, 204, 163, 0.2); color: #39fda3; }}
-        .posicoes-elegiveis {{
+        }
+        .alert-error { background: rgba(231, 76, 60, 0.2); color: #e74c3c; }
+        .alert-success { background: rgba(78, 204, 163, 0.2); color: #39fda3; }
+        .posicoes-elegiveis {
             margin-top: 20px;
             padding: 15px;
             background: rgba(0,0,0,0.2);
             border-radius: 8px;
             border: 1px solid rgba(78, 204, 163, 0.3);
-        }}
-        .posicoes-elegiveis h3 {{
+        }
+        .posicoes-elegiveis h3 {
             color: #39fda3;
             font-size: 0.95em;
             margin-bottom: 8px;
-        }}
-        .posicoes-elegiveis p.hint {{
+        }
+        .posicoes-elegiveis p.hint {
             color: #888;
             font-size: 0.85em;
             margin-bottom: 12px;
-        }}
-        .posicoes-elegiveis table {{
+        }
+        .posicoes-elegiveis table {
             width: 100%;
             border-collapse: collapse;
             font-size: 0.9em;
-        }}
-        .posicoes-elegiveis th, .posicoes-elegiveis td {{
+        }
+        .posicoes-elegiveis th, .posicoes-elegiveis td {
             padding: 8px 10px;
             text-align: left;
             border-bottom: 1px solid rgba(255,255,255,0.06);
-        }}
-        .posicoes-elegiveis th {{
+        }
+        .posicoes-elegiveis th {
             color: #888;
             font-weight: 600;
-        }}
-        .posicoes-elegiveis input[type="checkbox"] {{
+        }
+        .posicoes-elegiveis input[type="checkbox"] {
             accent-color: #39fda3;
             cursor: pointer;
-        }}
-        .posicoes-elegiveis input[type="date"] {{
+        }
+        .posicoes-elegiveis input[type="date"] {
             padding: 6px 8px;
             background: rgba(0,0,0,0.3);
             border: 1px solid rgba(255,255,255,0.15);
@@ -500,8 +520,8 @@ def get_form_nova_turma_html(produtos):
             color: #fff;
             font-size: 0.85em;
             min-width: 130px;
-        }}
-        .posicoes-elegiveis .btn-aplicar-data {{
+        }
+        .posicoes-elegiveis .btn-aplicar-data {
             margin-bottom: 10px;
             padding: 6px 12px;
             font-size: 0.85em;
@@ -510,29 +530,61 @@ def get_form_nova_turma_html(produtos):
             border: 1px solid #39fda3;
             border-radius: 5px;
             cursor: pointer;
-        }}
-        .posicoes-elegiveis .btn-aplicar-data:hover {{
+        }
+        .posicoes-elegiveis .btn-aplicar-data:hover {
             background: rgba(78, 204, 163, 0.4);
-        }}
-        .posicoes-elegiveis .loading {{
+        }
+        .posicoes-elegiveis .loading {
             color: #888;
             padding: 10px 0;
-        }}
-        .posicoes-elegiveis .empty {{
+        }
+        .posicoes-elegiveis .empty {
             color: #888;
             padding: 10px 0;
-        }}
-        .posicoes-elegiveis .select-first {{
+        }
+        .posicoes-elegiveis .select-first {
             color: #666;
             font-style: italic;
-        }}
-    </style>
-</head>
-<body>
-    {get_navbar('turmas')}
-    {get_turmas_subnav('turmas')}
+        }
+        /* Responsivo: ajustes em telas menores */
+        @media (max-width: 900px) {
+            .form-nova-turma.form-container,
+            .form-container.form-nova-turma {
+                padding: 16px;
+                margin: 0;
+                max-width: 100%;
+            }
+            .form-nova-turma h2, .form-container.form-nova-turma h2 { font-size: 1.2em; margin-bottom: 16px; }
+            .form-nova-turma form, .form-container.form-nova-turma form { gap: 12px 16px; }
+            .form-group input, .form-group select, .form-group textarea { padding: 10px; font-size: 16px; }
+            .btn-submit { padding: 12px; font-size: 1em; }
+            .posicoes-elegiveis { padding: 12px; margin-top: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .posicoes-elegiveis table { font-size: 0.8em; min-width: 480px; }
+            .posicoes-elegiveis th, .posicoes-elegiveis td { padding: 6px 8px; }
+            .posicoes-elegiveis input[type="date"] { min-width: 110px; }
+        }
+        /* Telas muito pequenas: 1 coluna para caber na tela */
+        @media (max-width: 500px) {
+            .form-nova-turma form, .form-container.form-nova-turma form { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 768px) {
+            .posicoes-elegiveis { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .posicoes-elegiveis table { min-width: 520px; }
+        }
+        .form-nova-turma-page { margin: 40px auto; }
+        @media (max-width: 900px) {
+            .form-nova-turma-page { margin: 16px auto; }
+        }
+        /* Scroll dentro do form-container quando no modal */
+        #formModalContent .form-container.form-nova-turma {
+            max-height: calc(100vh - 48px);
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+    """
 
-    <div class="form-container">
+    form_card = f"""
+    <div class="form-container form-nova-turma">
         <h2>Criar Nova Turma</h2>
 
         <div id="alert" class="alert"></div>
@@ -556,7 +608,7 @@ def get_form_nova_turma_html(produtos):
                 <input type="date" name="data_inicio" id="data_inicio" required value="{datetime.now().strftime('%Y-%m-%d')}">
             </div>
 
-            <div class="form-group" id="posicoes-elegiveis-container">
+            <div class="form-group form-group-full" id="posicoes-elegiveis-container">
                 <div class="posicoes-elegiveis">
                     <h3>Posições abertas que serão replicadas</h3>
                     <p class="hint">Escolha a data em que cada posição entra na turma (replicação). Desmarque as que não quiser incluir.</p>
@@ -571,101 +623,103 @@ def get_form_nova_turma_html(produtos):
                 <input type="number" name="capital_base" step="0.01" value="1500">
             </div>
 
-            <div class="form-group">
+            <div class="form-group form-group-full">
                 <label>Descrição</label>
                 <textarea name="descricao" rows="3" placeholder="Descrição opcional..."></textarea>
             </div>
 
             <button type="submit" class="btn-submit">Criar Turma</button>
-            <a href="/turmas" class="btn-cancel">Cancelar</a>
+            <a href="{return_url}" class="btn-cancel" onclick="var o=document.getElementById('formModalOverlay');if(o&&o.style.display==='block'){{if(typeof formModalCloseNow==='function')formModalCloseNow();event.preventDefault();return false;}}">Cancelar</a>
         </form>
     </div>
+    """
 
+    form_script = """
     <script>
-        function showAlert(message, type) {{
+        function showAlert(message, type) {
             const alert = document.getElementById('alert');
             alert.className = 'alert alert-' + type;
             alert.textContent = message;
             alert.style.display = 'block';
-        }}
+        }
 
-        async function carregarPosicoesElegiveis() {{
+        async function carregarPosicoesElegiveis() {
             const produtoId = document.getElementById('produto_id').value;
             const dataInicio = document.getElementById('data_inicio').value;
             const container = document.getElementById('posicoes-elegiveis');
 
-            if (!produtoId || !dataInicio) {{
+            if (!produtoId || !dataInicio) {
                 container.innerHTML = '<span class="select-first">Selecione o produto e a data de início para carregar as posições elegíveis.</span>';
                 return;
-            }}
+            }
 
             container.innerHTML = '<span class="loading">Carregando posições...</span>';
-            try {{
-                const response = await fetch(`/api/turma/posicoes-elegiveis?produto_id=${{produtoId}}&data_inicio=${{dataInicio}}`);
+            try {
+                const response = await fetch(`/api/turma/posicoes-elegiveis?produto_id=${produtoId}&data_inicio=${dataInicio}`);
                 const result = await response.json();
-                if (!response.ok) {{
+                if (!response.ok) {
                     container.innerHTML = '<span class="empty">Erro ao carregar: ' + (result.erro || response.status) + '</span>';
                     return;
-                }}
+                }
                 const posicoes = result.posicoes || [];
-                if (posicoes.length === 0) {{
+                if (posicoes.length === 0) {
                     container.innerHTML = '<span class="empty">Nenhuma posição aberta elegível para esta data (posições com data de entrada anterior à data de início).</span>';
                     return;
-                }}
+                }
                 let html = '<button type="button" class="btn-aplicar-data" onclick="aplicarDataInicioTodas()">Usar data de início em todas</button>';
                 html += '<table><thead><tr><th></th><th>Ativo</th><th>Side</th><th>Data entrada</th><th>Data inserção na turma</th><th>Preço entrada</th><th>Qtd</th></tr></thead><tbody>';
-                for (const p of posicoes) {{
+                for (const p of posicoes) {
                     const qtd = p.quantidade != null ? Number(p.quantidade) : '—';
                     const preco = p.preco_entrada != null ? Number(p.preco_entrada).toFixed(4) : '—';
                     html += '<tr><td><input type="checkbox" name="posicao_sel" value="' + p.id + '" data-posicao-id="' + p.id + '" checked></td>';
                     html += '<td>' + (p.ativo || '—') + '</td><td>' + (p.side || '—') + '</td><td>' + (p.data_entrada || '—') + '</td>';
                     html += '<td><input type="date" class="data-insercao-input" data-posicao-id="' + p.id + '" value="' + dataInicio + '"></td>';
                     html += '<td>' + preco + '</td><td>' + qtd + '</td></tr>';
-                }}
+                }
                 html += '</tbody></table>';
                 container.innerHTML = html;
-            }} catch (err) {{
+            } catch (err) {
                 container.innerHTML = '<span class="empty">Erro de conexão: ' + err.message + '</span>';
-            }}
-        }}
+            }
+        }
 
-        function aplicarDataInicioTodas() {{
+        function aplicarDataInicioTodas() {
             const dataInicio = document.getElementById('data_inicio').value;
             if (!dataInicio) return;
-            document.querySelectorAll('.data-insercao-input').forEach(function(inp) {{ inp.value = dataInicio; }});
-        }}
+            document.querySelectorAll('.data-insercao-input').forEach(function(inp) { inp.value = dataInicio; });
+        }
 
         document.getElementById('produto_id').addEventListener('change', carregarPosicoesElegiveis);
         document.getElementById('data_inicio').addEventListener('change', carregarPosicoesElegiveis);
 
-        async function criarTurma(e) {{
+        async function criarTurma(e) {
             e.preventDefault();
             const form = e.target;
             const formData = new FormData(form);
             const dataInicio = formData.get('data_inicio');
 
             const checkboxes = form.querySelectorAll('input[name="posicao_sel"]:checked');
-            const posicoesConfig = Array.from(checkboxes).map(function(cb) {{
+            const posicoesConfig = Array.from(checkboxes).map(function(cb) {
                 const row = cb.closest('tr');
                 const dateInput = row ? row.querySelector('.data-insercao-input') : null;
                 const dataInsercao = dateInput && dateInput.value ? dateInput.value : dataInicio;
-                return {{
+                return {
                     posicao_id: parseInt(cb.getAttribute('data-posicao-id'), 10),
                     data_insercao: dataInsercao
-                }};
-            }});
+                };
+            });
 
-            if (posicoesConfig.length === 0) {{
+            if (posicoesConfig.length === 0) {
                 const total = form.querySelectorAll('input[name="posicao_sel"]').length;
-                if (total === 0) {{
+                if (total === 0) {
                     showAlert('Selecione produto e data de início e aguarde carregar as posições, ou inclua ao menos uma posição.', 'error');
-                }} else {{
+                } else {
                     showAlert('Marque ao menos uma posição para replicar na turma.', 'error');
-                }}
+                }
                 return;
-            }}
+            }
 
-            const data = {{
+            const data = {
                 produto_id: parseInt(formData.get('produto_id')),
                 nome: formData.get('nome'),
                 data_inicio: dataInicio,
@@ -673,28 +727,98 @@ def get_form_nova_turma_html(produtos):
                 descricao: formData.get('descricao') || null,
                 posicoes_config: posicoesConfig,
                 auto_fetch_prices: true
-            }};
+            };
 
-            try {{
-                const response = await fetch('/api/turma/criar', {{
+            try {
+                const response = await fetch('/api/turma/criar', {
                     method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
-                }});
+                });
 
                 const result = await response.json();
 
-                if (result.sucesso) {{
+                if (result.sucesso) {
                     showAlert('Turma criada com sucesso!', 'success');
                     setTimeout(() => window.location.href = '/turmas/' + result.turma_id, 1500);
-                }} else {{
+                } else {
                     showAlert('Erro: ' + result.erro, 'error');
-                }}
-            }} catch (err) {{
+                }
+            } catch (err) {
                 showAlert('Erro de conexão: ' + err.message, 'error');
-            }}
-        }}
+            }
+        }
     </script>
+    """
+
+    if as_inner:
+        return f"<style>{form_styles}</style>" + form_card + form_script
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nova Turma - Dashboard</title>
+    <style>
+        {get_base_styles()}
+        {form_styles}
+    </style>
+</head>
+<body>
+    {get_navbar('turmas')}
+    {get_turmas_subnav('turmas')}
+
+    <div class="form-container form-nova-turma form-nova-turma-page">
+        <h2>Criar Nova Turma</h2>
+
+        <div id="alert" class="alert"></div>
+
+        <form id="formTurma" onsubmit="criarTurma(event)">
+            <div class="form-group">
+                <label>Produto *</label>
+                <select name="produto_id" id="produto_id" required>
+                    <option value="">Selecione...</option>
+                    {options_html}
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Nome da Turma *</label>
+                <input type="text" name="nome" required placeholder="Ex: Memebot Turma 8">
+            </div>
+
+            <div class="form-group">
+                <label>Data de Início *</label>
+                <input type="date" name="data_inicio" id="data_inicio" required value="{datetime.now().strftime('%Y-%m-%d')}">
+            </div>
+
+            <div class="form-group form-group-full" id="posicoes-elegiveis-container">
+                <div class="posicoes-elegiveis">
+                    <h3>Posições abertas que serão replicadas</h3>
+                    <p class="hint">Escolha a data em que cada posição entra na turma (replicação). Desmarque as que não quiser incluir.</p>
+                    <div id="posicoes-elegiveis">
+                        <span class="select-first">Selecione o produto e a data de início para carregar as posições elegíveis.</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Capital Base (R$)</label>
+                <input type="number" name="capital_base" step="0.01" value="1500">
+            </div>
+
+            <div class="form-group form-group-full">
+                <label>Descrição</label>
+                <textarea name="descricao" rows="3" placeholder="Descrição opcional..."></textarea>
+            </div>
+
+            <button type="submit" class="btn-submit">Criar Turma</button>
+            <a href="{return_url}" class="btn-cancel">Cancelar</a>
+        </form>
+    </div>
+
+    {form_script}
 </body>
 </html>"""
 
@@ -2069,7 +2193,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
                     <div class="gear-panel-group">
                         <div class="gear-panel-title">Aloca&ccedil;&atilde;o &amp; Turmas</div>
                         <a href="/alocacao/nova?produto_id={produto_id}"><span class="gear-icon gear-accent">+</span> Nova Aloca&ccedil;&atilde;o</a>
-                        <a href="/turmas/nova"><span class="gear-icon gear-accent">+</span> Nova Turma</a>
+                        <a href="/turmas/nova?produto_id={produto_id}"><span class="gear-icon gear-accent">+</span> Nova Turma</a>
                     </div>
                     <div class="gear-panel-group">
                         <div class="gear-panel-title">Produto</div>

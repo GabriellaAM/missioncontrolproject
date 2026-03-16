@@ -753,9 +753,9 @@ def _get_form_modal_overlay_script(produto_id):
     """Script e HTML para abrir formularios em modal na mesma pagina (sem recarregar o fundo)."""
     return f'''
     <div id="formModalOverlay" style="display:none; position:fixed; inset:0; z-index:9999;">
-        <div class="form-page-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);" onclick="formModalClose(event)"></div>
-        <div class="form-page-modal" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;overflow-y:auto;pointer-events:none;">
-            <div class="form-modal-card" style="pointer-events:auto;max-width:95%;" onclick="event.stopPropagation()">
+        <div class="form-page-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);cursor:pointer;z-index:1;" onclick="formModalClose(event)"></div>
+        <div class="form-page-modal" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;overflow:hidden;pointer-events:none;z-index:2;">
+            <div class="form-modal-card" style="pointer-events:auto;width:100%;max-width:95vw;margin:auto;overflow:visible;" onclick="event.stopPropagation()">
                 <div id="formModalContent"></div>
             </div>
         </div>
@@ -769,13 +769,14 @@ def _get_form_modal_overlay_script(produto_id):
                 const url = new URL(a.href);
                 if (url.origin !== location.origin) return false;
                 if (url.pathname.indexOf('/alocacao/') >= 0) return false;
-                const formPaths = ['/posicao/', '/posicoes/', '/stop/', '/atr/', '/produto/'];
+                const formPaths = ['/posicao/', '/posicoes/', '/stop/', '/atr/', '/produto/', '/turmas/nova'];
                 return formPaths.some(p => url.pathname.indexOf(p) === 0);
             }} catch (e) {{ return false; }}
         }}
         function formModalOpen(url) {{
             const sep = url.indexOf('?') >= 0 ? '&' : '?';
-            fetch(url + sep + '_modal=1').then(r => r.text()).then(html => {{
+            const returnPath = encodeURIComponent(location.pathname || '/');
+            fetch(url + sep + '_modal=1&return=' + returnPath).then(r => r.text()).then(html => {{
                 const wrap = document.createElement('div');
                 wrap.innerHTML = html;
                 const scripts = wrap.querySelectorAll('script');
@@ -6271,7 +6272,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Formulario nova turma
         if path == '/turmas/nova':
             produtos = repo.listar_produtos()
-            self._send_html(get_form_nova_turma_html(produtos))
+            is_modal = query.get('_modal', [''])[0] == '1'
+            return_url = query.get('return', [''])[0]
+            produto_id = query.get('produto_id', [''])[0]
+            if not return_url and produto_id:
+                return_url = f'/produto/{produto_id}'
+            if not return_url:
+                return_url = '/'
+            inner = get_form_nova_turma_html(produtos, as_inner=True, return_url=return_url)
+            self._send_html(inner if is_modal else get_form_nova_turma_html(produtos, return_url=return_url))
             return
 
         # Comparar turmas
