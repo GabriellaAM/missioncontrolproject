@@ -754,33 +754,56 @@ def _get_form_modal_overlay_script(produto_id):
     return f'''
     <div id="formModalOverlay" style="display:none; position:fixed; inset:0; z-index:9999;">
         <div class="form-page-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);cursor:pointer;z-index:1;" onclick="formModalClose(event)"></div>
-        <div class="form-page-modal" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;overflow:hidden;pointer-events:none;z-index:2;">
-            <div class="form-modal-card" style="pointer-events:auto;width:100%;max-width:95vw;margin:auto;overflow:visible;" onclick="event.stopPropagation()">
+        <div class="form-page-modal" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto;pointer-events:none;z-index:2;">
+            <div class="form-modal-card" style="pointer-events:auto;max-width:95vw;margin:auto;overflow:visible;display:flex;flex-direction:column;align-items:center;" onclick="event.stopPropagation()">
                 <div id="formModalContent"></div>
             </div>
         </div>
     </div>
+    <style>
+        #formModalContent .form-modal-loader {{
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 40px; color: #5a6a7a; font-size: 0.9em;
+        }}
+        #formModalContent .form-modal-loader .loader-spinner {{
+            width: 36px; height: 36px;
+            border: 3px solid rgba(78,204,163,0.15);
+            border-top-color: #39fda3;
+            border-radius: 50%;
+            animation: formModalSpin 0.8s linear infinite;
+        }}
+        #formModalContent .form-modal-loader .loader-text {{ margin-top: 14px; }}
+        @keyframes formModalSpin {{ to {{ transform: rotate(360deg); }} }}
+    </style>
     <script>
     (function() {{
         const produtoId = {produto_id};
+        const loaderHtml = '<div class="form-modal-loader"><div class="loader-spinner"></div><div class="loader-text">Carregando...</div></div>';
         function isFormLink(a) {{
             if (!a || a.tagName !== 'A' || !a.href) return false;
             try {{
                 const url = new URL(a.href);
                 if (url.origin !== location.origin) return false;
                 if (url.pathname.indexOf('/alocacao/') >= 0) return false;
+                const path = url.pathname;
+                if (path === '/' || path === '') return false;
+                if (/^\\/produto\\/\\d+\\/?$/.test(path)) return false;
                 const formPaths = ['/posicao/', '/posicoes/', '/stop/', '/atr/', '/produto/', '/turmas/nova'];
-                return formPaths.some(p => url.pathname.indexOf(p) === 0);
+                return formPaths.some(p => path.indexOf(p) === 0);
             }} catch (e) {{ return false; }}
         }}
         function formModalOpen(url) {{
+            const overlay = document.getElementById('formModalOverlay');
+            const content = document.getElementById('formModalContent');
+            content.innerHTML = loaderHtml;
+            overlay.style.display = 'block';
+            document.body.style.overflow = 'hidden';
             const sep = url.indexOf('?') >= 0 ? '&' : '?';
             const returnPath = encodeURIComponent(location.pathname || '/');
             fetch(url + sep + '_modal=1&return=' + returnPath).then(r => r.text()).then(html => {{
                 const wrap = document.createElement('div');
                 wrap.innerHTML = html;
                 const scripts = wrap.querySelectorAll('script');
-                const content = document.getElementById('formModalContent');
                 content.innerHTML = '';
                 wrap.childNodes.forEach(n => {{
                     if (n.tagName === 'SCRIPT') return;
@@ -792,9 +815,8 @@ def _get_form_modal_overlay_script(produto_id):
                     else ns.textContent = s.textContent;
                     content.appendChild(ns);
                 }});
-                document.getElementById('formModalOverlay').style.display = 'block';
-                document.body.style.overflow = 'hidden';
             }}).catch(e => {{
+                content.innerHTML = '<p style="color:#e74c3c;padding:20px;">Erro ao carregar: ' + (e.message || 'Erro desconhecido') + '</p>';
                 alert('Erro ao carregar: ' + e.message);
             }});
         }}
@@ -815,17 +837,17 @@ def _get_form_modal_overlay_script(produto_id):
                 if (url.origin !== location.origin) return;
                 const path = url.pathname;
                 const prodPath = '/produto/' + produtoId;
+                if (isFormLink(a)) {{
+                    e.preventDefault();
+                    formModalOpen(a.href);
+                    return;
+                }}
                 if (path === prodPath || path === prodPath + '/' || path.indexOf(prodPath + '/') === 0) {{
                     if (document.getElementById('formModalOverlay').style.display === 'block') {{
                         e.preventDefault();
                         formModalCloseNow();
                         if (path !== location.pathname) location.href = a.href;
                     }}
-                    return;
-                }}
-                if (isFormLink(a)) {{
-                    e.preventDefault();
-                    formModalOpen(a.href);
                 }}
             }} catch (err) {{}}
         }}, true);
@@ -1292,9 +1314,10 @@ def get_form_page_with_background(inner_content, produto_id, title="Form"):
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         {get_favicon_tag()}
         <title>{title}</title>
+        <style>html, body {{ background: #1a1a2e; }}</style>
         <style>{get_base_styles()}</style>
     </head>
-    <body>
+    <body style="background:#1a1a2e;">
         <iframe class="form-page-bg" src="{produto_url}" title="Fundo" onload="document.getElementById('form-bg-placeholder').classList.add('hidden')"></iframe>
         <div id="form-bg-placeholder" class="form-page-bg-placeholder"></div>
         <div class="form-page-overlay"></div>
@@ -2338,6 +2361,7 @@ def get_lista_produtos_html(produtos, acao="editar"):
                 </div>
             </div>
         </div>
+        {_get_form_modal_overlay_script(0)}
     </body>
     </html>
     """
