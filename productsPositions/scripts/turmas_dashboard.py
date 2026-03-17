@@ -2149,15 +2149,16 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
         .gear-panel .gear-accent {{ color: #39fda3; }}
 
         .loading-overlay {{
-            text-align: center; padding: 60px 20px; color: #888;
+            text-align: center; padding: 20px; color: #888;
             min-height: 350px; display: flex; flex-direction: column;
             align-items: center; justify-content: center;
-            background: #1a1a2e;
+            gap: 12px; background: #1a1a2e;
         }}
         .loading-overlay .spinner {{
-            border: 3px solid #2a2a4a; border-top: 3px solid #39fda3;
-            border-radius: 50%; width: 30px; height: 30px;
-            animation: spn 0.8s linear infinite; margin: 0 auto 15px;
+            flex-shrink: 0; border: 3px solid #2a2a4a;
+            border-top: 3px solid #39fda3; border-radius: 50%;
+            width: 32px; height: 32px; min-width: 32px; min-height: 32px;
+            animation: spn 0.8s linear infinite; margin: 0;
         }}
         @keyframes spn {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
         .empty-msg {{ text-align: center; color: #666; padding: 40px; font-style: italic; }}
@@ -2225,7 +2226,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
 
     <div class="dash-content">
         <div class="summary-row" id="summaryCards" style="position:relative;">
-            <div id="cardsLoading" class="loading-overlay" style="position:absolute;inset:0;min-height:80px;display:none;z-index:5;"><div class="spinner"></div>Carregando...</div>
+            <div id="cardsLoading" class="loading-overlay" style="position:absolute;inset:0;min-height:100px;display:none;z-index:5;"><div class="spinner"></div>Carregando...</div>
             <div class="summary-card">
                 <div class="s-value {rentab_class}" id="card-rentab">{rentab_str}</div>
                 <div class="s-label">Rentabilidade Acumulada</div>
