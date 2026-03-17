@@ -2152,6 +2152,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
             text-align: center; padding: 60px 20px; color: #888;
             min-height: 350px; display: flex; flex-direction: column;
             align-items: center; justify-content: center;
+            background: rgba(26, 26, 46, 0.95);
         }}
         .loading-overlay .spinner {{
             border: 3px solid #2a2a4a; border-top: 3px solid #39fda3;
