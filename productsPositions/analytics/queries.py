@@ -468,6 +468,10 @@ def posicoes_abertas(produto_id=None):
         ativos_sem_stop = df.loc[df['id'].apply(lambda x: stops_map.get(int(x)) is None), 'ativo'].tolist() if 'ativo' in df.columns else []
         stops_por_ativo = _batch_load_stops_por_ativo(repo, produto_id, ativos_sem_stop) if produto_id and ativos_sem_stop else {}
         def _stop_val(row):
+            # Só exibir stop se a posição tiver ATR configurado (atr_multiplier)
+            atr_mult = row.get('atr_multiplier')
+            if pd.isna(atr_mult) or atr_mult is None:
+                return None
             pid, ativo = row.get('id'), row.get('ativo')
             val = stops_map.get(int(pid)) if pd.notna(pid) else None
             if val is None and ativo is not None and pd.notna(ativo):
@@ -703,7 +707,11 @@ def posicoes_fechadas(produto_id=None):
         # OPTIMIZED: Batch load stops in single query
         posicao_ids = df['id'].tolist()
         stops_map = _batch_load_stops(repo, posicao_ids)
-        df['stop_atual'] = df['id'].apply(lambda x: stops_map.get(int(x)))
+        def _stop_val_fechadas(row):
+            if pd.isna(row.get('atr_multiplier')) or row.get('atr_multiplier') is None:
+                return None
+            return stops_map.get(int(row['id']))
+        df['stop_atual'] = df.apply(_stop_val_fechadas, axis=1)
         
         # Para produtos Spot, calcular preco_saida_total (quantidade * preco_saida)
         if tipo_spot:

@@ -564,6 +564,7 @@ class TurmasService:
                 p.data_saida,
                 p.preco_saida,
                 p.status as status_posicao,
+                p.atr_multiplier,
                 pap.quantidade,
                 pap.preco_entrada_total
             FROM carteira_turma ct

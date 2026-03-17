@@ -277,7 +277,12 @@ def _enrich_carteira_trades(carteira, precos_atuais=None, repo=None):
         quantidade = trade.get('quantidade')
 
         pos_id = trade.get('posicao_id')
-        trade['stop_atual'] = stops_map.get(int(pos_id)) if pos_id else None
+        stop_val = stops_map.get(int(pos_id)) if pos_id else None
+        # Só exibir stop se a posição tiver ATR configurado (atr_multiplier)
+        atr_mult = trade.get('atr_multiplier')
+        if atr_mult is None or pd.isna(atr_mult):
+            stop_val = None
+        trade['stop_atual'] = stop_val
 
         # preco_entrada_total = quantidade * preco_entrada (mesmo critério do sistema antigo)
         trade['preco_entrada_total'] = (quantidade * preco_entrada) if quantidade and preco_entrada else None
