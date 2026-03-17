@@ -679,13 +679,14 @@ def get_form_nova_turma_html(produtos, as_inner=False, return_url='/'):
                     return;
                 }
                 let html = '<button type="button" class="btn-aplicar-data" onclick="aplicarDataInicioTodas()">Usar data de início em todas</button>';
-                html += '<table><thead><tr><th></th><th>Ativo</th><th>Side</th><th>Status</th><th>Data entrada</th><th>Data inserção na turma</th><th>Preço entrada</th><th>Qtd</th></tr></thead><tbody>';
+                html += '<table><thead><tr><th></th><th>Ativo</th><th>Side</th><th>Status</th><th>Data entrada</th><th>Data saída</th><th>Data inserção na turma</th><th>Preço entrada</th><th>Qtd</th></tr></thead><tbody>';
                 for (const p of posicoes) {
                     const qtd = p.quantidade != null ? Number(p.quantidade) : '—';
                     const preco = p.preco_entrada != null ? Number(p.preco_entrada).toFixed(4) : '—';
                     const statusLabel = (p.status || '').toLowerCase() === 'closed' ? 'Fechada' : 'Aberta';
+                    const dataSaida = p.data_saida ? String(p.data_saida).substring(0, 10) : '—';
                     html += '<tr><td><input type="checkbox" name="posicao_sel" value="' + p.id + '" data-posicao-id="' + p.id + '" checked></td>';
-                    html += '<td>' + (p.ativo || '—') + '</td><td>' + (p.side || '—') + '</td><td>' + statusLabel + '</td><td>' + (p.data_entrada || '—') + '</td>';
+                    html += '<td>' + (p.ativo || '—') + '</td><td>' + (p.side || '—') + '</td><td>' + statusLabel + '</td><td>' + (p.data_entrada || '—') + '</td><td>' + dataSaida + '</td>';
                     html += '<td><input type="date" class="data-insercao-input" data-posicao-id="' + p.id + '" value="' + dataInicio + '"></td>';
                     html += '<td>' + preco + '</td><td>' + qtd + '</td></tr>';
                 }

@@ -253,9 +253,10 @@ class TurmasService:
         """
         Lista posições do produto que fizeram parte desde a data de início da turma.
 
-        Inclui posições abertas E fechadas: qualquer posição com data_entrada anterior
-        à data_inicio da turma. Isso permite replicar ativos que já passaram pelo
-        produto, mesmo que tenham sido fechados posteriormente.
+        Inclui:
+        - Posições abertas com data_entrada anterior à data_inicio.
+        - Posições fechadas apenas se data_saida >= data_inicio (fechadas a partir
+          do início da turma), pois só essas estiveram no produto durante o período.
 
         Usado para selecionar quais posições replicar ao criar ou editar uma turma.
 
@@ -286,8 +287,12 @@ class TurmasService:
                 LEFT JOIN posicao_atributos_produto pap ON p.id = pap.posicao_id
                 WHERE p.produto_id = %s
                 AND date(p.data_entrada) < date(%s)
+                AND (
+                    p.status = 'open'
+                    OR (p.status = 'closed' AND p.data_saida IS NOT NULL AND date(p.data_saida) >= date(%s))
+                )
                 ORDER BY p.data_entrada DESC
-            """, (produto_id, data_inicio))
+            """, (produto_id, data_inicio, data_inicio))
             columns = [desc[0] for desc in cursor.description]
             result = [dict(zip(columns, row)) for row in cursor.fetchall()]
             conn.commit()
