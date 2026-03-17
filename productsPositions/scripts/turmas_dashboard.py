@@ -574,11 +574,24 @@ def get_form_nova_turma_html(produtos, as_inner=False, return_url='/'):
         @media (max-width: 900px) {
             .form-nova-turma-page { margin: 16px auto; }
         }
-        /* Scroll dentro do form-container quando no modal */
+        /* Modal: adaptar ao tamanho da tabela de ativos */
         #formModalContent .form-container.form-nova-turma {
+            max-width: min(95vw, 920px);
+            width: 100%;
+            min-width: 0;
             max-height: calc(100vh - 48px);
             overflow-y: auto;
+            overflow-x: hidden;
             -webkit-overflow-scrolling: touch;
+        }
+        #formModalContent .posicoes-elegiveis {
+            width: 100%;
+            min-width: 0;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        #formModalContent .posicoes-elegiveis table {
+            min-width: 520px;
         }
     """
 
@@ -609,8 +622,8 @@ def get_form_nova_turma_html(produtos, as_inner=False, return_url='/'):
 
             <div class="form-group form-group-full" id="posicoes-elegiveis-container">
                 <div class="posicoes-elegiveis">
-                    <h3>Posições abertas que serão replicadas</h3>
-                    <p class="hint">Escolha a data em que cada posição entra na turma (replicação). Desmarque as que não quiser incluir.</p>
+                    <h3>Posições elegíveis para replicação</h3>
+                    <p class="hint">Inclui posições abertas e fechadas desde a data de início. Escolha a data de inserção de cada posição na turma. Desmarque as que não quiser incluir. Pode criar a turma sem posições e adicionar depois.</p>
                     <div id="posicoes-elegiveis">
                         <span class="select-first">Selecione o produto e a data de início para carregar as posições elegíveis.</span>
                     </div>
@@ -662,16 +675,17 @@ def get_form_nova_turma_html(produtos, as_inner=False, return_url='/'):
                 }
                 const posicoes = result.posicoes || [];
                 if (posicoes.length === 0) {
-                    container.innerHTML = '<span class="empty">Nenhuma posição aberta elegível para esta data (posições com data de entrada anterior à data de início).</span>';
+                    container.innerHTML = '<span class="empty">Nenhuma posição elegível para esta data. Você pode criar a turma sem posições e adicionar depois, ou posições podem ser incluídas quando forem abertas.</span>';
                     return;
                 }
                 let html = '<button type="button" class="btn-aplicar-data" onclick="aplicarDataInicioTodas()">Usar data de início em todas</button>';
-                html += '<table><thead><tr><th></th><th>Ativo</th><th>Side</th><th>Data entrada</th><th>Data inserção na turma</th><th>Preço entrada</th><th>Qtd</th></tr></thead><tbody>';
+                html += '<table><thead><tr><th></th><th>Ativo</th><th>Side</th><th>Status</th><th>Data entrada</th><th>Data inserção na turma</th><th>Preço entrada</th><th>Qtd</th></tr></thead><tbody>';
                 for (const p of posicoes) {
                     const qtd = p.quantidade != null ? Number(p.quantidade) : '—';
                     const preco = p.preco_entrada != null ? Number(p.preco_entrada).toFixed(4) : '—';
+                    const statusLabel = (p.status || '').toLowerCase() === 'closed' ? 'Fechada' : 'Aberta';
                     html += '<tr><td><input type="checkbox" name="posicao_sel" value="' + p.id + '" data-posicao-id="' + p.id + '" checked></td>';
-                    html += '<td>' + (p.ativo || '—') + '</td><td>' + (p.side || '—') + '</td><td>' + (p.data_entrada || '—') + '</td>';
+                    html += '<td>' + (p.ativo || '—') + '</td><td>' + (p.side || '—') + '</td><td>' + statusLabel + '</td><td>' + (p.data_entrada || '—') + '</td>';
                     html += '<td><input type="date" class="data-insercao-input" data-posicao-id="' + p.id + '" value="' + dataInicio + '"></td>';
                     html += '<td>' + preco + '</td><td>' + qtd + '</td></tr>';
                 }
@@ -708,15 +722,7 @@ def get_form_nova_turma_html(produtos, as_inner=False, return_url='/'):
                 };
             });
 
-            if (posicoesConfig.length === 0) {
-                const total = form.querySelectorAll('input[name="posicao_sel"]').length;
-                if (total === 0) {
-                    showAlert('Selecione produto e data de início e aguarde carregar as posições, ou inclua ao menos uma posição.', 'error');
-                } else {
-                    showAlert('Marque ao menos uma posição para replicar na turma.', 'error');
-                }
-                return;
-            }
+            // posicoesConfig pode ser vazio - permite criar turma sem posições iniciais
 
             const data = {
                 produto_id: parseInt(formData.get('produto_id')),
@@ -794,8 +800,8 @@ def get_form_nova_turma_html(produtos, as_inner=False, return_url='/'):
 
             <div class="form-group form-group-full" id="posicoes-elegiveis-container">
                 <div class="posicoes-elegiveis">
-                    <h3>Posições abertas que serão replicadas</h3>
-                    <p class="hint">Escolha a data em que cada posição entra na turma (replicação). Desmarque as que não quiser incluir.</p>
+                    <h3>Posições elegíveis para replicação</h3>
+                    <p class="hint">Inclui posições abertas e fechadas desde a data de início. Escolha a data de inserção de cada posição na turma. Desmarque as que não quiser incluir. Pode criar a turma sem posições e adicionar depois.</p>
                     <div id="posicoes-elegiveis">
                         <span class="select-first">Selecione o produto e a data de início para carregar as posições elegíveis.</span>
                     </div>

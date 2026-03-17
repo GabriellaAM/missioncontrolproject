@@ -95,7 +95,9 @@ class TurmasService:
                 - avisos: List[str] com avisos sobre fallbacks
 
         Raises:
-            ValueError: Se posicoes_config não for fornecido ou estiver vazio
+            ValueError: Se posicoes_config não for fornecido ou estiver vazio (apenas para itens
+                       inválidos quando há itens; posicoes_config vazio é permitido para criar
+                       turma sem posições iniciais)
 
         Example:
             resultado = service.criar_turma(
@@ -110,14 +112,10 @@ class TurmasService:
             )
             # resultado = {'turma_id': 42, 'precos_resolvidos': [...], 'avisos': [...]}
         """
-        # Validar posicoes_config é obrigatório
-        if posicoes_config is None or len(posicoes_config) == 0:
-            raise ValueError(
-                "posicoes_config é obrigatório. Use /api/turma/posicoes-elegiveis para "
-                "listar posições elegíveis."
-            )
+        # posicoes_config pode ser vazio ou None - permite criar turma sem posições iniciais
+        posicoes_config = posicoes_config or []
 
-        # Validar cada configuração de posição
+        # Validar cada configuração de posição (quando houver itens)
         for i, config in enumerate(posicoes_config):
             if 'posicao_id' not in config:
                 raise ValueError(f"posicoes_config[{i}]: posicao_id é obrigatório")
@@ -253,16 +251,20 @@ class TurmasService:
 
     def listar_posicoes_elegiveis(self, produto_id: int, data_inicio: str) -> List[Dict]:
         """
-        Lista posições abertas de um produto anteriores a uma data.
+        Lista posições do produto que fizeram parte desde a data de início da turma.
 
-        Usado para selecionar quais posições replicar ao criar uma turma.
+        Inclui posições abertas E fechadas: qualquer posição com data_entrada anterior
+        à data_inicio da turma. Isso permite replicar ativos que já passaram pelo
+        produto, mesmo que tenham sido fechados posteriormente.
+
+        Usado para selecionar quais posições replicar ao criar ou editar uma turma.
 
         Args:
             produto_id: ID do produto
             data_inicio: Data de início da turma (YYYY-MM-DD)
 
         Returns:
-            Lista de dicts com dados das posições elegíveis
+            Lista de dicts com dados das posições elegíveis (abertas e fechadas)
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -276,13 +278,13 @@ class TurmasService:
                     p.exchange_symbol,
                     p.side,
                     p.data_entrada,
+                    p.data_saida,
                     p.preco_entrada,
                     p.status,
                     pap.quantidade
                 FROM posicoes p
                 LEFT JOIN posicao_atributos_produto pap ON p.id = pap.posicao_id
                 WHERE p.produto_id = %s
-                AND p.status = 'open'
                 AND date(p.data_entrada) < date(%s)
                 ORDER BY p.data_entrada DESC
             """, (produto_id, data_inicio))

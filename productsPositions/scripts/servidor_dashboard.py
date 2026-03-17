@@ -753,9 +753,9 @@ def _get_form_modal_overlay_script(produto_id):
     return f'''
     <div id="formModalOverlay" style="display:none; position:fixed; inset:0; z-index:9999;">
         <div class="form-page-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);cursor:pointer;z-index:1;" onclick="formModalClose(event)"></div>
-        <div class="form-page-modal" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto;pointer-events:none;z-index:2;">
-            <div class="form-modal-card" style="pointer-events:auto;max-width:95vw;margin:auto;overflow:visible;display:flex;flex-direction:column;align-items:center;" onclick="event.stopPropagation()">
-                <div id="formModalContent"></div>
+        <div class="form-page-modal" style="position:fixed;inset:0;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto;pointer-events:none;z-index:2;">
+            <div class="form-modal-card" style="pointer-events:auto;max-width:95vw;width:fit-content;margin:auto;overflow:visible;display:flex;flex-direction:column;align-items:stretch;" onclick="event.stopPropagation()">
+                <div id="formModalContent" style="min-width:0;"></div>
             </div>
         </div>
     </div>
@@ -5540,9 +5540,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 produto_id = int(data.get('produto_id'))
                 data_inicio = data.get('data_inicio')
 
-                # Retrocompatibilidade: se posicoes_config ausente ou vazio, preencher com posições elegíveis
+                # posicoes_config: se ausente, preencher com elegíveis (retrocompat)
+                # se enviado explicitamente (mesmo vazio []), respeitar - permite criar turma sem posições
                 posicoes_config = data.get('posicoes_config')
-                if not posicoes_config:
+                if posicoes_config is None:
                     posicoes = turmas_service.listar_posicoes_elegiveis(produto_id, data_inicio)
                     posicoes_config = [
                         {'posicao_id': p['id'], 'data_insercao': data_inicio}
