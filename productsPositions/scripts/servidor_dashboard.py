@@ -6265,16 +6265,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
                 if turmas_produto:
                     try:
-                        reconciliar_posicoes_com_alocacoes(repo, produto_id)
-                        try:
-                            display_posicoes_abertas(produto_id, formatar=False, filtrar_colunas=False)
-                        except Exception:
-                            pass
-
-                        try:
-                            turmas_service.reconciliar_posicoes_com_turmas(produto_id, verbose=True)
-                        except Exception as e_reconciliar:
-                            print(f"[DASHBOARD] Aviso: reconciliação turmas falhou: {e_reconciliar}", flush=True)
+                        # Para grupo Soros: sync e reconciliação em TODOS os members (Spot 1 e Spot 2)
+                        ids_para_sync = [produto_id]
+                        if soros_gcfg:
+                            for member_name in soros_gcfg['members'][1:]:
+                                mid = _get_soros_id_by_name(repo, member_name)
+                                if mid and mid != produto_id:
+                                    ids_para_sync.append(mid)
+                        for pid in ids_para_sync:
+                            reconciliar_posicoes_com_alocacoes(repo, pid)
+                            try:
+                                display_posicoes_abertas(pid, formatar=False, filtrar_colunas=False)
+                            except Exception:
+                                pass
+                            try:
+                                turmas_service.reconciliar_posicoes_com_turmas(pid, verbose=True)
+                            except Exception as e_reconciliar:
+                                print(f"[DASHBOARD] Aviso: reconciliação turmas produto {pid} falhou: {e_reconciliar}", flush=True)
 
                         rentabilidade_service = RentabilidadeService(db_url=repo.db_url)
                         primeira_turma_id = turmas_produto[0]['id']
