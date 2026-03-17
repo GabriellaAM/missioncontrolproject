@@ -1535,28 +1535,31 @@ def get_rentabilidade_historica_html(turmas_resumo):
 
         function baixarExcel() {{
             const btn = document.getElementById('btnExcel');
-            const status = document.getElementById('statusAtualizar');
-
+            const toast = document.createElement('div');
+            toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#16213e;border:1px solid #39fda3;color:#39fda3;padding:14px 24px;border-radius:10px;z-index:9999;font-size:.9em;box-shadow:0 4px 16px rgba(0,0,0,.5);';
+            toast.textContent = 'Preparando download...';
+            document.body.appendChild(toast);
             btn.disabled = true;
             btn.textContent = '⏳ Gerando...';
-            status.textContent = 'Gerando planilha Excel...';
-            status.style.color = '#3498db';
-
-            // Criar link temporário para download
-            const link = document.createElement('a');
-            link.href = '/api/rentabilidade/excel';
-            link.download = 'rentabilidade_turmas.xlsx';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-
-            // Restaurar botão após 2s
-            setTimeout(() => {{
-                btn.disabled = false;
-                btn.textContent = '📥 Baixar Excel';
-                status.textContent = '✓ Download iniciado';
-                status.style.color = '#39fda3';
-            }}, 2000);
+            fetch('/api/rentabilidade/excel')
+                .then(r => {{ if (!r.ok) throw new Error('Erro ao gerar planilha'); return r.blob(); }})
+                .then(blob => {{
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = 'rentabilidade_turmas.xlsx';
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                    toast.innerHTML = '<b style="color:#39fda3;">✓</b> Download iniciado';
+                    setTimeout(() => toast.remove(), 3000);
+                }})
+                .catch(e => {{
+                    toast.innerHTML = '<b style="color:#ff6b6b;">Erro:</b> ' + (e.message || 'Falha no download');
+                    setTimeout(() => toast.remove(), 5000);
+                }})
+                .finally(() => {{
+                    btn.disabled = false;
+                    btn.textContent = '📥 Baixar Excel';
+                }});
         }}
 
         async function atualizarCotacoes() {{
@@ -2201,7 +2204,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
                     </div>
                     <div class="gear-panel-group">
                         <div class="gear-panel-title">Exportar</div>
-                        <a href="/api/export/excel?produto_id={produto_id}" download><span class="gear-icon">&#8595;</span> Baixar Excel (Rentab. + Posi&ccedil;&otilde;es)</a>
+                        <a href="#" onclick="baixarExcelComToast('/api/export/excel?produto_id={produto_id}', 'rentabilidade_posicoes.xlsx'); toggleGearMenu(); return false;"><span class="gear-icon">&#8595;</span> Baixar Excel (Rentab. + Posi&ccedil;&otilde;es)</a>
                     </div>
                     <div class="gear-panel-group">
                         <div class="gear-panel-title">Aloca&ccedil;&atilde;o &amp; Turmas</div>

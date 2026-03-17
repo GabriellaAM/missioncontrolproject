@@ -757,6 +757,38 @@ def _get_preencher_precos_js():
     '''
 
 
+def _get_excel_download_toast_js():
+    """Retorna o JavaScript para download Excel com toast de feedback."""
+    return '''
+    <script>
+    function baixarExcelComToast(url, filename) {
+        var toast = document.createElement('div');
+        toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#16213e;border:1px solid #39fda3;color:#39fda3;padding:14px 24px;border-radius:10px;z-index:9999;font-size:.9em;box-shadow:0 4px 16px rgba(0,0,0,.5);';
+        toast.textContent = 'Preparando download...';
+        document.body.appendChild(toast);
+        fetch(url)
+            .then(function(r) {
+                if (!r.ok) throw new Error('Erro ao gerar planilha');
+                return r.blob();
+            })
+            .then(function(blob) {
+                var a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = filename || 'download.xlsx';
+                a.click();
+                URL.revokeObjectURL(a.href);
+                toast.innerHTML = '<b style="color:#39fda3;">✓</b> Download iniciado';
+                setTimeout(function() { toast.remove(); }, 3000);
+            })
+            .catch(function(e) {
+                toast.innerHTML = '<b style="color:#ff6b6b;">Erro:</b> ' + (e.message || 'Falha no download');
+                setTimeout(function() { toast.remove(); }, 5000);
+            });
+    }
+    </script>
+    '''
+
+
 def _get_form_modal_overlay_script(produto_id):
     """Script e HTML para abrir formularios em modal na mesma pagina (sem recarregar o fundo)."""
     return f'''
@@ -1941,6 +1973,7 @@ def get_produto_html(produto, visualizacoes, repo):
 
     {_get_form_modal_overlay_script(produto_id)}
     {_get_preencher_precos_js()}
+    {_get_excel_download_toast_js()}
     </body>
     </html>
     """
@@ -2027,6 +2060,7 @@ def get_visualizacao_html(produto, visualizacao, df_viz):
 
     {_get_form_modal_overlay_script(produto_id)}
     {_get_preencher_precos_js()}
+    {_get_excel_download_toast_js()}
     </body>
     </html>
     """

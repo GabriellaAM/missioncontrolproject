@@ -258,7 +258,7 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
                     </div>
                     <div class="gear-panel-group">
                         <div class="gear-panel-title">Exportar</div>
-                        <a href="/api/export/excel?produto_id={produto_id}" download><span class="gear-icon">&#8595;</span> Baixar Excel (Rentab. + Posi&ccedil;&otilde;es)</a>
+                        <a href="#" onclick="baixarExcelComToast('/api/export/excel?produto_id={produto_id}', 'rentabilidade_posicoes.xlsx'); toggleGearMenu(); return false;"><span class="gear-icon">&#8595;</span> Baixar Excel (Rentab. + Posi&ccedil;&otilde;es)</a>
                     </div>
                     <div class="gear-panel-group">
                         <div class="gear-panel-title">Produto</div>
