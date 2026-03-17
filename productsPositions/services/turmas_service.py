@@ -178,16 +178,28 @@ class TurmasService:
             # Adicionar cada posição com sua configuração resolvida
             for config in posicoes_config:
                 preco_info = config.get('_preco_resolvido', {})
+                posicao_id = config['posicao_id']
+                # Se posição original está fechada, entra na turma já fechada com data_saida
+                data_remocao = None
+                cursor.execute(
+                    "SELECT status, data_saida FROM posicoes WHERE id = %s",
+                    (posicao_id,)
+                )
+                row = cursor.fetchone()
+                if row and (row[0] or '').lower() == 'closed' and row[1]:
+                    data_saida = row[1]
+                    data_remocao = data_saida.isoformat()[:10] if hasattr(data_saida, 'isoformat') else str(data_saida)[:10]
                 self._adicionar_trade_turma(
                     cursor=cursor,
                     turma_id=turma_id,
-                    posicao_id=config['posicao_id'],
+                    posicao_id=posicao_id,
                     origem='replicado',
                     data_insercao=config['data_insercao'],
                     preco_entrada_turma=preco_info.get('preco'),
                     preco_fonte=preco_info.get('fonte', 'manual'),
                     preco_data_referencia=preco_info.get('data_referencia'),
-                    preco_moeda=preco_info.get('moeda', 'USD')
+                    preco_moeda=preco_info.get('moeda', 'USD'),
+                    data_remocao=data_remocao
                 )
 
             conn.commit()
@@ -359,7 +371,8 @@ class TurmasService:
                                preco_entrada_turma: Optional[float] = None,
                                preco_fonte: str = 'manual',
                                preco_data_referencia: Optional[str] = None,
-                               preco_moeda: str = 'USD') -> int:
+                               preco_moeda: str = 'USD',
+                               data_remocao: Optional[str] = None) -> int:
         """
         Adiciona um trade à turma (interno, usa cursor existente).
 
@@ -373,6 +386,7 @@ class TurmasService:
             preco_fonte: Fonte do preço ('coingecko', 'manual', 'original')
             preco_data_referencia: Data efetiva do preço (pode diferir de data_insercao)
             preco_moeda: Moeda do preço (default: 'USD')
+            data_remocao: Se informado, posição entra já fechada (ativo_atual=0)
 
         Returns:
             ID do trade_turma criado
@@ -404,13 +418,14 @@ class TurmasService:
             preco_data_referencia = data_insercao
 
         # Adicionar à carteira da turma com metadados de preço
+        ativo_atual = 0 if data_remocao else 1
         cursor.execute("""
             INSERT INTO carteira_turma
-            (turma_id, trade_id, origem, data_insercao, preco_entrada_turma,
+            (turma_id, trade_id, origem, data_insercao, data_remocao, preco_entrada_turma,
              preco_fonte, preco_data_referencia, preco_moeda, ativo_atual)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
-        """, (turma_id, trade_id, origem, data_insercao, preco_entrada_turma,
-              preco_fonte, preco_data_referencia, preco_moeda))
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (turma_id, trade_id, origem, data_insercao, data_remocao, preco_entrada_turma,
+              preco_fonte, preco_data_referencia, preco_moeda, ativo_atual))
 
         return trade_id
 
@@ -434,7 +449,10 @@ class TurmasService:
             if not turma:
                 raise ValueError(f"Turma {turma_id} não encontrada")
 
-            cursor.execute("SELECT data_entrada, preco_entrada FROM posicoes WHERE id = %s", (posicao_id,))
+            cursor.execute(
+                "SELECT data_entrada, preco_entrada, status, data_saida FROM posicoes WHERE id = %s",
+                (posicao_id,)
+            )
             posicao = cursor.fetchone()
             if not posicao:
                 raise ValueError(f"Posição {posicao_id} não encontrada")
@@ -442,6 +460,10 @@ class TurmasService:
             # Determinar origem e data_insercao
             data_inicio_turma = turma[0]
             data_entrada_posicao = posicao[0]
+            data_remocao = None
+            if (posicao[2] or '').lower() == 'closed' and posicao[3]:
+                data_saida = posicao[3]
+                data_remocao = data_saida.isoformat()[:10] if hasattr(data_saida, 'isoformat') else str(data_saida)[:10]
 
             if data_entrada_posicao >= data_inicio_turma:
                 origem = 'nativo'
@@ -464,7 +486,8 @@ class TurmasService:
                 preco_entrada_turma=preco_entrada_turma,
                 preco_fonte=preco_fonte,
                 preco_data_referencia=data_insercao,
-                preco_moeda='USD'
+                preco_moeda='USD',
+                data_remocao=data_remocao
             )
 
             conn.commit()
