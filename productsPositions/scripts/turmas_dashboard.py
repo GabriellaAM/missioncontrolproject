@@ -1925,15 +1925,16 @@ def _json_serializer(obj):
     return str(obj)
 
 
-def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_alocacao=False, product_tabs=None):
+def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_alocacao=False, product_tabs=None, display_name=None):
     """Dashboard rico do produto com abas por turma, gráficos e tabelas interativas.
     mostrar_caixa_alocacao: exibe Caixa no gráfico de evolução da alocação apenas para produtos com API key (Soros, Memebot).
-    product_tabs: optional dict with 'tabs', 'group_name', 'primary_id' for grouped products (e.g. Soros Spot 1+2)."""
+    product_tabs: optional dict with 'tabs', 'group_name', 'primary_id' for grouped products (e.g. Soros Spot 1+2).
+    display_name: nome para exibir no h1 (ex: "Soros Spot" em vez de "Soros Spot 1")."""
     get_navbar, _, get_base_styles, _get_form_modal_overlay_script = _get_shared_components()
 
     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     produto_id = produto['id']
-    nome = product_tabs['group_name'] if product_tabs else produto['nome']
+    nome = display_name or (product_tabs['group_name'] if product_tabs else produto['nome'])
     tipo = produto.get('tipo', 'Outro')
 
     turma_ativa = turmas[0] if turmas else {}

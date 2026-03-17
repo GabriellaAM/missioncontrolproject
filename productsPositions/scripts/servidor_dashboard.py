@@ -6291,11 +6291,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         _enrich_carteira_trades(carteira, precos_atuais, repo=repo)
                         resumo = rentabilidade_service.resumo_turma(primeira_turma_id, precos_atuais=precos_atuais)
 
+                        # Para grupo Soros: usar display_name no h1 (ex: "Soros Spot" em vez de "Soros Spot 1")
+                        display_name = soros_gcfg['display_name'] if soros_gcfg else None
+
                         mostrar_caixa_alocacao = get_bitget_credentials(produto.get('nome') or '') is not None
                         self._send_html(get_produto_dashboard_html(
                             produto, turmas_produto, resumo, carteira,
                             mostrar_caixa_alocacao=mostrar_caixa_alocacao,
-                            product_tabs=product_tabs))
+                            product_tabs=product_tabs,
+                            display_name=display_name))
                         return
                     except Exception as e:
                         print(f"[DASHBOARD] Erro ao montar dashboard rico: {e}", flush=True)
