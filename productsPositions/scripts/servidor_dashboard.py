@@ -265,10 +265,14 @@ def _enrich_carteira_trades(carteira, precos_atuais=None, repo=None):
             except Exception:
                 trade['dias'] = 0
 
-        # Preço de entrada: sistema antigo usa posicoes.preco_entrada; fallback preco_entrada_turma
+        # Preço de entrada: para turmas, SEMPRE usar preco_entrada_turma (preço na data de inserção na turma)
+        # Desconsidera data/preço de entrada no produto - regra: dados da turma
         preco_entrada_orig = trade.get('preco_entrada_original')
         preco_entrada_turma = trade.get('preco_entrada_turma', 0) or 0
-        preco_entrada = (float(preco_entrada_orig) if preco_entrada_orig is not None else None) or preco_entrada_turma
+        if preco_entrada_turma and float(preco_entrada_turma) > 0:
+            preco_entrada = float(preco_entrada_turma)
+        else:
+            preco_entrada = (float(preco_entrada_orig) if preco_entrada_orig is not None else None) or preco_entrada_turma
         side = (trade.get('side') or '').upper()
         quantidade = trade.get('quantidade')
 

@@ -2147,7 +2147,11 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
         .gear-panel .gear-icon {{ width: 16px; text-align: center; font-size: 1em; flex-shrink: 0; }}
         .gear-panel .gear-accent {{ color: #39fda3; }}
 
-        .loading-overlay {{ text-align: center; padding: 60px 20px; color: #888; }}
+        .loading-overlay {{
+            text-align: center; padding: 60px 20px; color: #888;
+            min-height: 350px; display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+        }}
         .loading-overlay .spinner {{
             border: 3px solid #2a2a4a; border-top: 3px solid #39fda3;
             border-radius: 50%; width: 30px; height: 30px;
@@ -2273,7 +2277,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
                 <span style="color:#666; font-size:12px;">a</span>
                 <input type="date" id="rentPeriodEnd" style="background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:3px 8px; font-size:12px;" onchange="setRentCustomPeriod()">
             </div>
-            <div id="chartLoading" class="loading-overlay"><div class="spinner"></div>Carregando...</div>
+            <div id="chartLoading" class="loading-overlay" style="display:flex;"><div class="spinner"></div>Carregando gr&aacute;ficos...</div>
             <div class="chart-box" id="chartWrapper" style="display:none;">
                 <canvas id="chartRent"></canvas>
             </div>
@@ -2293,7 +2297,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
                 <span style="color:#666; font-size:12px;">a</span>
                 <input type="date" id="pnlPeriodEnd" style="background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:3px 8px; font-size:12px;" onchange="setPnlCustomPeriod()">
             </div>
-            <div id="pnlChartLoading" class="loading-overlay"><div class="spinner"></div>Carregando gr&aacute;fico...</div>
+            <div id="pnlChartLoading" class="loading-overlay" style="min-height:280px; display:flex;"><div class="spinner"></div>Carregando gr&aacute;fico...</div>
             <div class="chart-box" id="pnlChartWrapper" style="height:280px; display:none;">
                 <canvas id="chartPnlAbertas"></canvas>
             </div>
@@ -2309,19 +2313,19 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
 
             <div id="tab-abertas" class="sub-content active">
                 <div class="tbl-scroll"><table class="dtable" id="tblAbertas">
-                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Data Entrada</th><th>Pre&ccedil;o Entrada</th><th>Qtd</th><th>Entrada Total</th><th>Pre&ccedil;o Atual</th><th>Atual Total</th><th>Stop</th><th>PnL%</th></tr></thead>
+                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Data Inser&ccedil;&atilde;o na Turma</th><th>Pre&ccedil;o Entrada (Turma)</th><th>Qtd</th><th>Entrada Total</th><th>Pre&ccedil;o Atual</th><th>Atual Total</th><th>Stop</th><th>PnL%</th></tr></thead>
                     <tbody id="tbAbertas"></tbody>
                 </table></div>
             </div>
             <div id="tab-fechadas" class="sub-content">
                 <div class="tbl-scroll"><table class="dtable" id="tblFechadas">
-                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Data Entrada</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada</th><th>Entrada Total</th><th>Pre&ccedil;o Sa&iacute;da</th><th>Sa&iacute;da Total</th><th>Stop</th><th>PnL%</th></tr></thead>
+                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Data Inser&ccedil;&atilde;o na Turma</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada (Turma)</th><th>Entrada Total</th><th>Pre&ccedil;o Sa&iacute;da</th><th>Sa&iacute;da Total</th><th>Stop</th><th>PnL%</th></tr></thead>
                     <tbody id="tbFechadas"></tbody>
                 </table></div>
             </div>
             <div id="tab-historico" class="sub-content">
                 <div class="tbl-scroll"><table class="dtable" id="tblHistorico">
-                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Status</th><th>Data Entrada</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada</th><th>Entrada Total</th><th>Pre&ccedil;o Sa&iacute;da/Atual</th><th>Sa&iacute;da Total</th><th>Stop</th><th>PnL%</th></tr></thead>
+                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Status</th><th>Data Inser&ccedil;&atilde;o na Turma</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada (Turma)</th><th>Entrada Total</th><th>Pre&ccedil;o Sa&iacute;da/Atual</th><th>Sa&iacute;da Total</th><th>Stop</th><th>PnL%</th></tr></thead>
                     <tbody id="tbHistorico"></tbody>
                 </table></div>
             </div>
