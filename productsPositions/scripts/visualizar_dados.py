@@ -283,8 +283,7 @@ def exibir_dataframe_html(df, titulo="DataFrame", produto_id=None, tipo_dado=Non
                 </div>
             </h1>
             <div class="loading" id="loading">
-                <strong>🔄 Atualizando dados...</strong><br>
-                <small>Buscando preços atualizados do CoinGecko e recalculando PnL...</small>
+                Carregando...
             </div>
             <div class="sucesso" id="sucesso" style="display: none; text-align: center; padding: 15px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 5px; margin: 20px 0; color: #155724;">
                 <strong>✅ Dados atualizados com sucesso!</strong>

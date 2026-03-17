@@ -665,7 +665,7 @@ def get_form_nova_turma_html(produtos, as_inner=False, return_url='/'):
                 return;
             }
 
-            container.innerHTML = '<span class="loading">Carregando posições...</span>';
+            container.innerHTML = '<span class="loading">Carregando...</span>';
             try {
                 const response = await fetch(`/api/turma/posicoes-elegiveis?produto_id=${produtoId}&data_inicio=${dataInicio}`);
                 const result = await response.json();
@@ -974,7 +974,7 @@ def get_turma_detalhes_html(turma, resumo, carteira, tab_ativa='abertas'):
                         <th style="text-align: left;">Ativo</th>
                         <th>Side</th>
                         <th>Origem</th>
-                        <th>Data Inserção</th>
+                        <th>Data Entrada</th>
                         <th>Data Remoção</th>
                         <th>Dias</th>
                         <th>Preço Entrada</th>
@@ -989,7 +989,7 @@ def get_turma_detalhes_html(turma, resumo, carteira, tab_ativa='abertas'):
                         <th>Side</th>
                         <th>Origem</th>
                         <th>Status</th>
-                        <th>Data Inserção</th>
+                        <th>Data Entrada</th>
                         <th>Data Remoção</th>
                         <th>Dias</th>
                         <th>Preço Entrada</th>
@@ -1003,7 +1003,7 @@ def get_turma_detalhes_html(turma, resumo, carteira, tab_ativa='abertas'):
                         <th style="text-align: left;">Ativo</th>
                         <th>Side</th>
                         <th>Origem</th>
-                        <th>Data Inserção</th>
+                        <th>Data Entrada</th>
                         <th>Preço Entrada</th>
                         <th>Qtd</th>
                         <th>Preço Atual</th>
@@ -1522,7 +1522,7 @@ def get_rentabilidade_historica_html(turmas_resumo):
                 </div>
             </div>
 
-            <div id="loadingChart" class="loading">Carregando dados...</div>
+            <div id="loadingChart" class="loading">Carregando...</div>
             <div class="chart-container">
                 <canvas id="historicoChart"></canvas>
             </div>
@@ -2223,7 +2223,8 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
     </div>
 
     <div class="dash-content">
-        <div class="summary-row" id="summaryCards">
+        <div class="summary-row" id="summaryCards" style="position:relative;">
+            <div id="cardsLoading" class="loading-overlay" style="position:absolute;inset:0;min-height:80px;display:none;z-index:5;"><div class="spinner"></div>Carregando...</div>
             <div class="summary-card">
                 <div class="s-value {rentab_class}" id="card-rentab">{rentab_str}</div>
                 <div class="s-label">Rentabilidade Acumulada</div>
@@ -2278,7 +2279,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
                 <span style="color:#666; font-size:12px;">a</span>
                 <input type="date" id="rentPeriodEnd" style="background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:3px 8px; font-size:12px;" onchange="setRentCustomPeriod()">
             </div>
-            <div id="chartLoading" class="loading-overlay" style="display:flex;"><div class="spinner"></div>Carregando gr&aacute;ficos...</div>
+            <div id="chartLoading" class="loading-overlay" style="display:flex;"><div class="spinner"></div>Carregando...</div>
             <div class="chart-box" id="chartWrapper" style="display:none;">
                 <canvas id="chartRent"></canvas>
             </div>
@@ -2298,13 +2299,14 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
                 <span style="color:#666; font-size:12px;">a</span>
                 <input type="date" id="pnlPeriodEnd" style="background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:4px; padding:3px 8px; font-size:12px;" onchange="setPnlCustomPeriod()">
             </div>
-            <div id="pnlChartLoading" class="loading-overlay" style="min-height:280px; display:flex;"><div class="spinner"></div>Carregando gr&aacute;fico...</div>
+            <div id="pnlChartLoading" class="loading-overlay" style="min-height:280px; display:flex;"><div class="spinner"></div>Carregando...</div>
             <div class="chart-box" id="pnlChartWrapper" style="height:280px; display:none;">
                 <canvas id="chartPnlAbertas"></canvas>
             </div>
         </div>
 
-        <div class="dash-section" id="sectionPositions">
+        <div class="dash-section" id="sectionPositions" style="position:relative;">
+            <div id="positionsLoading" class="loading-overlay" style="position:absolute;inset:0;min-height:200px;display:none;z-index:5;"><div class="spinner"></div>Carregando...</div>
             <h3>Posi&ccedil;&otilde;es</h3>
             <div class="sub-tabs" id="posTabs">
                 <button class="sub-tab active" onclick="switchPosTab('abertas', this)">Abertas (<span id="countAbertas">{trades_ativos}</span>)</button>
@@ -2314,27 +2316,28 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
 
             <div id="tab-abertas" class="sub-content active">
                 <div class="tbl-scroll"><table class="dtable" id="tblAbertas">
-                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Data Inser&ccedil;&atilde;o na Turma</th><th>Pre&ccedil;o Entrada (Turma)</th><th>Qtd</th><th>Entrada Total</th><th>Pre&ccedil;o Atual</th><th>Atual Total</th><th>Stop</th><th>PnL%</th></tr></thead>
+                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Data Entrada</th><th>Pre&ccedil;o Entrada</th><th>Qtd</th><th>Entrada Total</th><th>Pre&ccedil;o Atual</th><th>Atual Total</th><th>Stop</th><th>PnL%</th></tr></thead>
                     <tbody id="tbAbertas"></tbody>
                 </table></div>
             </div>
             <div id="tab-fechadas" class="sub-content">
                 <div class="tbl-scroll"><table class="dtable" id="tblFechadas">
-                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Data Inser&ccedil;&atilde;o na Turma</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada (Turma)</th><th>Entrada Total</th><th>Pre&ccedil;o Sa&iacute;da</th><th>Sa&iacute;da Total</th><th>Stop</th><th>PnL%</th></tr></thead>
+                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Data Entrada</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada</th><th>Entrada Total</th><th>Pre&ccedil;o Sa&iacute;da</th><th>Sa&iacute;da Total</th><th>Stop</th><th>PnL%</th></tr></thead>
                     <tbody id="tbFechadas"></tbody>
                 </table></div>
             </div>
             <div id="tab-historico" class="sub-content">
                 <div class="tbl-scroll"><table class="dtable" id="tblHistorico">
-                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Status</th><th>Data Inser&ccedil;&atilde;o na Turma</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada (Turma)</th><th>Entrada Total</th><th>Pre&ccedil;o Sa&iacute;da/Atual</th><th>Sa&iacute;da Total</th><th>Stop</th><th>PnL%</th></tr></thead>
+                    <thead><tr><th>Ativo</th><th>Side</th><th>Origem</th><th>Status</th><th>Data Entrada</th><th>Data Sa&iacute;da</th><th>Dias</th><th>Pre&ccedil;o Entrada</th><th>Entrada Total</th><th>Pre&ccedil;o Sa&iacute;da/Atual</th><th>Sa&iacute;da Total</th><th>Stop</th><th>PnL%</th></tr></thead>
                     <tbody id="tbHistorico"></tbody>
                 </table></div>
             </div>
         </div>
 
-        <div class="dash-section">
+        <div class="dash-section" style="position:relative;">
+            <div id="allocLoading" class="loading-overlay" style="position:absolute;inset:0;min-height:320px;display:none;z-index:5;"><div class="spinner"></div>Carregando...</div>
             <h3>Evolu&ccedil;&atilde;o da Aloca&ccedil;&atilde;o</h3>
-            <div class="chart-box" style="height:320px;">
+            <div class="chart-box" id="allocChartWrapper" style="height:320px;">
                 <canvas id="chartAllocTimeline"></canvas>
             </div>
         </div>
@@ -2467,7 +2470,7 @@ function applyRentPeriodFilter() {{
     var query = (inicio ? 'inicio=' + encodeURIComponent(inicio) + '&' : '') + (fim ? 'fim=' + encodeURIComponent(fim) : '');
     var promises = [fetch(urlMain).then(function(r){{ return r.json(); }})];
     compareIds.forEach(function(tid) {{ promises.push(fetch('/api/turma/' + tid + '/rentabilidade?' + query).then(function(r){{ return r.json(); }})); }});
-    document.getElementById('chartLoading').style.display = 'block';
+    document.getElementById('chartLoading').style.display = 'flex';
     document.getElementById('chartWrapper').style.display = 'none';
     Promise.all(promises).then(function(results) {{
         document.getElementById('chartLoading').style.display = 'none';
@@ -3027,14 +3030,41 @@ function switchPosTab(tab, btn) {{
     document.getElementById('tab-'+tab).classList.add('active');
 }}
 
+function showAllLoadings() {{
+    document.getElementById('chartLoading').style.display='flex';
+    document.getElementById('chartLoading').innerHTML='<div class="spinner"></div>Carregando...';
+    document.getElementById('chartWrapper').style.display='none';
+    var pnlLoad = document.getElementById('pnlChartLoading');
+    var pnlWrap = document.getElementById('pnlChartWrapper');
+    if(pnlLoad){{ pnlLoad.style.display='flex'; pnlLoad.innerHTML='<div class="spinner"></div>Carregando...'; }}
+    if(pnlWrap) pnlWrap.style.display='none';
+    var posLoad = document.getElementById('positionsLoading');
+    if(posLoad) posLoad.style.display='flex';
+    var allocLoad = document.getElementById('allocLoading');
+    if(allocLoad) allocLoad.style.display='flex';
+    var cardsLoad = document.getElementById('cardsLoading');
+    if(cardsLoad) cardsLoad.style.display='flex';
+}}
+function hideAllLoadings() {{
+    document.getElementById('chartLoading').style.display='none';
+    document.getElementById('chartWrapper').style.display='block';
+    var pnlLoad = document.getElementById('pnlChartLoading');
+    var pnlWrap = document.getElementById('pnlChartWrapper');
+    if(pnlLoad) pnlLoad.style.display='none';
+    if(pnlWrap) pnlWrap.style.display='block';
+    var posLoad = document.getElementById('positionsLoading');
+    if(posLoad) posLoad.style.display='none';
+    var allocLoad = document.getElementById('allocLoading');
+    if(allocLoad) allocLoad.style.display='none';
+    var cardsLoad = document.getElementById('cardsLoading');
+    if(cardsLoad) cardsLoad.style.display='none';
+}}
 async function switchTurma(turmaId, btn) {{
     if(turmaId===TURMA_ID) return;
     TURMA_ID=turmaId;
     document.querySelectorAll('.turma-tab').forEach(function(t){{t.classList.remove('active');}});
     btn.classList.add('active');
-    document.getElementById('chartLoading').style.display='block';
-    document.getElementById('chartLoading').innerHTML='<div class="spinner"></div>Carregando...';
-    document.getElementById('chartWrapper').style.display='none';
+    showAllLoadings();
     var turmaInfo = TURMAS.find(function(t){{return t.id === turmaId;}});
     if(turmaInfo) {{
         DATA_INICIO_TURMA = turmaInfo.data_inicio;
@@ -3049,8 +3079,7 @@ async function switchTurma(turmaId, btn) {{
         ]);
         var dashData=await results[0].json();
         var serieData=await results[1].json();
-        document.getElementById('chartLoading').style.display='none';
-        document.getElementById('chartWrapper').style.display='block';
+        hideAllLoadings();
         if(dashData.erro){{console.error(dashData.erro);document.getElementById('chartWrapper').innerHTML='<div style="padding:40px; text-align:center; color:#e74c3c;">'+dashData.erro+'</div>';return;}}
         RESUMO=dashData.resumo;
         CARTEIRA=dashData.carteira;
@@ -3067,8 +3096,7 @@ async function switchTurma(turmaId, btn) {{
         else{{ document.getElementById('chartWrapper').innerHTML='<div style="padding:40px; text-align:center; color:#666;">Sem dados de rentabilidade</div>'; }}
     }} catch(err) {{
         console.error('Erro:',err);
-        document.getElementById('chartLoading').style.display='none';
-        document.getElementById('chartWrapper').style.display='block';
+        hideAllLoadings();
         document.getElementById('chartWrapper').innerHTML='<div style="padding:40px; text-align:center; color:#e74c3c;">Erro: '+err.message+'</div>';
     }}
 }}

@@ -1590,7 +1590,7 @@ def get_dashboard_html(produtos, stats, repo, skip_loader=False):
     product_nav_loader_html = """
         <div class="product-nav-loader" id="productNavLoader">
             <div class="loader-spinner"></div>
-            <div class="loader-text">Carregando produto...</div>
+            <div class="loader-text">Carregando...</div>
         </div>
         <script>
         (function() {
