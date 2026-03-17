@@ -758,31 +758,74 @@ def _get_preencher_precos_js():
 
 
 def _get_excel_download_toast_js():
-    """Retorna o JavaScript para download Excel com toast de feedback."""
+    """Retorna o JavaScript para download Excel com toast de feedback (estilo Toastify)."""
     return '''
+    <style>
+    @keyframes toastify-slide-in {
+        from { transform: translate3d(110%, 0, 0); opacity: 0; }
+        to { transform: translate3d(0, 0, 0); opacity: 1; }
+    }
+    @keyframes toastify-slide-out {
+        from { transform: translate3d(0, 0, 0); opacity: 1; }
+        to { transform: translate3d(110%, 0, 0); opacity: 0; }
+    }
+    .toastify-excel {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        min-width: 280px;
+        max-width: 90vw;
+        padding: 16px 20px;
+        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        color: #e2e8f0;
+        border-radius: 12px;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.4), 0 0 1px rgba(255,255,255,0.1);
+        z-index: 9999;
+        font-size: 0.9rem;
+        font-family: system-ui, -apple-system, sans-serif;
+        border-left: 4px solid #39fda3;
+        animation: toastify-slide-in 0.35s cubic-bezier(0.21, 1.02, 0.73, 1);
+    }
+    .toastify-excel.toastify-exit {
+        animation: toastify-slide-out 0.3s cubic-bezier(0.06, 0.71, 0.55, 1) forwards;
+    }
+    .toastify-excel.toastify-error { border-left-color: #ef4444; }
+    .toastify-excel.toastify-success { border-left-color: #39fda3; }
+    </style>
     <script>
     function baixarExcelComToast(url, filename) {
         var toast = document.createElement('div');
-        toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#16213e;border:1px solid #39fda3;color:#39fda3;padding:14px 24px;border-radius:10px;z-index:9999;font-size:.9em;box-shadow:0 4px 16px rgba(0,0,0,.5);';
-        toast.textContent = 'Preparando download...';
+        toast.className = 'toastify-excel';
+        toast.innerHTML = '<span style="opacity:0.9;">Preparando download...</span>';
         document.body.appendChild(toast);
         fetch(url)
             .then(function(r) {
-                if (!r.ok) throw new Error('Erro ao gerar planilha');
-                return r.blob();
+                if (!r.ok) {
+                    var msg = r.status === 502 ? 'O servidor demorou demais. Tente novamente – a exportação pode levar alguns minutos.' : 'Erro ao gerar planilha.';
+                    throw new Error(msg);
+                }
+                var disp = r.headers.get('Content-Disposition');
+                var serverFilename = disp && disp.match(/filename="?([^"';]+)"?/);
+                var finalFilename = (serverFilename && serverFilename[1]) ? serverFilename[1].trim() : (filename || 'download.xlsx');
+                return r.blob().then(function(blob) { return { blob: blob, filename: finalFilename }; });
             })
-            .then(function(blob) {
+            .then(function(o) {
+                var blobUrl = URL.createObjectURL(o.blob);
                 var a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = filename || 'download.xlsx';
+                a.href = blobUrl;
+                a.download = o.filename;
+                document.body.appendChild(a);
                 a.click();
-                URL.revokeObjectURL(a.href);
+                document.body.removeChild(a);
+                setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 100);
+                toast.className = 'toastify-excel toastify-success';
                 toast.innerHTML = '<b style="color:#39fda3;">✓</b> Download iniciado';
-                setTimeout(function() { toast.remove(); }, 3000);
+                setTimeout(function() { toast.classList.add('toastify-exit'); setTimeout(function() { toast.remove(); }, 300); }, 2500);
             })
             .catch(function(e) {
-                toast.innerHTML = '<b style="color:#ff6b6b;">Erro:</b> ' + (e.message || 'Falha no download');
-                setTimeout(function() { toast.remove(); }, 5000);
+                toast.className = 'toastify-excel toastify-error';
+                toast.innerHTML = '<b style="color:#ef4444;">Erro:</b> ' + (e.message || 'Falha no download');
+                setTimeout(function() { toast.classList.add('toastify-exit'); setTimeout(function() { toast.remove(); }, 300); }, 6000);
             });
     }
     </script>

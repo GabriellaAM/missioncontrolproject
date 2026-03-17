@@ -1453,6 +1453,28 @@ def get_rentabilidade_historica_html(turmas_resumo):
         .hidden {{
             display: none;
         }}
+        @keyframes toastify-slide-in {{
+            from {{ transform: translate3d(110%, 0, 0); opacity: 0; }}
+            to {{ transform: translate3d(0, 0, 0); opacity: 1; }}
+        }}
+        @keyframes toastify-slide-out {{
+            from {{ transform: translate3d(0, 0, 0); opacity: 1; }}
+            to {{ transform: translate3d(110%, 0, 0); opacity: 0; }}
+        }}
+        .toastify-excel {{
+            position: fixed; bottom: 24px; right: 24px; min-width: 280px; max-width: 90vw;
+            padding: 16px 20px; background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            color: #e2e8f0; border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.4), 0 0 1px rgba(255,255,255,0.1);
+            z-index: 9999; font-size: 0.9rem; font-family: system-ui, -apple-system, sans-serif;
+            border-left: 4px solid #39fda3;
+            animation: toastify-slide-in 0.35s cubic-bezier(0.21, 1.02, 0.73, 1);
+        }}
+        .toastify-excel.toastify-exit {{
+            animation: toastify-slide-out 0.3s cubic-bezier(0.06, 0.71, 0.55, 1) forwards;
+        }}
+        .toastify-excel.toastify-error {{ border-left-color: #ef4444; }}
+        .toastify-excel.toastify-success {{ border-left-color: #39fda3; }}
     </style>
 </head>
 <body>
@@ -1536,25 +1558,33 @@ def get_rentabilidade_historica_html(turmas_resumo):
         function baixarExcel() {{
             const btn = document.getElementById('btnExcel');
             const toast = document.createElement('div');
-            toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#16213e;border:1px solid #39fda3;color:#39fda3;padding:14px 24px;border-radius:10px;z-index:9999;font-size:.9em;box-shadow:0 4px 16px rgba(0,0,0,.5);';
-            toast.textContent = 'Preparando download...';
+            toast.className = 'toastify-excel';
+            toast.innerHTML = '<span style="opacity:0.9;">Preparando download...</span>';
             document.body.appendChild(toast);
             btn.disabled = true;
             btn.textContent = '⏳ Gerando...';
             fetch('/api/rentabilidade/excel')
-                .then(r => {{ if (!r.ok) throw new Error('Erro ao gerar planilha'); return r.blob(); }})
+                .then(r => {{
+                    if (!r.ok) {{
+                        const msg = r.status === 502 ? 'O servidor demorou demais. Tente novamente – a exportação pode levar alguns minutos.' : 'Erro ao gerar planilha.';
+                        throw new Error(msg);
+                    }}
+                    return r.blob();
+                }})
                 .then(blob => {{
                     const a = document.createElement('a');
                     a.href = URL.createObjectURL(blob);
                     a.download = 'rentabilidade_turmas.xlsx';
                     a.click();
                     URL.revokeObjectURL(a.href);
+                    toast.className = 'toastify-excel toastify-success';
                     toast.innerHTML = '<b style="color:#39fda3;">✓</b> Download iniciado';
-                    setTimeout(() => toast.remove(), 3000);
+                    setTimeout(() => {{ toast.classList.add('toastify-exit'); setTimeout(() => toast.remove(), 300); }}, 2500);
                 }})
                 .catch(e => {{
-                    toast.innerHTML = '<b style="color:#ff6b6b;">Erro:</b> ' + (e.message || 'Falha no download');
-                    setTimeout(() => toast.remove(), 5000);
+                    toast.className = 'toastify-excel toastify-error';
+                    toast.innerHTML = '<b style="color:#ef4444;">Erro:</b> ' + (e.message || 'Falha no download');
+                    setTimeout(() => {{ toast.classList.add('toastify-exit'); setTimeout(() => toast.remove(), 300); }}, 6000);
                 }})
                 .finally(() => {{
                     btn.disabled = false;
