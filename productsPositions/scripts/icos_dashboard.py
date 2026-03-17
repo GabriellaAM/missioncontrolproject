@@ -13,8 +13,8 @@ from decimal import Decimal
 
 def _get_shared_components():
     """Lazy import to avoid circular dependency with servidor_dashboard"""
-    from servidor_dashboard import get_navbar, get_base_styles, _get_form_modal_overlay_script
-    return get_navbar, get_base_styles, _get_form_modal_overlay_script
+    from servidor_dashboard import get_navbar, get_base_styles, _get_form_modal_overlay_script, _get_excel_download_toast_js
+    return get_navbar, get_base_styles, _get_form_modal_overlay_script, _get_excel_download_toast_js
 
 
 def _json_serializer(obj):
@@ -40,7 +40,7 @@ def get_icos_dashboard_html(produto_nome, carteira, produto_id=0,
     product_tabs : dict | None
         Abas de produto agrupado (se aplicável).
     """
-    get_navbar, get_base_styles, _get_form_modal_overlay_script = _get_shared_components()
+    get_navbar, get_base_styles, _get_form_modal_overlay_script, _get_excel_download_toast_js = _get_shared_components()
     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
     carteira_json = json.dumps(carteira, default=_json_serializer,
@@ -679,6 +679,7 @@ document.addEventListener('DOMContentLoaded', function() {{
 }});
 </script>
 {_get_form_modal_overlay_script(produto_id)}
+{_get_excel_download_toast_js()}
 </body>
 </html>"""
 

@@ -12,8 +12,8 @@ from decimal import Decimal
 
 def _get_shared_components():
     """Lazy import to avoid circular dependency with servidor_dashboard"""
-    from servidor_dashboard import get_navbar, get_base_styles
-    return get_navbar, get_base_styles
+    from servidor_dashboard import get_navbar, get_base_styles, _get_excel_download_toast_js
+    return get_navbar, get_base_styles, _get_excel_download_toast_js
 
 
 def _json_serializer(obj):
@@ -43,7 +43,7 @@ def get_portfolio_dashboard_html(produto_nome, sub_portfolios, active_data,
     produto_id : int
         Product id for future compatibility
     """
-    get_navbar, get_base_styles = _get_shared_components()
+    get_navbar, get_base_styles, _get_excel_download_toast_js = _get_shared_components()
 
     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
@@ -1166,5 +1166,6 @@ document.addEventListener('DOMContentLoaded', function() {{
     }}
 }});
 </script>
+{_get_excel_download_toast_js()}
 </body>
 </html>"""

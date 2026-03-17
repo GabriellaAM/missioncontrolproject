@@ -12,8 +12,8 @@ from decimal import Decimal
 
 def _get_shared_components():
     """Lazy import to avoid circular dependency with servidor_dashboard"""
-    from servidor_dashboard import get_navbar, get_turmas_subnav, get_base_styles, _get_form_modal_overlay_script
-    return get_navbar, get_turmas_subnav, get_base_styles, _get_form_modal_overlay_script
+    from servidor_dashboard import get_navbar, get_turmas_subnav, get_base_styles, _get_form_modal_overlay_script, _get_excel_download_toast_js
+    return get_navbar, get_turmas_subnav, get_base_styles, _get_form_modal_overlay_script, _get_excel_download_toast_js
 
 
 def get_turmas_styles():
@@ -167,7 +167,7 @@ def get_turmas_styles():
 
 def get_lista_turmas_html(turmas, resumos):
     """Gera HTML da lista de turmas com abas por produto"""
-    get_navbar, get_turmas_subnav, get_base_styles, _get_form_modal_overlay_script = _get_shared_components()
+    get_navbar, get_turmas_subnav, get_base_styles, _get_form_modal_overlay_script, _ = _get_shared_components()
     styles = get_turmas_styles()
 
     # Agrupar turmas por produto
@@ -382,7 +382,7 @@ def get_lista_turmas_html(turmas, resumos):
 
 def get_form_nova_turma_html(produtos, as_inner=False, return_url='/'):
     """Gera HTML do formulário para criar nova turma. Se as_inner=True, retorna só o conteúdo para overlay modal. return_url: URL para onde o Cancelar leva."""
-    get_navbar, get_turmas_subnav, get_base_styles, _ = _get_shared_components()
+    get_navbar, get_turmas_subnav, get_base_styles, _, _ = _get_shared_components()
 
     options_html = ""
     for p in produtos:
@@ -955,7 +955,7 @@ def _render_tab_historico(carteira, turma_id):
 
 def get_turma_detalhes_html(turma, resumo, carteira, tab_ativa='abertas'):
     """Gera HTML da página de detalhes de uma turma com abas Abertas/Fechadas/Histórico"""
-    get_navbar, get_turmas_subnav, get_base_styles, _ = _get_shared_components()
+    get_navbar, get_turmas_subnav, get_base_styles, _, _ = _get_shared_components()
 
     rentab = resumo.get('rentabilidade_acumulada_pct', 0)
     rentab_class = 'positive' if rentab >= 0 else 'negative'
@@ -1186,7 +1186,7 @@ def get_turma_detalhes_html(turma, resumo, carteira, tab_ativa='abertas'):
 
 def get_rentabilidade_chart_html(turma, serie):
     """Gera HTML com gráfico de rentabilidade usando Chart.js"""
-    get_navbar, get_turmas_subnav, get_base_styles, _ = _get_shared_components()
+    get_navbar, get_turmas_subnav, get_base_styles, _, _ = _get_shared_components()
 
     labels = [p.dia for p in serie]
     valores = [p.valor_total for p in serie]
@@ -1326,7 +1326,7 @@ def get_rentabilidade_chart_html(turma, serie):
 
 def get_rentabilidade_historica_html(turmas_resumo):
     """Gera HTML com histórico de rentabilidade de todas as turmas"""
-    get_navbar, get_turmas_subnav, get_base_styles, _ = _get_shared_components()
+    get_navbar, get_turmas_subnav, get_base_styles, _, _ = _get_shared_components()
 
     # Gerar linhas da tabela
     tabela_html = ""
@@ -1739,7 +1739,7 @@ def get_rentabilidade_historica_html(turmas_resumo):
 
 def get_comparar_turmas_html(turmas, comparacao):
     """Gera HTML para comparar múltiplas turmas"""
-    get_navbar, get_turmas_subnav, get_base_styles, _ = _get_shared_components()
+    get_navbar, get_turmas_subnav, get_base_styles, _, _ = _get_shared_components()
 
     # Checkboxes
     checkboxes_html = ""
@@ -1933,7 +1933,7 @@ def get_produto_dashboard_html(produto, turmas, resumo, carteira, mostrar_caixa_
     mostrar_caixa_alocacao: exibe Caixa no gráfico de evolução da alocação apenas para produtos com API key (Soros, Memebot).
     product_tabs: optional dict with 'tabs', 'group_name', 'primary_id' for grouped products (e.g. Soros Spot 1+2).
     display_name: nome para exibir no h1 (ex: "Soros Spot" em vez de "Soros Spot 1")."""
-    get_navbar, _, get_base_styles, _get_form_modal_overlay_script = _get_shared_components()
+    get_navbar, _, get_base_styles, _get_form_modal_overlay_script, _get_excel_download_toast_js = _get_shared_components()
 
     timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     produto_id = produto['id']
@@ -3221,5 +3221,6 @@ document.addEventListener('DOMContentLoaded', function() {{
 }});
 </script>
 {_get_form_modal_overlay_script(produto_id)}
+{_get_excel_download_toast_js()}
 </body>
 </html>"""
