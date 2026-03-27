@@ -615,21 +615,22 @@ def _timestamp_to_date_str(ts) -> Optional[str]:
 
 def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
     """
-    Full position lifecycle sync with Bitget exchange:
+    Full position lifecycle sync with multi-exchange (Bitget + OKX):
       - OPEN: positions on exchange but not in DB -> create
       - CLOSE: positions in DB but not on exchange -> close with price/date from history
-      - UPDATE: positions in both -> update quantities/PnL (existing behavior)
-
-    Args:
-        repo: SQLiteRepo instance
-        produto_id: Product ID to sync
-        verbose: Print progress info
+      - UPDATE: positions in both -> update quantities/PnL
 
     Returns:
         Dict with summary: {opened, closed, synced, skipped, errors}
     """
     from domain.posicao import Posicao
     from datetime import datetime
+    import pandas as pd
+    import time
+
+    from exchanges.factory import ExchangeFactory
+    from services.bitget_service import _normalize_product_name
+    from services.credentials import get_exchange_credentials  # <- NOVO
 
     resultado = {
         "opened": 0,
@@ -639,63 +640,54 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
         "errors": []
     }
 
-    # Load product info
+    # ===== LOAD PRODUTO =====
     produto = repo.carregar_produto(produto_id)
     if not produto:
         resultado["errors"].append(f"Produto {produto_id} não encontrado")
         return resultado
 
     produto_nome = produto["nome"]
-    produto_tipo = produto.get("tipo", "")
 
-    # Get credentials (suffix no .env = nome normalizado: ex. "Soros Spot 2" -> BITGET_*_SOROS_SPOT_2)
-    credentials = get_bitget_credentials(produto_nome)
+    # ===== CREDENTIALS (MULTI-EXCHANGE) =====
+    credentials = get_exchange_credentials(produto_nome)
+
     if not credentials:
         suffix = _normalize_product_name(produto_nome)
         if verbose:
-            print(f"  [AUTO-SYNC] Sem credenciais Bitget para '{produto_nome}' (suffix esperado no .env: {suffix}) — pulando")
+            print(f"  [AUTO-SYNC] Sem credenciais para '{produto_nome}' (suffix: {suffix})")
         resultado["skipped"] += 1
-        resultado["errors"].append(
-            f"Credenciais Bitget não encontradas. Verifique no .env: BITGET_API_KEY_{suffix}, BITGET_SECRET_KEY_{suffix}, BITGET_PASSPHRASE_{suffix}. "
-            "Nome do produto no BD deve bater com o suffix (ex: 'Soros Spot 2' -> SOROS_SPOT_2). Reinicie o servidor após alterar o .env."
-        )
+        resultado["errors"].append(f"Credenciais não encontradas para {suffix}")
         return resultado
 
-    is_perpetuo = "perpétuo" in produto_tipo.lower() or "perpetuo" in produto_tipo.lower()
-    is_spot = "spot" in produto_tipo.lower()
-
-    if not is_perpetuo and not is_spot:
-        if verbose:
-            print(f"  [AUTO-SYNC] Tipo '{produto_tipo}' não suportado para sync")
-        return resultado
-
-    # --- Fetch exchange positions (open) ---
+    # ===== EXCHANGE FACTORY =====
     try:
-        if is_perpetuo:
-            exchange_positions = fetch_perpetual_positions(credentials)
-        else:
-            exchange_positions = fetch_spot_positions(credentials)
+        exchange = ExchangeFactory.get(produto_nome, credentials)
+    except Exception as e:
+        resultado["errors"].append(str(e))
+        return resultado
+
+    # ===== FETCH POSITIONS =====
+    try:
+        exchange_positions = exchange.fetch_positions()
     except Exception as e:
         resultado["errors"].append(f"Erro ao buscar posições: {str(e)}")
         if verbose:
-            print(f"  [AUTO-SYNC] Erro ao buscar posições na exchange: {e}")
+            print(f"  [AUTO-SYNC] Erro ao buscar posições: {e}")
         return resultado
 
     if verbose:
         print(f"  [AUTO-SYNC] {produto_nome}: {len(exchange_positions)} posições na exchange")
 
-    # Exchange lookup: exchange_symbol.upper() + side -> position data
+    # ===== LOOKUP EXCHANGE =====
     exchange_lookup = {}
     for pos in exchange_positions:
         key = (pos["exchange_symbol"].upper(), pos["side"])
         exchange_lookup[key] = pos
 
-    # --- Load DB open positions ---
-    import pandas as pd
+    # ===== LOAD DB =====
     df_posicoes = repo.carregar_posicoes_abertas(produto_id)
 
-    db_lookup = {}  # exchange_symbol.upper() + side -> db row
-    db_positions_list = []
+    db_lookup = {}
     if not df_posicoes.empty:
         for _, db_pos in df_posicoes.iterrows():
             ex_sym = db_pos.get("exchange_symbol")
@@ -703,125 +695,86 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
             if ex_sym and not pd.isna(ex_sym):
                 key = (str(ex_sym).upper(), side)
                 db_lookup[key] = db_pos
-            db_positions_list.append(db_pos)
 
-    # ===== 1. OPEN: on exchange but not in DB =====
+    # ===== 1. OPEN =====
     for key, ex_pos in exchange_lookup.items():
         if key not in db_lookup:
             ativo = ex_pos["symbol"]
             side = ex_pos["side"]
             entry_price = ex_pos.get("entry_price", 0)
-            # Sempre formato ATIVOUSDT (ex.: SOLUSDT)
-            exchange_symbol = (ex_pos.get("exchange_symbol") or f"{ativo}USDT").upper()
-            # Data de abertura: direto da API (ctime=buyTime para spot, cTime para perpétuos)
+            exchange_symbol = ex_pos.get("exchange_symbol").upper()
+
             data_entrada = _timestamp_to_date_str(ex_pos.get("ctime"))
             if not data_entrada:
                 data_entrada = datetime.now().strftime("%Y-%m-%d")
 
             try:
-                # Evita duplicata: reconsulta posições abertas antes de criar. Só considera
-                # a mesma posição se (exchange_symbol, side) e data_entrada forem iguais.
-                skip_create = False
+                # evitar duplicata
                 df_recheck = repo.carregar_posicoes_abertas(produto_id)
+                skip = False
+
                 if not df_recheck.empty:
                     for _, row in df_recheck.iterrows():
                         ex_sym = row.get("exchange_symbol")
                         s = row.get("side", "long")
-                        data_entrada_db = row.get("data_entrada")
-                        if data_entrada_db is not None and hasattr(data_entrada_db, "strftime"):
-                            data_entrada_db = data_entrada_db.strftime("%Y-%m-%d")
-                        elif data_entrada_db is not None:
-                            data_entrada_db = str(data_entrada_db)[:10]
-                        if (ex_sym and not pd.isna(ex_sym)
-                                and (str(ex_sym).upper(), s) == key
-                                and data_entrada_db == data_entrada):
+
+                        data_db = row.get("data_entrada")
+                        if hasattr(data_db, "strftime"):
+                            data_db = data_db.strftime("%Y-%m-%d")
+                        else:
+                            data_db = str(data_db)[:10]
+
+                        if (str(ex_sym).upper(), s) == key and data_db == data_entrada:
                             posicao_id = row["id"]
-                            # Tabela posicoes: exchange_symbol sempre; preco_entrada se a corretora enviar > 0
-                            exchange_symbol = (ex_pos.get("exchange_symbol") or f"{ativo}USDT").upper()
-                            pos_up = {"exchange_symbol": exchange_symbol}
-                            if entry_price and entry_price > 0:
-                                pos_up["preco_entrada"] = entry_price
-                            repo.atualizar_posicao(posicao_id, **pos_up)
-                            qty = ex_pos.get("quantity", 0) or 0
-                            attr_updates = {"quantidade": qty}
-                            if entry_price:
-                                attr_updates["preco_entrada_exchange"] = entry_price
-                                if qty:
-                                    attr_updates["preco_entrada_total"] = qty * entry_price
-                            if ex_pos.get("unrealized_pnl") is not None:
-                                attr_updates["pnl_exchange"] = ex_pos["unrealized_pnl"]
-                            repo.salvar_atributos_posicao(posicao_id, produto_id, **attr_updates)
+
+                            repo.atualizar_posicao(
+                                posicao_id,
+                                exchange_symbol=exchange_symbol,
+                                preco_entrada=entry_price if entry_price > 0 else None
+                            )
+
+                            repo.salvar_atributos_posicao(
+                                posicao_id,
+                                produto_id,
+                                quantidade=ex_pos.get("quantity", 0),
+                                preco_entrada_exchange=entry_price,
+                                pnl_exchange=ex_pos.get("unrealized_pnl")
+                            )
+
                             resultado["synced"] += 1
-                            skip_create = True
-                            if verbose:
-                                print(f"  [AUTO-SYNC] Já existe {ativo} ({data_entrada}) — atualizado (evitou duplicata)")
+                            skip = True
                             break
-                if skip_create:
+
+                if skip:
                     continue
 
-                # Resolver coingecko_id da tabela ativos (posições anteriores já o têm)
-                coingecko_id = None
-                try:
-                    ativo_info = repo.obter_ativo(ativo)
-                    if ativo_info and ativo_info.get('coingecko_id'):
-                        coingecko_id = ativo_info['coingecko_id']
-                except Exception:
-                    pass
-
+                # criar posição
                 posicao = Posicao(
                     ativo=ativo,
                     side=side,
                     data_entrada=data_entrada,
                     preco_entrada=entry_price,
                     exchange_symbol=exchange_symbol,
-                    coingecko_id=coingecko_id,
                 )
+
                 posicao_id = repo.salvar_posicao(produto_id, posicao)
                 resultado["opened"] += 1
 
-                # Save quantity and other attributes (upsert — creates record if not exists)
-                attr_kwargs = {}
-                qty = ex_pos.get("quantity", 0) or 0
-                if qty:
-                    attr_kwargs["quantidade"] = qty
-                if entry_price:
-                    attr_kwargs["preco_entrada_exchange"] = entry_price
-                    # preco_entrada_total = quantidade * preco_entrada
-                    if qty:
-                        attr_kwargs["preco_entrada_total"] = qty * entry_price
-                unrealized_pnl = ex_pos.get("unrealized_pnl")
-                if unrealized_pnl is not None:
-                    attr_kwargs["pnl_exchange"] = unrealized_pnl
-                leverage = ex_pos.get("leverage")
-                if leverage and leverage != 1:
-                    attr_kwargs["leverage"] = leverage
-                if attr_kwargs:
-                    try:
-                        repo.salvar_atributos_posicao(posicao_id, produto_id, **attr_kwargs)
-                    except Exception as e2:
-                        if verbose:
-                            print(f"  [AUTO-SYNC] Aviso: não salvou atributos de {ativo}: {e2}")
-
-                # Hook: adicionar posição às turmas do produto
-                try:
-                    from services.turmas_service import TurmasService
-                    ts = TurmasService(db_url=repo.db_url)
-                    ts.sync_nova_posicao(posicao_id, produto_id, data_entrada, entry_price or 0)
-                    if verbose:
-                        print(f"  [AUTO-SYNC] Turmas sync: {ativo} adicionado às turmas")
-                except Exception as e_turma:
-                    if verbose:
-                        print(f"  [AUTO-SYNC] Aviso: turma sync falhou para {ativo}: {e_turma}")
+                repo.salvar_atributos_posicao(
+                    posicao_id,
+                    produto_id,
+                    quantidade=ex_pos.get("quantity", 0),
+                    preco_entrada_exchange=entry_price,
+                    pnl_exchange=ex_pos.get("unrealized_pnl"),
+                )
 
                 if verbose:
-                    print(f"  [AUTO-SYNC] ABERTA: {ativo} {side} @ ${entry_price:.4f} qty={qty} ({exchange_symbol})")
+                    print(f"  [AUTO-SYNC] ABERTA: {ativo} {side} qty={ex_pos.get('quantity')}")
+
             except Exception as e:
                 resultado["errors"].append(f"Erro ao abrir {ativo}: {str(e)}")
-                if verbose:
-                    print(f"  [AUTO-SYNC] Erro ao criar posição {ativo}: {e}")
 
-    # ===== 2. CLOSE: in DB but not on exchange =====
-    # Lazy load history cache (perpétuos ou spot copy history)
+    # ===== 2. CLOSE =====
     history_cache = None
 
     for key, db_pos in db_lookup.items():
@@ -832,67 +785,43 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
             exchange_symbol = db_pos.get("exchange_symbol", "")
 
             if verbose:
-                print(f"  [AUTO-SYNC] {ativo} não está mais na exchange — buscando dados de fechamento...")
+                print(f"  [AUTO-SYNC] {ativo} não está mais na exchange")
 
             close_price = None
             close_date = None
 
-            # Fetch history for close details (lazy load, one call for all)
             try:
                 if history_cache is None:
-                    if is_perpetuo:
-                        history_cache = fetch_perpetual_history(credentials)
-                    elif is_spot:
-                        history_cache = fetch_spot_copy_history(credentials)
-                    else:
-                        history_cache = []
+                    history_cache = exchange.fetch_history()
                     time.sleep(0.1)
 
-                # Find matching closed position in history
                 for hist in history_cache:
-                    if (hist["exchange_symbol"].upper() == str(exchange_symbol).upper()
-                            and hist["side"] == side):
-                        close_price = hist["close_price"]
+                    if (
+                        hist["exchange_symbol"].upper() == exchange_symbol.upper()
+                        and hist["side"] == side
+                    ):
+                        close_price = hist.get("close_price")
                         close_date = _timestamp_to_date_str(hist.get("close_time"))
                         break
-            except Exception as e:
-                if verbose:
-                    print(f"  [AUTO-SYNC] Aviso: falha ao buscar histórico: {e}")
+            except Exception:
+                pass
 
-            # Data de fechamento: sempre da API Bitget quando disponível; hoje só como fallback
             if not close_date:
                 close_date = datetime.now().strftime("%Y-%m-%d")
 
-            updates = {
-                "status": "closed",
-                "data_saida": close_date,
-            }
-            if close_price and close_price > 0:
-                updates["preco_saida"] = close_price
-
             try:
-                repo.atualizar_posicao(posicao_id, **updates)
+                repo.atualizar_posicao(
+                    posicao_id,
+                    status="closed",
+                    data_saida=close_date,
+                    preco_saida=close_price if close_price else None
+                )
                 resultado["closed"] += 1
-                price_str = f"@ ${close_price:.4f}" if close_price else "(sem preço)"
-                if verbose:
-                    print(f"  [AUTO-SYNC] FECHADA: {ativo} {side} {price_str} em {close_date}")
 
-                # Hook: fechar posição nas turmas
-                try:
-                    from services.turmas_service import TurmasService
-                    ts = TurmasService(db_url=repo.db_url)
-                    ts.sync_posicao_fechada(posicao_id, close_date)
-                    if verbose:
-                        print(f"  [AUTO-SYNC] Turmas sync: {ativo} fechado nas turmas")
-                except Exception as e_turma:
-                    if verbose:
-                        print(f"  [AUTO-SYNC] Aviso: turma sync fechamento falhou para {ativo}: {e_turma}")
             except Exception as e:
                 resultado["errors"].append(f"Erro ao fechar {ativo}: {str(e)}")
-                if verbose:
-                    print(f"  [AUTO-SYNC] Erro ao fechar {ativo}: {e}")
 
-    # ===== 3. UPDATE: in both -> sync quantidade, preco_entrada, exchange_symbol, PnL =====
+    # ===== 3. UPDATE =====
     if not df_posicoes.empty:
         posicao_ids = df_posicoes['id'].tolist()
         qty_map = _batch_load_quantities(repo, posicao_ids)
@@ -903,45 +832,30 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
                 ativo = db_pos["ativo"]
                 ex_pos = exchange_lookup[key]
 
-                # Sempre ATIVOUSDT (ex.: SOLUSDT)
-                exchange_symbol = (ex_pos.get("exchange_symbol") or f"{ativo}USDT").upper()
-
-                new_qty = ex_pos["quantity"]
-                entry_price = ex_pos.get("entry_price", 0) or 0
-                unrealized_pnl = ex_pos.get("unrealized_pnl")
-
-                attr_updates = {"quantidade": new_qty}
-
-                if entry_price:
-                    attr_updates["preco_entrada_exchange"] = entry_price
-                    # preco_entrada_total = quantidade * preco_entrada
-                    attr_updates["preco_entrada_total"] = new_qty * entry_price
-
-                if unrealized_pnl is not None:
-                    attr_updates["pnl_exchange"] = unrealized_pnl
-
-                leverage = ex_pos.get("leverage")
-                if leverage and leverage != 1:
-                    attr_updates["leverage"] = leverage
-
                 try:
-                    # Tabela posicoes: preco_entrada, exchange_symbol e data_entrada (da API)
-                    pos_updates = {"exchange_symbol": exchange_symbol}
-                    if entry_price > 0:
-                        pos_updates["preco_entrada"] = entry_price
-                    # data_entrada direto da API (ctime=buyTime para spot, cTime para perpétuos)
-                    data_entrada_api = _timestamp_to_date_str(ex_pos.get("ctime"))
-                    if data_entrada_api:
-                        pos_updates["data_entrada"] = data_entrada_api
-                    repo.atualizar_posicao(posicao_id, **pos_updates)
-                    # Upsert atributos (cria registro se não existir)
-                    repo.salvar_atributos_posicao(posicao_id, produto_id, **attr_updates)
+                    repo.atualizar_posicao(
+                        posicao_id,
+                        exchange_symbol=ex_pos.get("exchange_symbol"),
+                        preco_entrada=ex_pos.get("entry_price"),
+                        data_entrada=_timestamp_to_date_str(ex_pos.get("ctime"))
+                    )
+
+                    repo.salvar_atributos_posicao(
+                        posicao_id,
+                        produto_id,
+                        quantidade=ex_pos.get("quantity"),
+                        preco_entrada_exchange=ex_pos.get("entry_price"),
+                        pnl_exchange=ex_pos.get("unrealized_pnl"),
+                        leverage=ex_pos.get("leverage"),
+                    )
+
                     resultado["synced"] += 1
+
                 except Exception as e:
                     resultado["errors"].append(f"Erro ao atualizar {ativo}: {str(e)}")
 
-    if verbose and (resultado["opened"] or resultado["closed"] or resultado["synced"]):
-        print(f"  [AUTO-SYNC] Resumo: {resultado['opened']} abertas, {resultado['closed']} fechadas, {resultado['synced']} atualizadas")
+    if verbose:
+        print(f"  [AUTO-SYNC] Resumo: {resultado}")
 
     return resultado
 

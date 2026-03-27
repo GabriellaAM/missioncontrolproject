@@ -24,3 +24,6 @@ plotly>=5.15.0           # Gráficos interativos (charts.py, notebooks Jupyter)
 
 # --- Opcional: Notebooks Jupyter ---
 # jupyter>=1.0.0         # Descomente se for usar notebooks para análise
+
+# --- Banco de dados ---
+psycopg2-binary>=2.9.0   # Conexão com PostgreSQL

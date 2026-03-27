@@ -2130,7 +2130,7 @@ def get_form_produto_html(produto=None, as_inner=False):
                             <label>Tipo</label>
                             <select name="tipo">
                                 <option value="Spot" {'selected' if is_edit and produto.get('tipo') == 'Spot' else ''}>Spot</option>
-                                <option value="Perpetuos" {'selected' if is_edit and produto.get('tipo') == 'Perpetuos' else ''}>Perpetuos</option>
+                                <option value="Perpétuos" {'selected' if is_edit and produto.get('tipo') == 'Perpétuos' else ''}>Perpétuos</option>
                                 <option value="Outro" {'selected' if is_edit and produto.get('tipo') not in ['Spot', 'Perpetuos'] else ''}>Outro</option>
                             </select>
                         </div>
