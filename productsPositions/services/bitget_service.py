@@ -18,6 +18,14 @@ from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 from dotenv import load_dotenv
 from storage.sqlite_repo import connect_pg
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,  # troque para DEBUG quando quiser mais detalhe
+    format="%(asctime)s [%(levelname)s] [%(threadName)s] %(name)s: %(message)s"
+)
+
+logger = logging.getLogger(__name__)
 
 
 # Load .env from MissionControl root
@@ -31,6 +39,7 @@ _thread_local = threading.local()
 def _get_session() -> requests.Session:
     """Gets or creates a thread-local HTTP session for connection reuse."""
     if not hasattr(_thread_local, 'session'):
+        logger.debug("Criando nova sessão HTTP para thread")
         _thread_local.session = requests.Session()
         _thread_local.session.headers.update({
             "Content-Type": "application/json",
@@ -72,6 +81,8 @@ def get_bitget_credentials(produto_nome: str) -> Optional[Dict[str, str]]:
     Returns:
         Dict with api_key, secret_key, passphrase or None if not configured
     """
+    logger.info(f"Buscando credenciais para produto: {produto_nome}")
+
     normalized = _normalize_product_name(produto_nome)
 
     # Try exact match first
@@ -92,6 +103,8 @@ def get_bitget_credentials(produto_nome: str) -> Optional[Dict[str, str]]:
         creds = _try_env_credentials(short_perp)
         if creds:
             return creds
+
+    logger.warning(f"Credenciais não encontradas para: {produto_nome}")
 
     return None
 
@@ -121,9 +134,20 @@ def _create_signature(timestamp: str, method: str, request_path: str, body: str,
     ).digest()
     return base64.b64encode(signature).decode('utf-8')
 
-
-def _bitget_request(credentials: Dict[str, str], method: str, endpoint: str, body: str = "") -> dict:
+try:
+    def _bitget_request(credentials: Dict[str, str], method: str, endpoint: str, body: str = "") -> dict:
+        try:
+            logger.debug(f"[BITGET REQUEST] {method} {endpoint}")
+            base_url = "https://api.bitget.com"
+            timestamp = str(int(time.time() * 1000))
+            signature = _create_signature(
+                timestamp, method, endpoint, body,
+                credentials["secret_key"]
+            )
     """Makes authenticated request to Bitget API using connection pooling."""
+
+    logger.debug(f"[BITGET REQUEST] {method} {endpoint}")
+
     base_url = "https://api.bitget.com"
     timestamp = str(int(time.time() * 1000))
 
@@ -142,12 +166,21 @@ def _bitget_request(credentials: Dict[str, str], method: str, endpoint: str, bod
     url = base_url + endpoint
     session = _get_session()
 
+    logger.debug(f"[BITGET REQUEST] URL: {base_url + endpoint}")
+
     if method.upper() == "GET":
         response = session.get(url, headers=headers, timeout=10)
     else:
         response = session.post(url, headers=headers, data=body, timeout=10)
+    
+    logger.debug(f"[BITGET RESPONSE] Status: {response.status_code}")
+    logger.debug(f"[BITGET RESPONSE] Body: {response.text[:300]}")
 
     return response.json()
+
+except Exception:
+    logger.exception("[BITGET ERROR] Erro na requisição")
+    raise
 
 
 # Base URL para endpoints públicos (sem autenticação)
@@ -242,10 +275,16 @@ def fetch_perpetual_positions(credentials: Dict[str, str]) -> List[Dict]:
         - averageOpenPrice: Average entry price
         - unrealizedPL: Unrealized PnL
     """
+
+    logger.info("[PERP] Buscando posições perpétuas")
+
     endpoint = "/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
     result = _bitget_request(credentials, "GET", endpoint)
 
+    logger.debug(f"[PERP] Resposta API: {result}")
+
     if result.get("code") != "00000":
+        logger.error(f"[PERP] Erro API: {result}")
         raise Exception(f"Bitget API error: {result.get('msg', 'Unknown error')}")
 
     positions = []
@@ -253,6 +292,9 @@ def fetch_perpetual_positions(credentials: Dict[str, str]) -> List[Dict]:
 
     for pos in data:
         # Bitget returns positions with total > 0
+        
+        logger.debug(f"[PERP] Processando posição: {pos}")
+
         total = float(pos.get("total", 0))
         if total > 0:
             # Campo correto é openPriceAvg (não averageOpenPrice)
@@ -270,6 +312,8 @@ def fetch_perpetual_positions(credentials: Dict[str, str]) -> List[Dict]:
                 # Data de abertura: cTime (criação) ou openTime; aceita ms ou segundos
                 "ctime": pos.get("cTime") or pos.get("openTime") or pos.get("ctime"),
             })
+
+    logger.info(f"[PERP] Total posições válidas: {len(positions)}")
 
     return positions
 
@@ -291,6 +335,9 @@ def fetch_spot_positions(credentials: Dict[str, str]) -> List[Dict]:
         - unrealized_pnl: Unrealized PnL
         - tracking_no: Unique tracking order number
     """
+
+    logger.info("[SPOT] Buscando posições spot")
+
     all_positions = []
     end_id = None
     max_pages = 10  # Safety limit
@@ -308,12 +355,17 @@ def fetch_spot_positions(credentials: Dict[str, str]) -> List[Dict]:
         data = result.get("data", {})
         tracking_list = data.get("trackingList", [])
 
+        logger.debug(f"[SPOT] Página com {len(tracking_list)} ordens")
+
         if not tracking_list:
             break
 
         for order in tracking_list:
             symbol = order.get("symbol", "")
             qty = float(order.get("buyFillSize", 0) or 0)
+
+            logger.debug(f"[SPOT] Ordem: {order}")
+
             if qty > 0:
                 all_positions.append({
                     "symbol": symbol.replace("USDT", ""),
@@ -332,11 +384,16 @@ def fetch_spot_positions(credentials: Dict[str, str]) -> List[Dict]:
             break
         end_id = new_end_id
 
+    logger.info(f"[SPOT] Total posições: {len(all_positions)}")
+    
     return all_positions
 
 
 def _batch_load_quantities(repo, posicao_ids: List[int]) -> Dict[int, float]:
     """Batch load quantities for multiple positions in a single query."""
+
+    logger.debug(f"[DB] Batch load para {len(posicao_ids)} posições")
+
     if not posicao_ids:
         return {}
 
@@ -350,13 +407,24 @@ def _batch_load_quantities(repo, posicao_ids: List[int]) -> Dict[int, float]:
     conn = connect_pg(repo.db_url)
     try:
         cursor = conn.cursor()
+        logger.debug(f"[DB] Executando query batch")
         cursor.execute(query, posicao_ids)
         return {row[0]: row[1] for row in cursor.fetchall()}
+        rows = cursor.fetchall()
+        logger.debug(f"[DB] {len(rows)} linhas retornadas")
+        return {row[0]: row[1] for row in rows}
+
+    except Exception:
+    logger.exception("[DB] Erro no batch load")
+    raise
+
     finally:
         conn.close()
 
+try:
 
-def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) -> Dict:
+
+    def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) -> Dict:
     """
     Synchronizes position quantities with Bitget exchange.
 
@@ -370,6 +438,9 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
     Returns:
         Dict with summary: {synced: int, skipped: int, not_found: list, errors: list}
     """
+
+    logger.info(f"[SYNC] Iniciando sync produto_id={produto_id}")
+
     resultado = {
         "synced": 0,
         "skipped": 0,
@@ -379,6 +450,9 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
 
     # Load product info
     produto = repo.carregar_produto(produto_id)
+
+    logger.debug(f"[SYNC] Produto carregado: {produto}")
+
     if not produto:
         resultado["errors"].append(f"Produto {produto_id} não encontrado")
         return resultado
@@ -393,6 +467,8 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
             print(f"  Sem credenciais Bitget para {produto_nome}")
         resultado["skipped"] += 1
         return resultado
+
+    logger.info(f"[SYNC] Buscando posições na exchange...")
 
     # Fetch positions from exchange based on product type
     try:
@@ -409,16 +485,21 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
         return resultado
 
     if verbose:
-        print(f"  {len(exchange_positions)} posições encontradas na exchange")
+        logger.info(f"[SYNC] {len(exchange_positions)} posições encontradas na exchange")
+        logger.debug(f"[SYNC] Exchange positions: {exchange_positions}")
 
     # Create lookup by exchange_symbol + side
     exchange_lookup = {}
     for pos in exchange_positions:
         key = (pos["exchange_symbol"].upper(), pos["side"])
         exchange_lookup[key] = pos
+    
+    logger.debug(f"[SYNC] Exchange lookup size: {len(exchange_lookup)}")
 
     # Load open positions from database
     df_posicoes = repo.carregar_posicoes_abertas(produto_id)
+
+    logger.info(f"[SYNC] {len(df_posicoes)} posições no banco")
 
     if df_posicoes.empty:
         if verbose:
@@ -429,7 +510,14 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
     posicao_ids = df_posicoes['id'].tolist()
     qty_map = _batch_load_quantities(repo, posicao_ids)
 
+    logger.debug(f"[SYNC] Quantidades carregadas: {qty_map}")
+
     for _, db_pos in df_posicoes.iterrows():
+
+        logger.debug(f"[SYNC] -----------------------------")
+        logger.debug(f"[SYNC] Processando posição ID={db_pos['id']}")
+        logger.debug(f"[SYNC] Ativo={ativo}, Symbol={exchange_symbol}, Side={side}")
+
         posicao_id = db_pos["id"]
         ativo = db_pos["ativo"]
         exchange_symbol = db_pos.get("exchange_symbol")
@@ -444,7 +532,12 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
 
         # Look up in exchange data
         key = (exchange_symbol.upper(), side)
+
+        logger.debug(f"[SYNC] Lookup key: {key}")
+
         exchange_pos = exchange_lookup.get(key)
+
+        logger.debug(f"[SYNC] Match encontrado: {exchange_pos}")
 
         if not exchange_pos:
             resultado["not_found"].append(f"{ativo} ({exchange_symbol})")
@@ -470,15 +563,30 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
 
         # Always update: pnl_exchange changes even if quantity is the same
         current_qty = qty_map.get(posicao_id)
+
+        logger.info(
+        f"[SYNC] Atualizando {ativo} | "
+        f"qty: {current_qty} -> {new_qty} | "
+        f"pnl: {exchange_pos.get('unrealized_pnl')}"
+        )
+        
         repo.atualizar_atributos_posicao(posicao_id, **updates)
         resultado["synced"] += 1
         if verbose:
             if current_qty and current_qty != new_qty:
+                logger.warning(f"[SYNC] Divergência de quantidade detectada em {ativo}")
                 print(f"  [{ativo}] Quantidade: {current_qty} -> {new_qty}")
             else:
                 print(f"  [{ativo}] Sincronizado (qty={new_qty})")
 
+    logger.info(f"[SYNC] ===== FIM SYNC =====")
+    logger.info(f"[SYNC] Resultado: {resultado}")
+    
     return resultado
+
+except Exception:
+    logger.exception(f"[SYNC] Erro ao processar posição {ativo}")
+    resultado["errors"].append(ativo)
 
 
 def fetch_perpetual_history(credentials: Dict[str, str], limit: int = 100, max_pages: int = 20) -> List[Dict]:
@@ -632,6 +740,8 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
     from services.bitget_service import _normalize_product_name
     from services.credentials import get_exchange_credentials  # <- NOVO
 
+    logger.info(f"[AUTO-SYNC] ===== INÍCIO produto_id={produto_id} =====")
+
     resultado = {
         "opened": 0,
         "closed": 0,
@@ -642,14 +752,20 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
 
     # ===== LOAD PRODUTO =====
     produto = repo.carregar_produto(produto_id)
+
+    logger.debug(f"[AUTO-SYNC] Produto: {produto}")
+
     if not produto:
         resultado["errors"].append(f"Produto {produto_id} não encontrado")
+        logger.error(f"[AUTO-SYNC] Produto {produto_id} NÃO encontrado")
         return resultado
 
     produto_nome = produto["nome"]
 
     # ===== CREDENTIALS (MULTI-EXCHANGE) =====
     credentials = get_exchange_credentials(produto_nome)
+
+    logger.debug(f"[AUTO-SYNC] Credenciais encontradas: {bool(credentials)}")
 
     if not credentials:
         suffix = _normalize_product_name(produto_nome)
@@ -661,13 +777,16 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
 
     # ===== EXCHANGE FACTORY =====
     try:
+        logger.info(f"[AUTO-SYNC] Criando exchange para {produto_nome}")
         exchange = ExchangeFactory.get(produto_nome, credentials)
     except Exception as e:
         resultado["errors"].append(str(e))
+        logger.exception("[AUTO-SYNC] Erro ao criar exchange")
         return resultado
 
     # ===== FETCH POSITIONS =====
     try:
+        logger.info("[AUTO-SYNC] Buscando posições na exchange...")
         exchange_positions = exchange.fetch_positions()
     except Exception as e:
         resultado["errors"].append(f"Erro ao buscar posições: {str(e)}")
@@ -683,9 +802,13 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
     for pos in exchange_positions:
         key = (pos["exchange_symbol"].upper(), pos["side"])
         exchange_lookup[key] = pos
+    
+    logger.debug(f"[AUTO-SYNC] Exchange lookup size: {len(exchange_lookup)}")
 
     # ===== LOAD DB =====
     df_posicoes = repo.carregar_posicoes_abertas(produto_id)
+
+    logger.info(f"[AUTO-SYNC] {len(df_posicoes)} posições no banco")
 
     db_lookup = {}
     if not df_posicoes.empty:
@@ -704,17 +827,35 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
             entry_price = ex_pos.get("entry_price", 0)
             exchange_symbol = ex_pos.get("exchange_symbol").upper()
 
+            logger.info(
+            f"[AUTO-SYNC][OPEN] {ativo} {side} "
+            f"qty={ex_pos.get('quantity')} "
+            f"price={entry_price}"
+            )
+
             data_entrada = _timestamp_to_date_str(ex_pos.get("ctime"))
+
+            logger.debug(f"[AUTO-SYNC][OPEN] data_entrada={data_entrada}")
+
             if not data_entrada:
                 data_entrada = datetime.now().strftime("%Y-%m-%d")
 
             try:
                 # evitar duplicata
+
+                logger.debug("[AUTO-SYNC][OPEN] Rechecando duplicidade no banco")
+
                 df_recheck = repo.carregar_posicoes_abertas(produto_id)
                 skip = False
 
                 if not df_recheck.empty:
                     for _, row in df_recheck.iterrows():
+
+                        logger.warning(
+                        f"[AUTO-SYNC][OPEN] DUPLICATA detectada {ativo} "
+                        f"{exchange_symbol} {data_entrada}"
+                        )
+
                         ex_sym = row.get("exchange_symbol")
                         s = row.get("side", "long")
 
@@ -758,6 +899,7 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
                 )
 
                 posicao_id = repo.salvar_posicao(produto_id, posicao)
+                logger.info(f"[AUTO-SYNC][OPEN] Criada posição ID={posicao_id}")
                 resultado["opened"] += 1
 
                 repo.salvar_atributos_posicao(
@@ -792,10 +934,12 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
 
             try:
                 if history_cache is None:
+                    logger.debug("[AUTO-SYNC][CLOSE] Carregando histórico")
                     history_cache = exchange.fetch_history()
                     time.sleep(0.1)
 
                 for hist in history_cache:
+                    logger.debug(f"[AUTO-SYNC][CLOSE] Testando histórico: {hist}")
                     if (
                         hist["exchange_symbol"].upper() == exchange_symbol.upper()
                         and hist["side"] == side
@@ -817,6 +961,10 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
                     preco_saida=close_price if close_price else None
                 )
                 resultado["closed"] += 1
+                logger.info(
+                f"[AUTO-SYNC][CLOSE] {ativo} fechado "
+                f"price={close_price} date={close_date}"
+                )
 
             except Exception as e:
                 resultado["errors"].append(f"Erro ao fechar {ativo}: {str(e)}")
@@ -839,6 +987,14 @@ def auto_sync_positions(repo, produto_id: int, verbose: bool = True) -> Dict:
                         preco_entrada=ex_pos.get("entry_price"),
                         data_entrada=_timestamp_to_date_str(ex_pos.get("ctime"))
                     )
+
+                    logger.debug(
+                    f"[AUTO-SYNC][UPDATE] {ativo} "
+                    f"qty={ex_pos.get('quantity')} "
+                    f"pnl={ex_pos.get('unrealized_pnl')}"
+                    )
+
+                    logger.debug(f"[AUTO-SYNC][UPDATE] Atualizando DB posicao_id={posicao_id}")
 
                     repo.salvar_atributos_posicao(
                         posicao_id,
@@ -870,6 +1026,9 @@ def test_bitget_connection(produto_nome: str) -> Tuple[bool, str]:
     Returns:
         Tuple of (success, message)
     """
+
+    logger.info(f"[TEST] Testando conexão para {produto_nome}")
+
     credentials = get_bitget_credentials(produto_nome)
     if not credentials:
         return False, f"Credenciais não encontradas para {produto_nome}"
@@ -882,4 +1041,5 @@ def test_bitget_connection(produto_nome: str) -> Tuple[bool, str]:
         else:
             return False, f"Erro: {result.get('msg', 'Unknown')}"
     except Exception as e:
+        logger.exception("[TEST] Erro na conexão")
         return False, f"Exceção: {str(e)}"
