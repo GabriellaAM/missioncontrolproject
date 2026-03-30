@@ -418,22 +418,11 @@ def _batch_load_quantities(repo, posicao_ids: List[int]) -> Dict[int, float]:
     finally:
         conn.close()
 
-try:
-
-
-    def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) -> Dict:
+def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) -> Dict:
     """
     Synchronizes position quantities with Bitget exchange.
 
     OPTIMIZED: Uses batch DB queries and connection pooling for ~2x faster sync.
-
-    Args:
-        repo: SQLiteRepo instance
-        produto_id: Product ID to sync
-        verbose: Print progress info
-
-    Returns:
-        Dict with summary: {synced: int, skipped: int, not_found: list, errors: list}
     """
 
     logger.info(f"[SYNC] Iniciando sync produto_id={produto_id}")
@@ -445,146 +434,101 @@ try:
         "errors": []
     }
 
-    # Load product info
-    produto = repo.carregar_produto(produto_id)
-
-    logger.debug(f"[SYNC] Produto carregado: {produto}")
-
-    if not produto:
-        resultado["errors"].append(f"Produto {produto_id} não encontrado")
-        return resultado
-
-    produto_nome = produto["nome"]
-    produto_tipo = produto["tipo"]
-
-    # Get credentials
-    credentials = get_bitget_credentials(produto_nome)
-    if not credentials:
-        if verbose:
-            print(f"  Sem credenciais Bitget para {produto_nome}")
-        resultado["skipped"] += 1
-        return resultado
-
-    logger.info(f"[SYNC] Buscando posições na exchange...")
-
-    # Fetch positions from exchange based on product type
     try:
+        # Load product info
+        produto = repo.carregar_produto(produto_id)
+        logger.debug(f"[SYNC] Produto carregado: {produto}")
+
+        if not produto:
+            resultado["errors"].append(f"Produto {produto_id} não encontrado")
+            return resultado
+
+        produto_nome = produto["nome"]
+        produto_tipo = produto["tipo"]
+
+        # Get credentials
+        credentials = get_bitget_credentials(produto_nome)
+        if not credentials:
+            if verbose:
+                print(f"  Sem credenciais Bitget para {produto_nome}")
+            resultado["skipped"] += 1
+            return resultado
+
+        logger.info(f"[SYNC] Buscando posições na exchange...")
+
+        # Fetch positions
         if "perpétuo" in produto_tipo.lower() or "perpetuo" in produto_tipo.lower():
             exchange_positions = fetch_perpetual_positions(credentials)
         elif "spot" in produto_tipo.lower():
             exchange_positions = fetch_spot_positions(credentials)
         else:
             if verbose:
-                print(f"  Tipo de produto não suportado para sync: {produto_tipo}")
+                print(f"Tipo não suportado: {produto_tipo}")
             return resultado
+
+        logger.info(f"[SYNC] {len(exchange_positions)} posições encontradas")
+
+        # Lookup
+        exchange_lookup = {
+            (p["exchange_symbol"].upper(), p["side"]): p
+            for p in exchange_positions
+        }
+
+        df_posicoes = repo.carregar_posicoes_abertas(produto_id)
+
+        if df_posicoes.empty:
+            return resultado
+
+        posicao_ids = df_posicoes['id'].tolist()
+        qty_map = _batch_load_quantities(repo, posicao_ids)
+
+        for _, db_pos in df_posicoes.iterrows():
+
+            posicao_id = db_pos["id"]
+            ativo = db_pos["ativo"]
+            exchange_symbol = db_pos.get("exchange_symbol")
+            side = db_pos["side"]
+
+            logger.debug(f"[SYNC] Processando ID={posicao_id} | {ativo}")
+
+            if not exchange_symbol:
+                resultado["skipped"] += 1
+                continue
+
+            key = (exchange_symbol.upper(), side)
+            exchange_pos = exchange_lookup.get(key)
+
+            if not exchange_pos:
+                resultado["not_found"].append(ativo)
+                continue
+
+            new_qty = exchange_pos["quantity"]
+            updates = {"quantidade": new_qty}
+
+            if exchange_pos.get("entry_price"):
+                updates["preco_entrada_exchange"] = exchange_pos["entry_price"]
+
+            if exchange_pos.get("unrealized_pnl") is not None:
+                updates["pnl_exchange"] = exchange_pos["unrealized_pnl"]
+
+            if exchange_pos.get("leverage") and exchange_pos["leverage"] != 1:
+                updates["leverage"] = exchange_pos["leverage"]
+
+            current_qty = qty_map.get(posicao_id)
+
+            logger.info(f"[SYNC] {ativo}: {current_qty} -> {new_qty}")
+
+            repo.atualizar_atributos_posicao(posicao_id, **updates)
+
+            resultado["synced"] += 1
+
+        logger.info(f"[SYNC] Fim sync: {resultado}")
+        return resultado
+
     except Exception as e:
-        resultado["errors"].append(f"Erro ao buscar posições: {str(e)}")
+        logger.exception(f"[SYNC ERROR] {str(e)}")
+        resultado["errors"].append(str(e))
         return resultado
-
-    if verbose:
-        logger.info(f"[SYNC] {len(exchange_positions)} posições encontradas na exchange")
-        logger.debug(f"[SYNC] Exchange positions: {exchange_positions}")
-
-    # Create lookup by exchange_symbol + side
-    exchange_lookup = {}
-    for pos in exchange_positions:
-        key = (pos["exchange_symbol"].upper(), pos["side"])
-        exchange_lookup[key] = pos
-    
-    logger.debug(f"[SYNC] Exchange lookup size: {len(exchange_lookup)}")
-
-    # Load open positions from database
-    df_posicoes = repo.carregar_posicoes_abertas(produto_id)
-
-    logger.info(f"[SYNC] {len(df_posicoes)} posições no banco")
-
-    if df_posicoes.empty:
-        if verbose:
-            print("  Nenhuma posição aberta no banco")
-        return resultado
-
-    # OPTIMIZED: Batch load all quantities in single query
-    posicao_ids = df_posicoes['id'].tolist()
-    qty_map = _batch_load_quantities(repo, posicao_ids)
-
-    logger.debug(f"[SYNC] Quantidades carregadas: {qty_map}")
-
-    for _, db_pos in df_posicoes.iterrows():
-
-        logger.debug(f"[SYNC] -----------------------------")
-        logger.debug(f"[SYNC] Processando posição ID={db_pos['id']}")
-        logger.debug(f"[SYNC] Ativo={ativo}, Symbol={exchange_symbol}, Side={side}")
-
-        posicao_id = db_pos["id"]
-        ativo = db_pos["ativo"]
-        exchange_symbol = db_pos.get("exchange_symbol")
-        side = db_pos["side"]
-
-        # Skip positions without exchange_symbol (manual positions)
-        if not exchange_symbol:
-            resultado["skipped"] += 1
-            if verbose:
-                print(f"  [{ativo}] Sem exchange_symbol - pulando")
-            continue
-
-        # Look up in exchange data
-        key = (exchange_symbol.upper(), side)
-
-        logger.debug(f"[SYNC] Lookup key: {key}")
-
-        exchange_pos = exchange_lookup.get(key)
-
-        logger.debug(f"[SYNC] Match encontrado: {exchange_pos}")
-
-        if not exchange_pos:
-            resultado["not_found"].append(f"{ativo} ({exchange_symbol})")
-            if verbose:
-                print(f"  [{ativo}] Não encontrado na exchange ({exchange_symbol} {side})")
-            continue
-
-        # Build update dict with all available exchange data
-        new_qty = exchange_pos["quantity"]
-        updates = {"quantidade": new_qty}
-
-        entry_price = exchange_pos.get("entry_price")
-        if entry_price:
-            updates["preco_entrada_exchange"] = entry_price
-
-        unrealized_pnl = exchange_pos.get("unrealized_pnl")
-        if unrealized_pnl is not None:
-            updates["pnl_exchange"] = unrealized_pnl
-
-        leverage = exchange_pos.get("leverage")
-        if leverage and leverage != 1:
-            updates["leverage"] = leverage
-
-        # Always update: pnl_exchange changes even if quantity is the same
-        current_qty = qty_map.get(posicao_id)
-
-        logger.info(
-        f"[SYNC] Atualizando {ativo} | "
-        f"qty: {current_qty} -> {new_qty} | "
-        f"pnl: {exchange_pos.get('unrealized_pnl')}"
-        )
-        
-        repo.atualizar_atributos_posicao(posicao_id, **updates)
-        resultado["synced"] += 1
-        if verbose:
-            if current_qty and current_qty != new_qty:
-                logger.warning(f"[SYNC] Divergência de quantidade detectada em {ativo}")
-                print(f"  [{ativo}] Quantidade: {current_qty} -> {new_qty}")
-            else:
-                print(f"  [{ativo}] Sincronizado (qty={new_qty})")
-
-    logger.info(f"[SYNC] ===== FIM SYNC =====")
-    logger.info(f"[SYNC] Resultado: {resultado}")
-    
-    return resultado
-
-except Exception:
-    logger.exception(f"[SYNC] Erro ao processar posição {ativo}")
-    resultado["errors"].append(ativo)
-
 
 def fetch_perpetual_history(credentials: Dict[str, str], limit: int = 100, max_pages: int = 20) -> List[Dict]:
     """
