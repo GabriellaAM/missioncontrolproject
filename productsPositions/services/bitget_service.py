@@ -134,53 +134,50 @@ def _create_signature(timestamp: str, method: str, request_path: str, body: str,
     ).digest()
     return base64.b64encode(signature).decode('utf-8')
 
-try:
-    def _bitget_request(credentials: Dict[str, str], method: str, endpoint: str, body: str = "") -> dict:
-        try:
-            logger.debug(f"[BITGET REQUEST] {method} {endpoint}")
-            base_url = "https://api.bitget.com"
-            timestamp = str(int(time.time() * 1000))
-            signature = _create_signature(
-                timestamp, method, endpoint, body,
-                credentials["secret_key"]
-            )
+def _bitget_request(credentials: Dict[str, str], method: str, endpoint: str, body: str = "") -> dict:
     """Makes authenticated request to Bitget API using connection pooling."""
-
-    logger.debug(f"[BITGET REQUEST] {method} {endpoint}")
-
-    base_url = "https://api.bitget.com"
-    timestamp = str(int(time.time() * 1000))
-
-    signature = _create_signature(
-        timestamp, method, endpoint, body,
-        credentials["secret_key"]
-    )
-
-    headers = {
-        "ACCESS-KEY": credentials["api_key"],
-        "ACCESS-SIGN": signature,
-        "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-PASSPHRASE": credentials["passphrase"],
-    }
-
-    url = base_url + endpoint
-    session = _get_session()
-
-    logger.debug(f"[BITGET REQUEST] URL: {base_url + endpoint}")
-
-    if method.upper() == "GET":
-        response = session.get(url, headers=headers, timeout=10)
-    else:
-        response = session.post(url, headers=headers, data=body, timeout=10)
     
-    logger.debug(f"[BITGET RESPONSE] Status: {response.status_code}")
-    logger.debug(f"[BITGET RESPONSE] Body: {response.text[:300]}")
+    try:
+        logger.debug(f"[BITGET REQUEST] {method} {endpoint}")
 
-    return response.json()
+        base_url = "https://api.bitget.com"
+        timestamp = str(int(time.time() * 1000))
 
-except Exception:
-    logger.exception("[BITGET ERROR] Erro na requisição")
-    raise
+        signature = _create_signature(
+            timestamp,
+            method,
+            endpoint,
+            body,
+            credentials["secret_key"]
+        )
+
+        headers = {
+            "ACCESS-KEY": credentials["api_key"],
+            "ACCESS-SIGN": signature,
+            "ACCESS-TIMESTAMP": timestamp,
+            "ACCESS-PASSPHRASE": credentials["passphrase"],
+        }
+
+        url = base_url + endpoint
+        session = _get_session()
+
+        logger.debug(f"[BITGET REQUEST] URL: {url}")
+
+        if method.upper() == "GET":
+            response = session.get(url, headers=headers, timeout=10)
+        else:
+            response = session.post(url, headers=headers, data=body, timeout=10)
+
+        logger.debug(f"[BITGET RESPONSE] Status: {response.status_code}")
+        logger.debug(f"[BITGET RESPONSE] Body: {response.text[:300]}")
+
+        response.raise_for_status()  # garante erro HTTP
+
+        return response.json()
+
+    except Exception as e:
+        logger.exception(f"[BITGET ERROR] Erro na requisição: {str(e)}")
+        raise
 
 
 # Base URL para endpoints públicos (sem autenticação)
