@@ -402,18 +402,21 @@ def _batch_load_quantities(repo, posicao_ids: List[int]) -> Dict[int, float]:
     """
 
     conn = connect_pg(repo.db_url)
+    
     try:
         cursor = conn.cursor()
         logger.debug(f"[DB] Executando query batch")
+
         cursor.execute(query, posicao_ids)
-        return {row[0]: row[1] for row in cursor.fetchall()}
         rows = cursor.fetchall()
+
         logger.debug(f"[DB] {len(rows)} linhas retornadas")
+
         return {row[0]: row[1] for row in rows}
 
-    except Exception:
-    logger.exception("[DB] Erro no batch load")
-    raise
+    except Exception as e:
+        logger.exception(f"[DB] Erro no batch load: {str(e)}")
+        raise
 
     finally:
         conn.close()
