@@ -423,12 +423,12 @@ def _batch_load_quantities(repo, posicao_ids: List[int]) -> Dict[int, float]:
 
 def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) -> Dict:
     """
-    Synchronizes position quantities with Bitget exchange.
+    Synchronizes position quantities with exchange (multi-exchange: Bitget, OKX, etc).
 
-    OPTIMIZED: Uses batch DB queries and connection pooling for ~2x faster sync.
+    OPTIMIZED: Uses batch DB queries and connection pooling.
     """
 
-    logger.info(f"[SYNC] Iniciando sync produto_id={produto_id}")
+    logger.info(f"[SYNC] ===== INÍCIO sync produto_id={produto_id} =====")
 
     resultado = {
         "synced": 0,
@@ -438,94 +438,168 @@ def sync_positions_with_exchange(repo, produto_id: int, verbose: bool = True) ->
     }
 
     try:
-        # Load product info
+        # =========================================
+        # LOAD PRODUTO
+        # =========================================
         produto = repo.carregar_produto(produto_id)
         logger.debug(f"[SYNC] Produto carregado: {produto}")
 
         if not produto:
+            logger.error(f"[SYNC] Produto {produto_id} não encontrado")
             resultado["errors"].append(f"Produto {produto_id} não encontrado")
             return resultado
 
         produto_nome = produto["nome"]
-        produto_tipo = produto["tipo"]
 
-        # Get credentials
-        credentials = get_bitget_credentials(produto_nome)
+        # =========================================
+        # GET CREDENTIALS (MULTI-EXCHANGE)
+        # =========================================
+        from services.credentials import get_exchange_credentials
+
+        credentials = get_exchange_credentials(produto_nome)
+
         if not credentials:
+            logger.warning(f"[SYNC] Sem credenciais para {produto_nome}")
             if verbose:
-                print(f"  Sem credenciais Bitget para {produto_nome}")
+                print(f"  Sem credenciais para {produto_nome}")
             resultado["skipped"] += 1
             return resultado
 
-        logger.info(f"[SYNC] Buscando posições na exchange...")
+        logger.debug(f"[SYNC] Credenciais OK para {produto_nome}")
 
-        # Fetch positions
-        if "perpétuo" in produto_tipo.lower() or "perpetuo" in produto_tipo.lower():
-            exchange_positions = fetch_perpetual_positions(credentials)
-        elif "spot" in produto_tipo.lower():
-            exchange_positions = fetch_spot_positions(credentials)
-        else:
-            if verbose:
-                print(f"Tipo não suportado: {produto_tipo}")
+        # =========================================
+        # CREATE EXCHANGE
+        # =========================================
+        from exchanges.factory import ExchangeFactory
+
+        try:
+            exchange = ExchangeFactory.get(produto_nome, credentials)
+            logger.info(f"[SYNC] Exchange detectada: {exchange.__class__.__name__}")
+        except Exception:
+            logger.exception("[SYNC] Erro ao criar exchange")
+            resultado["errors"].append("Erro ao criar exchange")
+            return resultado
+
+        # =========================================
+        # FETCH POSITIONS
+        # =========================================
+        logger.info("[SYNC] Buscando posições na exchange...")
+
+        try:
+            exchange_positions = exchange.fetch_positions()
+        except Exception:
+            logger.exception("[SYNC] Erro ao buscar posições na exchange")
+            resultado["errors"].append("Erro ao buscar posições")
             return resultado
 
         logger.info(f"[SYNC] {len(exchange_positions)} posições encontradas")
+        logger.debug(f"[SYNC] Exchange positions: {exchange_positions}")
 
-        # Lookup
+        # =========================================
+        # BUILD LOOKUP
+        # =========================================
         exchange_lookup = {
             (p["exchange_symbol"].upper(), p["side"]): p
             for p in exchange_positions
         }
 
+        logger.debug(f"[SYNC] Exchange lookup size: {len(exchange_lookup)}")
+
+        # =========================================
+        # LOAD DB
+        # =========================================
         df_posicoes = repo.carregar_posicoes_abertas(produto_id)
 
         if df_posicoes.empty:
+            logger.warning("[SYNC] Nenhuma posição aberta no banco")
             return resultado
 
+        logger.info(f"[SYNC] {len(df_posicoes)} posições no banco")
+
+        # =========================================
+        # LOAD QUANTITIES (BATCH)
+        # =========================================
         posicao_ids = df_posicoes['id'].tolist()
         qty_map = _batch_load_quantities(repo, posicao_ids)
 
+        logger.debug(f"[SYNC] Quantidades DB: {qty_map}")
+
+        # =========================================
+        # LOOP PRINCIPAL
+        # =========================================
         for _, db_pos in df_posicoes.iterrows():
 
-            posicao_id = db_pos["id"]
-            ativo = db_pos["ativo"]
-            exchange_symbol = db_pos.get("exchange_symbol")
-            side = db_pos["side"]
+            try:
+                posicao_id = db_pos["id"]
+                ativo = db_pos["ativo"]
+                exchange_symbol = db_pos.get("exchange_symbol")
+                side = db_pos["side"]
 
-            logger.debug(f"[SYNC] Processando ID={posicao_id} | {ativo}")
+                logger.debug(f"[SYNC] -----------------------------")
+                logger.debug(f"[SYNC] Processando ID={posicao_id} | {ativo}")
 
-            if not exchange_symbol:
-                resultado["skipped"] += 1
-                continue
+                if not exchange_symbol:
+                    logger.warning(f"[SYNC] {ativo} sem exchange_symbol")
+                    resultado["skipped"] += 1
+                    continue
 
-            key = (exchange_symbol.upper(), side)
-            exchange_pos = exchange_lookup.get(key)
+                key = (exchange_symbol.upper(), side)
+                logger.debug(f"[SYNC] Lookup key: {key}")
 
-            if not exchange_pos:
-                resultado["not_found"].append(ativo)
-                continue
+                exchange_pos = exchange_lookup.get(key)
 
-            new_qty = exchange_pos["quantity"]
-            updates = {"quantidade": new_qty}
+                if not exchange_pos:
+                    logger.warning(f"[SYNC] {ativo} não encontrado na exchange")
+                    resultado["not_found"].append(ativo)
+                    continue
 
-            if exchange_pos.get("entry_price"):
-                updates["preco_entrada_exchange"] = exchange_pos["entry_price"]
+                logger.debug(f"[SYNC] Match encontrado: {exchange_pos}")
 
-            if exchange_pos.get("unrealized_pnl") is not None:
-                updates["pnl_exchange"] = exchange_pos["unrealized_pnl"]
+                # =========================================
+                # BUILD UPDATE
+                # =========================================
+                new_qty = exchange_pos["quantity"]
+                updates = {"quantidade": new_qty}
 
-            if exchange_pos.get("leverage") and exchange_pos["leverage"] != 1:
-                updates["leverage"] = exchange_pos["leverage"]
+                if exchange_pos.get("entry_price"):
+                    updates["preco_entrada_exchange"] = exchange_pos["entry_price"]
 
-            current_qty = qty_map.get(posicao_id)
+                if exchange_pos.get("unrealized_pnl") is not None:
+                    updates["pnl_exchange"] = exchange_pos["unrealized_pnl"]
 
-            logger.info(f"[SYNC] {ativo}: {current_qty} -> {new_qty}")
+                if exchange_pos.get("leverage") and exchange_pos["leverage"] != 1:
+                    updates["leverage"] = exchange_pos["leverage"]
 
-            repo.atualizar_atributos_posicao(posicao_id, **updates)
+                current_qty = qty_map.get(posicao_id)
 
-            resultado["synced"] += 1
+                # =========================================
+                # LOG UPDATE
+                # =========================================
+                logger.info(
+                    f"[SYNC] {ativo} | qty: {current_qty} -> {new_qty} | "
+                    f"pnl: {exchange_pos.get('unrealized_pnl')}"
+                )
 
-        logger.info(f"[SYNC] Fim sync: {resultado}")
+                if current_qty and current_qty != new_qty:
+                    logger.warning(f"[SYNC] Divergência detectada em {ativo}")
+
+                # =========================================
+                # UPDATE DB
+                # =========================================
+                repo.atualizar_atributos_posicao(posicao_id, **updates)
+
+                resultado["synced"] += 1
+
+            except Exception:
+                logger.exception(f"[SYNC] Erro ao processar posição {db_pos}")
+                resultado["errors"].append(str(db_pos))
+
+        # =========================================
+        # FINAL
+        # =========================================
+        logger.info(f"[SYNC] ===== FIM SYNC =====")
+        logger.info(f"[SYNC] Resultado: {resultado}")
+
         return resultado
 
     except Exception as e:
