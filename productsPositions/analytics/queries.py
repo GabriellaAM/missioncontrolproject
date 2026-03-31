@@ -13,6 +13,7 @@ from services.bitget_service import (
     fetch_bitget_tickers_perpetuals,
     fetch_bitget_tickers_spot,
 )
+from services.credentials import get_exchange_credentials
 
 # Queries usando PostgreSQL (psycopg2)
 
@@ -359,7 +360,7 @@ def posicoes_abertas(produto_id=None):
                     exchange_symbol_map[str(cg).strip()] = str(ex).strip().upper()
         try:
             produto_info = repo.carregar_produto(produto_id)
-            has_bitget = produto_info and get_bitget_credentials(produto_info['nome'])
+            has_bitget = produto_info and get_exchange_credentials(produto_info['nome'])
 
             sync_cache_key = produto_id
             last_sync = _bitget_sync_cache.get(sync_cache_key, 0)
