@@ -27,3 +27,5 @@ plotly>=5.15.0           # Gráficos interativos (charts.py, notebooks Jupyter)
 
 # --- Banco de dados ---
 psycopg2-binary>=2.9.0   # Conexão com PostgreSQL
+
+tzdata==2025.3

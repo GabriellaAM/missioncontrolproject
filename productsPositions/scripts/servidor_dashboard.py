@@ -63,6 +63,8 @@ from cryptosignals_dashboard import get_cryptosignals_dashboard_html
 from icos_dashboard import get_icos_dashboard_html
 from services.portfolio_service import get_portfolio_data, get_portfolio_pnl, get_portfolio_rentabilidade_serie, PORTFOLIO_CONFIG
 from services.btc_cache_service import BTCCacheService
+from services.credentials import get_exchange_credentials
+from exchanges.factory import ExchangeFactory
 
 logger = logging.getLogger(__name__)
 
@@ -6376,7 +6378,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         # Para grupo Soros: usar display_name no h1 (ex: "Soros Spot" em vez de "Soros Spot 1")
                         display_name = soros_gcfg['display_name'] if soros_gcfg else None
 
-                        mostrar_caixa_alocacao = get_bitget_credentials(produto.get('nome') or '') is not None
+                        mostrar_caixa_alocacao = get_exchange_credentials(produto.get('nome') or '') is not None
                         self._send_html(get_produto_dashboard_html(
                             produto, turmas_produto, resumo, carteira,
                             mostrar_caixa_alocacao=mostrar_caixa_alocacao,

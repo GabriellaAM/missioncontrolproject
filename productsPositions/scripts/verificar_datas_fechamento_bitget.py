@@ -9,6 +9,8 @@ Uso (na raiz do projeto ou em productsPositions):
 """
 import sys
 from pathlib import Path
+from services.credentials import get_exchange_credentials
+from exchanges.factory import ExchangeFactory
 
 # Raiz do pacote productsPositions (contém storage/ e services/)
 _root = Path(__file__).resolve().parent.parent
@@ -18,7 +20,7 @@ if str(_root) not in sys.path:
 import pandas as pd
 from storage.sqlite_repo import get_repo
 from services.bitget_service import (
-    get_bitget_credentials,
+    get_exchange_credentials,
     fetch_perpetual_history,
     _timestamp_to_date_str,
 )
@@ -74,7 +76,8 @@ def main():
         nome = prod["nome"]
         print(f"\n--- Produto: {nome} (id={produto_id}) ---")
 
-        creds = get_bitget_credentials(nome)
+        creds = get_exchange_credentials(nome)
+
         if not creds:
             print("  [AVISO] Sem credenciais Bitget no .env — pulando.")
             continue

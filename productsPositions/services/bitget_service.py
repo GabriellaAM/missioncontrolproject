@@ -1047,7 +1047,7 @@ def test_bitget_connection(produto_nome: str) -> Tuple[bool, str]:
 
     logger.info(f"[TEST] Testando conexão para {produto_nome}")
 
-    credentials = get_bitget_credentials(produto_nome)
+    credentials = get_exchange_credentials(produto_nome)
     if not credentials:
         return False, f"Credenciais não encontradas para {produto_nome}"
 

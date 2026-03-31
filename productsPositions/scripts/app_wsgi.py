@@ -7,6 +7,8 @@ import threading
 import urllib.request
 import urllib.error
 
+print("🔥 APP STARTING...", flush=True)
+
 # Flask só é importado quando for usar Gunicorn (evita dependência no run direto)
 try:
     from flask import Flask, Response, request
@@ -71,6 +73,8 @@ def create_app():
     @app.route("/<path:path>", methods=["GET", "POST", "OPTIONS", "PUT", "DELETE", "PATCH"])
     def catch_all(path):
         return _proxy_to_dashboard()
+
+    print("🔥 APP CREATED", flush=True)
 
     return app
 
