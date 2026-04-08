@@ -274,6 +274,66 @@ def buscar_ohlc_bitget(exchange_symbol: str, days: int = 90, product_type: str =
         print(f"[OHLC] Bitget falhou para {exchange_symbol}: {e}", flush=True)
         return None
 
+def buscar_ohlc_okx(symbol: str, days: int = 365) -> pd.DataFrame:
+    """
+    Busca OHLC diário da OKX
+
+    Args:
+        symbol: ex: BTC-USDT ou BTC-USDT-SWAP
+        days: número de dias
+
+    Returns:
+        DataFrame com colunas: timestamp, open, high, low, close
+    """
+
+    try:
+        # OKX usa formato ISO
+        url = "https://www.okx.com/api/v5/market/candles"
+
+        params = {
+            "instId": symbol,
+            "bar": "1D",
+            "limit": min(days, 300)  # limite da OKX
+        }
+
+        response = requests.get(url, params=params, timeout=10)
+
+        if response.status_code != 200:
+            print(f"[OKX] erro HTTP: {response.status_code}", flush=True)
+            return None
+
+        data = response.json().get("data")
+
+        if not data:
+            print(f"[OKX] sem dados para {symbol}", flush=True)
+            return None
+
+        rows = []
+
+        for candle in data:
+            ts = int(candle[0]) / 1000  # ms → s
+
+            rows.append({
+                "timestamp": datetime.utcfromtimestamp(ts),
+                "open": float(candle[1]),
+                "high": float(candle[2]),
+                "low": float(candle[3]),
+                "close": float(candle[4]),
+            })
+
+        df = pd.DataFrame(rows)
+
+        if df.empty:
+            return None
+
+        df = df.sort_values("timestamp")
+
+        return df
+
+    except Exception as e:
+        print(f"[OKX] erro ao buscar OHLC {symbol}: {e}", flush=True)
+        return None
+
 
 def ler_ohlc_com_fallback(coingecko_id: str, data_entrada: str) -> Optional[pd.DataFrame]:
     """
