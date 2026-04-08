@@ -31,6 +31,33 @@ def fetch_okx_tickers_spot() -> dict:
     except:
         return {}
 
+def fetch_okx_ohlc(symbol: str, days: int = 30):
+    import requests
+    import pandas as pd
+
+    url = "https://www.okx.com/api/v5/market/candles"
+
+    params = {
+        "instId": symbol,
+        "bar": "1D",
+        "limit": days
+    }
+
+    resp = requests.get(url, params=params, timeout=10)
+    data = resp.json().get("data", [])
+
+    if not data:
+        return None
+
+    df = pd.DataFrame(data, columns=[
+        "ts", "open", "high", "low", "close", "vol", "volCcy", "volCcyQuote", "confirm"
+    ])
+
+    df["timestamp"] = pd.to_datetime(df["ts"].astype(float), unit="ms")
+    df["close"] = df["close"].astype(float)
+
+    return df
+
 
 def fetch_okx_tickers_perpetuals() -> dict:
     url = "https://www.okx.com/api/v5/market/tickers"

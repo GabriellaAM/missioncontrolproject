@@ -20,6 +20,8 @@ import gzip
 import urllib.parse
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
+from storage.sqlite_repo import SQLiteRepo
+from storage.sqlite_repo import get_repo
 
 TZ_BRASILIA = ZoneInfo('America/Sao_Paulo')
 
@@ -431,9 +433,23 @@ def _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=None
         skips = 0
         misses = 0
 
+        produtos_cache = {}
+
         for t in trades_ativos:
-            produto_nome = (t.get('produto_nome') or '').lower()
+            
+            produto_id = t.get('produto_id')
+
+            repo = get_repo()
+
+            if produto_id not in produtos_cache:
+                produtos_cache[produto_id] = repo.carregar_produto(produto_id)
+
+            produto_nome = (produtos_cache[produto_id].get('nome') or '').lower()
+
             ex_sym = (t.get('exchange_symbol') or '').strip().upper()
+
+            # normalização importante
+            ex_sym = ex_sym.replace('-', '').replace('_', '')
 
             print(f"[TRADE] produto={produto_nome} | symbol={ex_sym}", flush=True)
 

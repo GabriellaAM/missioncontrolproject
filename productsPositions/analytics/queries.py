@@ -438,38 +438,47 @@ def posicoes_abertas(produto_id=None):
                 exchange_symbol_map=emap, tipo_perpetuos=tp, tipo_spot=ts,
             )
 
-            # =========================
-            # OKX OVERRIDE (INSERIR AQUI)
-            # =========================
+        # =========================
+        # OKX OVERRIDE (ROBUSTO)
+        # =========================
+        
+        try:
+            produto_info = repo.carregar_produto(produto_id)
 
-            try:
-                produto_info = repo.carregar_produto(produto_id)
-                nome_produto = (produto_info.get('nome') or '').lower()
+            nome_produto = (produto_info.get('nome') or '').lower()
 
-                is_okx = 'okx' in nome_produto
+            is_okx = 'okx' in nome_produto
 
-                if is_okx:
-                    okx_spot = fetch_okx_tickers_spot()
-                    okx_perp = fetch_okx_tickers_perpetuals()
+            print(f"[OKX CHECK] produto={nome_produto} | is_okx={is_okx}", flush=True)
 
-                    okx_tickers = {}
-                    okx_tickers.update(okx_spot)
-                    okx_tickers.update(okx_perp)
+            if is_okx:
+                okx_spot = fetch_okx_tickers_spot()
+                okx_perp = fetch_okx_tickers_perpetuals()
 
-                    sobrescritos = 0
+                okx_tickers = {}
+                okx_tickers.update(okx_spot or {})
+                okx_tickers.update(okx_perp or {})
 
-                    for _, row in df.iterrows():
-                        cg_id = row.get('coingecko_id')
-                        ex_sym = (row.get('exchange_symbol') or '').strip().upper()
+                sobrescritos = 0
 
-                        if ex_sym in okx_tickers and okx_tickers[ex_sym] > 0:
-                            price_map[cg_id] = okx_tickers[ex_sym]
-                            sobrescritos += 1
+                for _, row in df.iterrows():
+                    cg_id = row.get('coingecko_id')
+                    ex_sym = (row.get('exchange_symbol') or '').strip().upper()
 
-                    print(f"[OKX] sobrescreveu {sobrescritos} preços", flush=True)
+                    # normalização
+                    ex_sym = ex_sym.replace('-', '').replace('_', '')
 
-            except Exception as e:
-                print(f"[OKX] erro: {e}", flush=True)
+                    if not cg_id or not ex_sym:
+                        continue
+
+                    if ex_sym in okx_tickers and okx_tickers[ex_sym] > 0:
+                        price_map[cg_id] = okx_tickers[ex_sym]
+                        sobrescritos += 1
+
+                print(f"[OKX] sobrescreveu {sobrescritos} preços", flush=True)
+
+        except Exception as e:
+            print(f"[OKX] erro: {e}", flush=True)    
 
         df['preco_atual'] = df['coingecko_id'].map(price_map)
 

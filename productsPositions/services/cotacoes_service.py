@@ -20,6 +20,7 @@ import time
 import os
 import logging
 from services.atr_stop_service import buscar_ohlc_okx
+from services.okx_service import fetch_okx_ohlc
 
 logger = logging.getLogger(__name__)
 
@@ -550,14 +551,10 @@ class CotacoesService:
                         ids_sem_bitget.append(cg_id)
                         print(f"[HISTORICO BATCH] Bitget erro {cg_id}: {e}", flush=True)
         
-        # =========================================================
-        # 2.5) OKX candles (NOVO)
-        # =========================================================
-
-        ids_com_okx = [
-            cid for cid in ids_faltando
-            if exchange_symbol_map.get(cid)
-        ]
+        # =========================
+        # OKX HISTÓRICO (NOVO)
+        # =========================
+        ids_com_okx = [cid for cid in ids_faltando if exchange_symbol_map.get(cid)]
 
         if ids_com_okx:
 
@@ -565,10 +562,11 @@ class CotacoesService:
                 symbol = exchange_symbol_map[cg_id]
 
                 try:
-                    df = buscar_ohlc_okx(symbol, days=dias)
+                    df = fetch_okx_ohlc(symbol, days=dias)
 
                     if df is not None and not df.empty:
                         precos = {}
+
                         for _, row in df.iterrows():
                             d = row['timestamp'].strftime("%Y-%m-%d")
                             precos[d] = float(row['close'])
@@ -576,39 +574,9 @@ class CotacoesService:
                         return cg_id, precos
 
                 except Exception as e:
-                    print(f"[HISTORICO BATCH] OKX erro {cg_id} ({symbol}): {e}", flush=True)
+                    print(f"[OKX HIST] erro {cg_id}: {e}", flush=True)
 
                 return cg_id, None
-
-            max_w = min(len(ids_com_okx), 5)
-
-            with ThreadPoolExecutor(max_workers=max_w) as executor:
-                futures = {executor.submit(_fetch_okx, cg_id): cg_id for cg_id in ids_com_okx}
-
-                for future in as_completed(futures):
-                    try:
-                        cg_id, precos_por_data = future.result()
-
-                        if precos_por_data:
-                            if cg_id not in resultado:
-                                resultado[cg_id] = {}
-
-                            resultado[cg_id].update(precos_por_data)
-
-                            _salvar_precos_ativo(cg_id, precos_por_data, 'okx')
-
-                            print(f"[HISTORICO BATCH] OKX OK: {cg_id} ({len(precos_por_data)} pontos)", flush=True)
-
-                        else:
-                            if cg_id not in ids_sem_bitget:
-                                ids_sem_bitget.append(cg_id)
-
-                    except Exception as e:
-                        cg_id = futures[future]
-                        print(f"[HISTORICO BATCH] OKX erro futuro {cg_id}: {e}", flush=True)
-
-                        if cg_id not in ids_sem_bitget:
-                            ids_sem_bitget.append(cg_id)
 
         # 3) CoinGecko fallback para ativos sem Bitget ou onde Bitget falhou
         if ids_sem_bitget:
