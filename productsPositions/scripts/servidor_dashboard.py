@@ -412,31 +412,65 @@ def _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=None
             pass
 
     # =========================
-    # OKX (CORRETO E ROBUSTO)
+    # OKX (CORRETO E ROBUSTO + LOGS)
     # =========================
+
     try:
         okx_spot = fetch_okx_tickers_spot()
         okx_perp = fetch_okx_tickers_perpetuals()
+
+        print(f"[OKX] spot: {len(okx_spot or {})} | perp: {len(okx_perp or {})}", flush=True)
 
         okx_tickers = {}
         okx_tickers.update(okx_spot or {})
         okx_tickers.update(okx_perp or {})
 
+        print(f"[OKX] sample symbols: {list(okx_tickers.keys())[:5]}", flush=True)
+
+        aplicados = 0
+        skips = 0
+        misses = 0
+
         for t in trades_ativos:
             produto_nome = (t.get('produto_nome') or '').lower()
+            ex_sym = (t.get('exchange_symbol') or '').strip().upper()
+
+            print(f"[TRADE] produto={produto_nome} | symbol={ex_sym}", flush=True)
 
             # 👉 Só aplica para OKX
             if 'okx' not in produto_nome:
+                skips += 1
+                print(f"[SKIP] não é OKX", flush=True)
                 continue
 
-            ex_sym = (t.get('exchange_symbol') or '').strip().upper()
+            if not ex_sym:
+                print(f"[SKIP] sem exchange_symbol", flush=True)
+                continue
 
-            if ex_sym and ex_sym in okx_tickers and okx_tickers[ex_sym] > 0:
-                key = _price_key(t)
+            if ex_sym not in okx_tickers:
+                misses += 1
+                print(f"[MISS] símbolo não encontrado na OKX: {ex_sym}", flush=True)
+                continue
+
+            price = okx_tickers.get(ex_sym)
+
+            if not price or price <= 0:
+                print(f"[SKIP] preço inválido: {ex_sym} -> {price}", flush=True)
+                continue
+
+            key = _price_key(t)
+
+            print(f"[OKX MATCH] {ex_sym} -> {price} | key={key}", flush=True)
 
             # 👉 sobrescreve Bitget apenas para OKX
+            
             if key:
-                precos[key] = okx_tickers[ex_sym]
+                precos[key] = price
+                aplicados += 1
+            else:
+                print(f"[WARN] key inválida para trade: {t}", flush=True)
+
+        print(f"[OKX] aplicados={aplicados} | skips={skips} | misses={misses}", flush=True)
 
     except Exception as e:
         print(f"[PREÇOS] erro OKX: {e}", flush=True)
