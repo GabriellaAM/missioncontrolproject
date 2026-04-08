@@ -46,6 +46,10 @@ from analytics.notebook_utils import (
 from analytics.queries import invalidar_cache_atr
 from services.atr_stop_service import atualizar_stops_posicoes_abertas, calcular_stop_para_posicao
 from services.bitget_service import sync_positions_with_exchange, auto_sync_positions, fetch_bitget_tickers_perpetuals, fetch_bitget_tickers_spot, get_bitget_credentials
+from services.okx_service import (
+    fetch_okx_tickers_spot,
+    fetch_okx_tickers_perpetuals,
+)
 from services.notificacao_service import notificar_stop_atingido
 from services.turmas_service import TurmasService
 from services.rentabilidade_service import RentabilidadeService
@@ -355,6 +359,18 @@ def _exchange_symbol_to_cmc_symbol(ex_sym):
     return s if len(s) <= 10 else None
 
 
+def _inferir_exchange(trade):
+    nome = (trade.get("produto_nome") or "").lower()
+
+    if "okx" in nome:
+        return "OKX"
+
+    if "bitget" in nome or "soros" in nome:
+        return "BITGET"
+
+    return None
+
+
 def _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=None, db_url=None):
     """
     Busca preços atuais: Bitget primeiro, CoinGecko como fallback, CoinMarketCap como terceiro fallback.
@@ -395,20 +411,35 @@ def _obter_precos_bitget_primeiro_coingecko_fallback(carteira, tipo_produto=None
         except Exception:
             pass
 
-    # 2) CoinGecko como fallback — só preenche o que ainda não tem preço
-    coingecko_ids_faltando = list(set(
-        t['coingecko_id'] for t in trades_ativos
-        if t.get('coingecko_id') and t['coingecko_id'] not in precos
-    ))
-    if coingecko_ids_faltando:
-        try:
-            cotacoes_service = CotacoesService(db_url=db_url)
-            cg_precos = cotacoes_service.obter_precos_coingecko_fallback(coingecko_ids_faltando)
-            for cg_id, preco in cg_precos.items():
-                if cg_id not in precos:
-                    precos[cg_id] = preco
-        except Exception:
-            pass
+    # =========================
+    # OKX (CORRETO E ROBUSTO)
+    # =========================
+    try:
+        okx_spot = fetch_okx_tickers_spot()
+        okx_perp = fetch_okx_tickers_perpetuals()
+
+        okx_tickers = {}
+        okx_tickers.update(okx_spot or {})
+        okx_tickers.update(okx_perp or {})
+
+        for t in trades_ativos:
+            produto_nome = (t.get('produto_nome') or '').lower()
+
+            # 👉 Só aplica para OKX
+            if 'okx' not in produto_nome:
+                continue
+
+            ex_sym = (t.get('exchange_symbol') or '').strip().upper()
+
+            if ex_sym and ex_sym in okx_tickers and okx_tickers[ex_sym] > 0:
+                key = _price_key(t)
+
+            # 👉 sobrescreve Bitget apenas para OKX
+            if key:
+                precos[key] = okx_tickers[ex_sym]
+
+    except Exception as e:
+        print(f"[PREÇOS] erro OKX: {e}", flush=True)
 
     # 3) CoinMarketCap como terceiro fallback — trades que ainda não têm preço
     trades_sem_preco = [t for t in trades_ativos if _price_key(t) and _price_key(t) not in precos]

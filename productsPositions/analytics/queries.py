@@ -14,6 +14,10 @@ from services.bitget_service import (
     fetch_bitget_tickers_spot,
 )
 from services.credentials import get_exchange_credentials
+from services.okx_service import (
+    fetch_okx_tickers_spot,
+    fetch_okx_tickers_perpetuals
+)
 
 # Queries usando PostgreSQL (psycopg2)
 
@@ -433,6 +437,40 @@ def posicoes_abertas(produto_id=None):
                 df['coingecko_id'].tolist(), repo.db_url,
                 exchange_symbol_map=emap, tipo_perpetuos=tp, tipo_spot=ts,
             )
+
+            # =========================
+            # OKX OVERRIDE (INSERIR AQUI)
+            # =========================
+
+            try:
+                produto_info = repo.carregar_produto(produto_id)
+                nome_produto = (produto_info.get('nome') or '').lower()
+
+                is_okx = 'okx' in nome_produto
+
+                if is_okx:
+                    okx_spot = fetch_okx_tickers_spot()
+                    okx_perp = fetch_okx_tickers_perpetuals()
+
+                    okx_tickers = {}
+                    okx_tickers.update(okx_spot)
+                    okx_tickers.update(okx_perp)
+
+                    sobrescritos = 0
+
+                    for _, row in df.iterrows():
+                        cg_id = row.get('coingecko_id')
+                        ex_sym = (row.get('exchange_symbol') or '').strip().upper()
+
+                        if ex_sym in okx_tickers and okx_tickers[ex_sym] > 0:
+                            price_map[cg_id] = okx_tickers[ex_sym]
+                            sobrescritos += 1
+
+                    print(f"[OKX] sobrescreveu {sobrescritos} preços", flush=True)
+
+            except Exception as e:
+                print(f"[OKX] erro: {e}", flush=True)
+
         df['preco_atual'] = df['coingecko_id'].map(price_map)
 
         # Fallback: derivar preço de entry ± (pnl/qty) quando Bitget e CoinGecko não retornarem
